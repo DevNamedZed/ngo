@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Ngo.Compiler</RootNamespace>
+    <AssemblyName>Ngo.Compiler</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.ILVerification" Version="9.0.*" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Ngo.Runtime\Ngo.Runtime.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Ngo.Compiler.Tests" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,13 @@
+<Project>
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <LangVersion>12</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <NoWarn>CS8618;CS8600;CS8601;CS8602;CS8603;CS8604;NU1603</NoWarn>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- WSL2 on /mnt/c/ can't set file permissions/timestamps -->
+    <UseAppHost>false</UseAppHost>
+    <BaseIntermediateOutputPath>/tmp/ngo-obj/$(MSBuildProjectName)/</BaseIntermediateOutputPath>
+  </PropertyGroup>
+</Project>

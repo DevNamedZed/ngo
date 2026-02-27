@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Ngo.Cli</RootNamespace>
+    <AssemblyName>ngo</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Ngo.Compiler\Ngo.Compiler.csproj" />
+    <ProjectReference Include="..\Ngo.Runtime\Ngo.Runtime.csproj" />
+  </ItemGroup>
+</Project>
