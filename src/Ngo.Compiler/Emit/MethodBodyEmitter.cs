@@ -34,6 +34,7 @@ namespace Ngo.Compiler.Emit
     {
         private readonly EmitContext _ctx;
         private readonly BuiltinEmitter _builtins;
+        private readonly Dictionary<CallExpression, LocalBuilder> _spreadLocals = new();
         internal readonly ClosureEmitter Closures;
         private readonly ForRangeEmitter _ranges;
         private readonly DeferGoEmitter _deferGo;
@@ -311,6 +312,9 @@ namespace Ngo.Compiler.Emit
                     break;
                 case NodeType.ConstDeclaration:
                     // Constants are inlined at use sites, no IL needed
+                    break;
+                case NodeType.TypeDeclaration:
+                    EmitLocalTypeDeclaration((TypeDeclaration)node);
                     break;
                 case NodeType.LabeledStatement:
                     EmitLabeledStatement((LabeledStatement)node);
@@ -771,7 +775,7 @@ namespace Ngo.Compiler.Emit
         private IReadOnlyList<TypeSymbol>? GetMultiReturnTypes(Expression expr)
         {
             if (expr is CallExpression call)
-                return call.Function.ReturnTypes;
+                return call.EffectiveReturnTypes;
             if (expr is MethodCallExpression methodCall)
                 return methodCall.Method.ReturnTypes;
             if (expr is IndexExpression idx && idx.IsCommaOk && idx.Target.Type is MapTypeSymbol mapType)
@@ -916,7 +920,40 @@ namespace Ngo.Compiler.Emit
             if (forStmt.Init != null)
                 EmitStatement(forStmt.Init);
 
+            // Go 1.22: collect captured loop variables for per-iteration scoping
+            var capturedLoopVars = CollectCapturedLoopVars(forStmt.Init);
+            var counterLocals = new Dictionary<Symbol, LocalBuilder>();
+
+            if (capturedLoopVars.Count > 0)
+            {
+                // Create non-captured counter locals for condition/post
+                foreach (var sym in capturedLoopVars)
+                {
+                    var boxLocal = _ctx.Locals[sym];
+                    var boxType = boxLocal.LocalType;
+                    var innerType = boxType.GetField("Value")!.FieldType;
+                    var counterLocal = _ctx.IL.DeclareLocal(innerType);
+                    counterLocals[sym] = counterLocal;
+
+                    // Copy initial value from Box to counter
+                    var valueField = boxType.GetField("Value")!;
+                    _ctx.IL.Emit(OpCodes.Ldloc, boxLocal);
+                    _ctx.IL.Emit(OpCodes.Ldfld, valueField);
+                    _ctx.IL.Emit(OpCodes.Stloc, counterLocal);
+                }
+            }
+
             _ctx.IL.MarkLabel(condLabel);
+
+            if (capturedLoopVars.Count > 0)
+            {
+                // Condition uses counter locals: temporarily swap locals
+                foreach (var sym in capturedLoopVars)
+                {
+                    _ctx.CapturedSymbols.Remove(sym);
+                    _ctx.Locals[sym] = counterLocals[sym];
+                }
+            }
 
             if (forStmt.Condition != null)
             {
@@ -924,16 +961,92 @@ namespace Ngo.Compiler.Emit
                 _ctx.IL.Emit(OpCodes.Brfalse, endLabel);
             }
 
+            if (capturedLoopVars.Count > 0)
+            {
+                // Create new Box per iteration and restore captured mapping
+                foreach (var sym in capturedLoopVars)
+                {
+                    var counterLocal = counterLocals[sym];
+                    var innerType = counterLocal.LocalType;
+                    var boxType = typeof(Box<>).MakeGenericType(innerType);
+                    var boxCtor = boxType.GetConstructor(new[] { innerType })!;
+                    var boxLocal = _ctx.IL.DeclareLocal(boxType);
+
+                    _ctx.IL.Emit(OpCodes.Ldloc, counterLocal);
+                    _ctx.IL.Emit(OpCodes.Newobj, boxCtor);
+                    _ctx.IL.Emit(OpCodes.Stloc, boxLocal);
+
+                    _ctx.CapturedSymbols.Add(sym);
+                    _ctx.Locals[sym] = boxLocal;
+                }
+            }
+
             PushLoopLabels(endLabel, continueLabel);
             EmitBlock(forStmt.Body);
             _ctx.LoopLabels.Pop();
 
             _ctx.IL.MarkLabel(continueLabel);
+
+            if (capturedLoopVars.Count > 0)
+            {
+                // Write back from Box to counter, then use counter for post
+                foreach (var sym in capturedLoopVars)
+                {
+                    var boxLocal = _ctx.Locals[sym];
+                    var valueField = boxLocal.LocalType.GetField("Value")!;
+                    _ctx.IL.Emit(OpCodes.Ldloc, boxLocal);
+                    _ctx.IL.Emit(OpCodes.Ldfld, valueField);
+                    _ctx.IL.Emit(OpCodes.Stloc, counterLocals[sym]);
+
+                    _ctx.CapturedSymbols.Remove(sym);
+                    _ctx.Locals[sym] = counterLocals[sym];
+                }
+            }
+
             if (forStmt.Post != null)
                 EmitStatement(forStmt.Post);
 
+            if (capturedLoopVars.Count > 0)
+            {
+                // Restore captured mapping for next iteration's condition check
+                // (will be swapped to counter at condLabel)
+                foreach (var sym in capturedLoopVars)
+                    _ctx.CapturedSymbols.Add(sym);
+            }
+
             _ctx.IL.Emit(OpCodes.Br, condLabel);
             _ctx.IL.MarkLabel(endLabel);
+
+            // Restore final state: keep counter locals as the active locals
+            if (capturedLoopVars.Count > 0)
+            {
+                foreach (var sym in capturedLoopVars)
+                {
+                    _ctx.CapturedSymbols.Remove(sym);
+                    _ctx.Locals[sym] = counterLocals[sym];
+                }
+            }
+        }
+
+        private List<Symbol> CollectCapturedLoopVars(AstNode? init)
+        {
+            var result = new List<Symbol>();
+            if (init == null) return result;
+
+            if (init is VarDeclaration varDecl && _ctx.CapturedSymbols.Contains(varDecl.Symbol))
+            {
+                result.Add(varDecl.Symbol);
+            }
+            else if (init is BlockStatement block)
+            {
+                foreach (var stmt in block.Statements)
+                {
+                    if (stmt is VarDeclaration vd && _ctx.CapturedSymbols.Contains(vd.Symbol))
+                        result.Add(vd.Symbol);
+                }
+            }
+
+            return result;
         }
 
         private void EmitSwitch(SwitchStatement sw)
@@ -1046,6 +1159,13 @@ namespace Ngo.Compiler.Emit
             var guardLocal = _ctx.IL.DeclareLocal(typeof(object));
             _ctx.IL.Emit(OpCodes.Stloc, guardLocal);
 
+            // Also store the unwrapped value for struct type cases (handles interface wrappers)
+            _ctx.IL.Emit(OpCodes.Ldloc, guardLocal);
+            _ctx.IL.Emit(OpCodes.Call,
+                typeof(Ngo.Runtime.BuiltIn).GetMethod("UnwrapInterface")!);
+            var unwrappedLocal = _ctx.IL.DeclareLocal(typeof(object));
+            _ctx.IL.Emit(OpCodes.Stloc, unwrappedLocal);
+
             // Find default case index (emit it last)
             int defaultIndex = -1;
             for (int i = 0; i < ts.Cases.Count; i++)
@@ -1069,11 +1189,17 @@ namespace Ngo.Compiler.Emit
                 {
                     if (c.Types.Count == 1)
                     {
-                        // Single type: isinst + brfalse
+                        // Single type: try isinst on guard, then on unwrapped value
                         var clrType = _ctx.Mapper.Map(c.Types[0]);
                         _ctx.IL.Emit(OpCodes.Ldloc, guardLocal);
                         _ctx.IL.Emit(OpCodes.Isinst, clrType);
+                        var matchedLabel = _ctx.IL.DefineLabel();
+                        _ctx.IL.Emit(OpCodes.Brtrue, matchedLabel);
+                        // Try unwrapped value (handles struct inside interface wrapper)
+                        _ctx.IL.Emit(OpCodes.Ldloc, unwrappedLocal);
+                        _ctx.IL.Emit(OpCodes.Isinst, clrType);
                         _ctx.IL.Emit(OpCodes.Brfalse, nextCaseLabel);
+                        _ctx.IL.MarkLabel(matchedLabel);
                     }
                     else
                     {
@@ -1082,7 +1208,12 @@ namespace Ngo.Compiler.Emit
                         for (int i = 0; i < c.Types.Count; i++)
                         {
                             var clrType = _ctx.Mapper.Map(c.Types[i]);
+                            // Try guard first
                             _ctx.IL.Emit(OpCodes.Ldloc, guardLocal);
+                            _ctx.IL.Emit(OpCodes.Isinst, clrType);
+                            _ctx.IL.Emit(OpCodes.Brtrue, bodyLabel);
+                            // Try unwrapped value
+                            _ctx.IL.Emit(OpCodes.Ldloc, unwrappedLocal);
                             _ctx.IL.Emit(OpCodes.Isinst, clrType);
                             if (i < c.Types.Count - 1)
                                 _ctx.IL.Emit(OpCodes.Brtrue, bodyLabel);
@@ -1100,11 +1231,25 @@ namespace Ngo.Compiler.Emit
                     var varLocal = _ctx.IL.DeclareLocal(varType);
                     _ctx.Locals[c.AssignedSymbol] = varLocal;
 
-                    _ctx.IL.Emit(OpCodes.Ldloc, guardLocal);
                     if (varType.IsValueType)
+                    {
+                        // Use unwrapped value for struct extraction (handles wrappers)
+                        _ctx.IL.Emit(OpCodes.Ldloc, unwrappedLocal);
                         _ctx.IL.Emit(OpCodes.Unbox_Any, varType);
+                    }
                     else
+                    {
+                        // For interface/ref types, try guard first, fall back to unwrapped
+                        _ctx.IL.Emit(OpCodes.Ldloc, guardLocal);
+                        _ctx.IL.Emit(OpCodes.Isinst, varType);
+                        _ctx.IL.Emit(OpCodes.Dup);
+                        var assignOk = _ctx.IL.DefineLabel();
+                        _ctx.IL.Emit(OpCodes.Brtrue, assignOk);
+                        _ctx.IL.Emit(OpCodes.Pop);
+                        _ctx.IL.Emit(OpCodes.Ldloc, unwrappedLocal);
                         _ctx.IL.Emit(OpCodes.Castclass, varType);
+                        _ctx.IL.MarkLabel(assignOk);
+                    }
                     _ctx.IL.Emit(OpCodes.Stloc, varLocal);
                 }
 
@@ -1243,7 +1388,28 @@ namespace Ngo.Compiler.Emit
                     EmitUnary((UnaryExpression)expr);
                     break;
                 case NodeType.CallExpression:
-                    EmitCall((CallExpression)expr);
+                    var callExpr = (CallExpression)expr;
+                    EmitCall(callExpr);
+                    if (callExpr.IsSpreadArg)
+                    {
+                        // Store the tuple result for SpreadElement access
+                        var tupleType = _ctx.Mapper.MapReturnType(callExpr.EffectiveReturnTypes);
+                        var tupleLocal = _ctx.IL.DeclareLocal(tupleType);
+                        _ctx.IL.Emit(OpCodes.Stloc, tupleLocal);
+                        _spreadLocals[callExpr] = tupleLocal;
+                        // Load Item1 (the first element) for the first argument position
+                        _ctx.IL.Emit(OpCodes.Ldloca, tupleLocal);
+                        _ctx.IL.Emit(OpCodes.Ldfld, tupleType.GetField("Item1")!);
+                    }
+                    break;
+                case NodeType.SpreadElement:
+                    var spread = (SpreadElement)expr;
+                    if (_spreadLocals.TryGetValue(spread.Source, out var srcLocal))
+                    {
+                        var srcType = srcLocal.LocalType;
+                        _ctx.IL.Emit(OpCodes.Ldloca, srcLocal);
+                        _ctx.IL.Emit(OpCodes.Ldfld, srcType.GetField($"Item{spread.Index + 1}")!);
+                    }
                     break;
                 case NodeType.ConversionExpression:
                     EmitConversion((ConversionExpression)expr);
@@ -1486,6 +1652,22 @@ namespace Ngo.Compiler.Emit
                 }
             }
 
+            // Struct equality: field-by-field comparison
+            if (bin.Left.Type is StructTypeSymbol structType
+                && (bin.Operator == BinaryOperator.Equal || bin.Operator == BinaryOperator.NotEqual))
+            {
+                EmitStructEquality(bin, structType);
+                return;
+            }
+
+            // Array equality: element-by-element comparison
+            if (bin.Left.Type.TypeKind == TypeKind.Array
+                && (bin.Operator == BinaryOperator.Equal || bin.Operator == BinaryOperator.NotEqual))
+            {
+                EmitArrayEquality(bin, (ArrayTypeSymbol)bin.Left.Type);
+                return;
+            }
+
             EmitExpression(bin.Left);
             EmitExpression(bin.Right);
 
@@ -1540,6 +1722,108 @@ namespace Ngo.Compiler.Emit
             }
         }
 
+        private void EmitStructEquality(BinaryExpression bin, StructTypeSymbol structType)
+        {
+            var clrType = _ctx.Mapper.Map(structType);
+            var leftLocal = _ctx.IL.DeclareLocal(clrType);
+            var rightLocal = _ctx.IL.DeclareLocal(clrType);
+
+            EmitExpression(bin.Left);
+            _ctx.IL.Emit(OpCodes.Stloc, leftLocal);
+            EmitExpression(bin.Right);
+            _ctx.IL.Emit(OpCodes.Stloc, rightLocal);
+
+            if (structType.Fields.Count == 0)
+            {
+                // Empty structs are always equal
+                _ctx.IL.Emit(bin.Operator == BinaryOperator.Equal ? OpCodes.Ldc_I4_1 : OpCodes.Ldc_I4_0);
+                return;
+            }
+
+            for (int i = 0; i < structType.Fields.Count; i++)
+            {
+                var field = structType.Fields[i];
+                if (!_ctx.StructFields.TryGetValue(field, out var fb))
+                    continue;
+
+                _ctx.IL.Emit(OpCodes.Ldloca, leftLocal);
+                _ctx.IL.Emit(OpCodes.Ldfld, fb);
+                _ctx.IL.Emit(OpCodes.Ldloca, rightLocal);
+                _ctx.IL.Emit(OpCodes.Ldfld, fb);
+
+                if (field.Type.TypeKind == TypeKind.String || field.Type.TypeKind == TypeKind.UntypedString)
+                {
+                    var equals = typeof(string).GetMethod("op_Equality", new[] { typeof(string), typeof(string) })!;
+                    _ctx.IL.Emit(OpCodes.Call, equals);
+                }
+                else
+                {
+                    _ctx.IL.Emit(OpCodes.Ceq);
+                }
+
+                if (i > 0)
+                {
+                    _ctx.IL.Emit(OpCodes.And);
+                }
+            }
+
+            if (bin.Operator == BinaryOperator.NotEqual)
+            {
+                _ctx.IL.Emit(OpCodes.Ldc_I4_0);
+                _ctx.IL.Emit(OpCodes.Ceq);
+            }
+        }
+
+        private void EmitArrayEquality(BinaryExpression bin, ArrayTypeSymbol arrayType)
+        {
+            var clrType = _ctx.Mapper.Map(arrayType);
+            var leftLocal = _ctx.IL.DeclareLocal(clrType);
+            var rightLocal = _ctx.IL.DeclareLocal(clrType);
+
+            EmitExpression(bin.Left);
+            _ctx.IL.Emit(OpCodes.Stloc, leftLocal);
+            EmitExpression(bin.Right);
+            _ctx.IL.Emit(OpCodes.Stloc, rightLocal);
+
+            if (arrayType.Length == 0)
+            {
+                _ctx.IL.Emit(bin.Operator == BinaryOperator.Equal ? OpCodes.Ldc_I4_1 : OpCodes.Ldc_I4_0);
+                return;
+            }
+
+            var elemType = _ctx.Mapper.Map(arrayType.ElementType);
+            for (int i = 0; i < arrayType.Length; i++)
+            {
+                _ctx.IL.Emit(OpCodes.Ldloc, leftLocal);
+                _ctx.IL.Emit(OpCodes.Ldc_I4, i);
+                _ctx.IL.Emit(OpCodes.Ldelem, elemType);
+                _ctx.IL.Emit(OpCodes.Ldloc, rightLocal);
+                _ctx.IL.Emit(OpCodes.Ldc_I4, i);
+                _ctx.IL.Emit(OpCodes.Ldelem, elemType);
+
+                if (arrayType.ElementType.TypeKind == TypeKind.String || arrayType.ElementType.TypeKind == TypeKind.UntypedString)
+                {
+                    var equals = typeof(string).GetMethod("op_Equality", new[] { typeof(string), typeof(string) })!;
+                    _ctx.IL.Emit(OpCodes.Call, equals);
+                }
+                else
+                {
+                    _ctx.IL.Emit(OpCodes.Ceq);
+                }
+
+                if (i > 0)
+                {
+                    _ctx.IL.Emit(OpCodes.And);
+                }
+            }
+
+            if (bin.Operator == BinaryOperator.NotEqual)
+            {
+                _ctx.IL.Emit(OpCodes.Ldc_I4_0);
+                _ctx.IL.Emit(OpCodes.Ceq);
+            }
+        }
+
         private void EmitUnary(UnaryExpression unary)
         {
             EmitExpression(unary.Operand);
@@ -1578,6 +1862,21 @@ namespace Ngo.Compiler.Emit
             // Check if this is a known function we've emitted
             if (_ctx.Methods.TryGetValue(call.Function, out var method))
             {
+                // Generic function call: instantiate with concrete type args
+                if (call.TypeArguments != null && call.TypeArguments.Count > 0)
+                {
+                    var typeArgs = new Type[call.TypeArguments.Count];
+                    for (int i = 0; i < call.TypeArguments.Count; i++)
+                    {
+                        typeArgs[i] = _ctx.Mapper.Map(call.TypeArguments[i]);
+                    }
+
+                    var instantiated = method.MakeGenericMethod(typeArgs);
+                    EmitCallArguments(call);
+                    _ctx.IL.Emit(OpCodes.Call, instantiated);
+                    return;
+                }
+
                 if (call.Function.IsVariadic)
                 {
                     EmitVariadicCall(call, method);
@@ -1703,6 +2002,43 @@ namespace Ngo.Compiler.Emit
                 return;
             }
 
+            // Slice → Array conversion (Go 1.20+)
+            if (conv.Type is ArrayTypeSymbol arrType
+                && conv.Operand.Type is SliceTypeSymbol)
+            {
+                EmitExpression(conv.Operand);
+                var elemType = _ctx.Mapper.Map(arrType.ElementType);
+                var sliceClrType = _ctx.Mapper.Map(conv.Operand.Type);
+                var arrayClrType = _ctx.Mapper.Map(arrType);
+
+                // Store slice in local
+                var sliceLocal = _ctx.IL.DeclareLocal(sliceClrType);
+                _ctx.IL.Emit(OpCodes.Stloc, sliceLocal);
+
+                // Create target array
+                _ctx.IL.Emit(OpCodes.Ldc_I4, arrType.Length);
+                _ctx.IL.Emit(OpCodes.Newarr, elemType);
+                var arrLocal = _ctx.IL.DeclareLocal(arrayClrType);
+                _ctx.IL.Emit(OpCodes.Stloc, arrLocal);
+
+                // Copy elements: for i := 0; i < len; i++ { arr[i] = slice[i] }
+                var indexer = sliceClrType.GetProperty("Item")!.GetGetMethod()!;
+                for (int i = 0; i < arrType.Length; i++)
+                {
+                    _ctx.IL.Emit(OpCodes.Ldloc, arrLocal);
+                    _ctx.IL.Emit(OpCodes.Ldc_I4, i);
+                    _ctx.IL.Emit(OpCodes.Ldloca, sliceLocal);
+                    _ctx.IL.Emit(OpCodes.Ldc_I4, i);
+                    _ctx.IL.Emit(OpCodes.Call, indexer);
+                    // indexer returns ref T, load the value
+                    _ctx.IL.Emit(OpCodes.Ldobj, elemType);
+                    _ctx.IL.Emit(OpCodes.Stelem, elemType);
+                }
+
+                _ctx.IL.Emit(OpCodes.Ldloc, arrLocal);
+                return;
+            }
+
             EmitExpression(conv.Operand);
 
             var targetType = _ctx.Mapper.Map(conv.Type);
@@ -1798,6 +2134,13 @@ namespace Ngo.Compiler.Emit
                     {
                         EmitExpression(call.Arguments[i]);
                         argTypes[i] = _ctx.Mapper.Map(call.Method.Parameters[i].Type);
+                        // Box value types when target param is object
+                        if (argTypes[i] == typeof(object))
+                        {
+                            var argClrType = _ctx.Mapper.Map(call.Arguments[i].Type);
+                            if (argClrType.IsValueType)
+                                _ctx.IL.Emit(OpCodes.Box, argClrType);
+                        }
                     }
 
                     var clrMethod = receiverClrType.GetMethod(call.Method.Name, argTypes);
@@ -1973,6 +2316,9 @@ namespace Ngo.Compiler.Emit
             // *p → p.Value
             EmitExpression(deref.Operand);
             var innerType = _ctx.Mapper.Map(deref.Type);
+            // Reference types don't use Ptr<T> — pointer is the reference itself
+            if (!innerType.IsValueType)
+                return;
             var ptrType = typeof(Ptr<>).MakeGenericType(innerType);
             var valueField = ptrType.GetField("Value")!;
             _ctx.IL.Emit(OpCodes.Ldfld, valueField);
@@ -2268,6 +2614,20 @@ namespace Ngo.Compiler.Emit
                     $"Package variable '{pkgVar.Name}' — runtime member '{pkgVar.RuntimeMember}' not found on {pkgVar.RuntimeType.Name}");
             }
 
+            if (symbol is FunctionSymbol funcSym && _ctx.Methods.TryGetValue(funcSym, out var funcMethod))
+            {
+                var paramTypes = new List<TypeSymbol>();
+                foreach (var p in funcSym.Parameters)
+                    paramTypes.Add(p.Type);
+                var funcType = new FunctionTypeSymbol(paramTypes, funcSym.ReturnTypes);
+                var delegateType = _ctx.Mapper.Map(funcType);
+                var delegateCtor = delegateType.GetConstructor(new[] { typeof(object), typeof(IntPtr) })!;
+                _ctx.IL.Emit(OpCodes.Ldnull);
+                _ctx.IL.Emit(OpCodes.Ldftn, funcMethod);
+                _ctx.IL.Emit(OpCodes.Newobj, delegateCtor);
+                return;
+            }
+
             throw new NotSupportedException($"Cannot load symbol: {symbol.Name} ({symbol.Kind})");
         }
 
@@ -2443,7 +2803,16 @@ namespace Ngo.Compiler.Emit
             {
                 if (_ctx.Locals.TryGetValue(id.Symbol, out var local))
                 {
-                    _ctx.IL.Emit(OpCodes.Ldloca, local);
+                    if (_ctx.CapturedSymbols.Contains(id.Symbol))
+                    {
+                        // Captured variable: local is Box<T>, get address of .Value field
+                        _ctx.IL.Emit(OpCodes.Ldloc, local);
+                        _ctx.IL.Emit(OpCodes.Ldflda, local.LocalType.GetField("Value")!);
+                    }
+                    else
+                    {
+                        _ctx.IL.Emit(OpCodes.Ldloca, local);
+                    }
                     return;
                 }
 
@@ -2506,6 +2875,52 @@ namespace Ngo.Compiler.Emit
         {
             return new LiteralExpression(value, BuiltinTypes.Int,
                 new Language.TextSpan(0, 0));
+        }
+
+        private void EmitLocalTypeDeclaration(TypeDeclaration typeDecl)
+        {
+            if (typeDecl.Symbol is StructTypeSymbol structType)
+            {
+                var typeBuilder = _ctx.Module.DefineType(
+                    structType.Name,
+                    TypeAttributes.Public | TypeAttributes.SequentialLayout | TypeAttributes.Sealed,
+                    typeof(ValueType));
+
+                foreach (var field in structType.Fields)
+                {
+                    var fieldType = _ctx.Mapper.Map(field.Type);
+                    var fb = typeBuilder.DefineField(field.Name, fieldType, FieldAttributes.Public);
+                    _ctx.StructFields[field] = fb;
+                }
+
+                var runtimeType = typeBuilder.CreateType()!;
+                _ctx.Mapper.Register(structType, runtimeType);
+                _ctx.StructTypes[structType] = typeBuilder;
+                _ctx.FinalizedTypes.Add(structType);
+            }
+            else if (typeDecl.Symbol is InterfaceTypeSymbol ifaceType)
+            {
+                var typeBuilder = _ctx.Module.DefineType(
+                    ifaceType.Name,
+                    TypeAttributes.Public | TypeAttributes.Interface | TypeAttributes.Abstract);
+
+                foreach (var method in ifaceType.Methods)
+                {
+                    var paramTypes = new Type[method.Parameters.Count];
+                    for (int i = 0; i < method.Parameters.Count; i++)
+                        paramTypes[i] = _ctx.Mapper.Map(method.Parameters[i].Type);
+                    var returnType = _ctx.Mapper.Map(method.ReturnType);
+                    typeBuilder.DefineMethod(method.Name,
+                        MethodAttributes.Public | MethodAttributes.Abstract | MethodAttributes.Virtual,
+                        returnType, paramTypes);
+                }
+
+                var runtimeIfaceType = typeBuilder.CreateType()!;
+                _ctx.Mapper.Register(ifaceType, runtimeIfaceType);
+                _ctx.InterfaceTypes[ifaceType] = typeBuilder;
+                _ctx.FinalizedTypes.Add(ifaceType);
+            }
+            // Non-struct/interface types (type aliases, named types) don't need IL emission
         }
     }
 }

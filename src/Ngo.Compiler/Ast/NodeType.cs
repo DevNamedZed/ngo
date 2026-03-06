@@ -38,6 +38,8 @@ namespace Ngo.Compiler.Ast
         TypeAssertExpression,
         FunctionLiteralExpression,
         MethodValueExpression,
+        InstantiationExpression,
+        SpreadElement,
 
         // Statements
         BlockStatement,

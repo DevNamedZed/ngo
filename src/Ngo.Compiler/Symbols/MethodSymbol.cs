@@ -34,10 +34,19 @@ namespace Ngo.Compiler.Symbols
 
         public MethodSymbol(string name, TypeSymbol receiverType, bool isPointerReceiver,
             IReadOnlyList<ParameterSymbol> parameters, IReadOnlyList<TypeSymbol> returnTypes)
+            : this(name, receiverType, isPointerReceiver,
+                  Array.Empty<TypeParameterSymbol>(), parameters, returnTypes)
+        {
+        }
+
+        public MethodSymbol(string name, TypeSymbol receiverType, bool isPointerReceiver,
+            IReadOnlyList<TypeParameterSymbol> typeParameters,
+            IReadOnlyList<ParameterSymbol> parameters, IReadOnlyList<TypeSymbol> returnTypes)
             : base(name, SymbolKind.Method)
         {
             ReceiverType = receiverType;
             IsPointerReceiver = isPointerReceiver;
+            TypeParameters = typeParameters;
             Parameters = parameters;
             ReturnTypes = returnTypes;
         }
@@ -46,11 +55,15 @@ namespace Ngo.Compiler.Symbols
 
         public bool IsPointerReceiver { get; }
 
+        public IReadOnlyList<TypeParameterSymbol> TypeParameters { get; }
+
         public IReadOnlyList<ParameterSymbol> Parameters { get; }
 
         public IReadOnlyList<TypeSymbol> ReturnTypes { get; }
 
         public TypeSymbol ReturnType =>
             ReturnTypes.Count > 0 ? ReturnTypes[0] : BuiltinTypes.Void;
+
+        public bool IsGeneric => TypeParameters.Count > 0;
     }
 }

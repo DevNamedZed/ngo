@@ -50,7 +50,18 @@ namespace Ngo.Compiler.Ast
         /// </summary>
         public Expression? CallTarget { get; }
 
-        public override TypeSymbol Type => Function.ReturnType;
+        public IReadOnlyList<TypeSymbol>? TypeArguments { get; init; }
+
+        public TypeSymbol? SubstitutedReturnType { get; init; }
+
+        public IReadOnlyList<TypeSymbol>? SubstitutedReturnTypes { get; init; }
+
+        public IReadOnlyList<TypeSymbol> EffectiveReturnTypes =>
+            SubstitutedReturnTypes ?? Function.ReturnTypes;
+
+        public bool IsSpreadArg { get; set; }
+
+        public override TypeSymbol Type => SubstitutedReturnType ?? Function.ReturnType;
 
         public override NodeType NodeType => NodeType.CallExpression;
     }

@@ -86,7 +86,12 @@ namespace Ngo.Compiler.Semantics
                 case LocalSymbol local:
                     return local.Type;
                 case FunctionSymbol func:
-                    return func.ReturnType;
+                {
+                    var paramTypes = new List<TypeSymbol>();
+                    foreach (var p in func.Parameters)
+                        paramTypes.Add(p.Type);
+                    return new FunctionTypeSymbol(paramTypes, func.ReturnTypes);
+                }
                 case ConstantSymbol constant:
                     return constant.Type;
                 case PackageVarSymbol pkgVar:

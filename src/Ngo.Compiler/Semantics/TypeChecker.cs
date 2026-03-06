@@ -200,7 +200,7 @@ namespace Ngo.Compiler.Semantics
 
                 for (int i = 0; i < sourceFunc.ParameterTypes.Count; i++)
                 {
-                    if (sourceFunc.ParameterTypes[i] != targetFunc.ParameterTypes[i])
+                    if (!IsAssignable(sourceFunc.ParameterTypes[i], targetFunc.ParameterTypes[i]))
                     {
                         return false;
                     }
@@ -208,7 +208,7 @@ namespace Ngo.Compiler.Semantics
 
                 for (int i = 0; i < sourceFunc.ReturnTypes.Count; i++)
                 {
-                    if (sourceFunc.ReturnTypes[i] != targetFunc.ReturnTypes[i])
+                    if (!IsAssignable(sourceFunc.ReturnTypes[i], targetFunc.ReturnTypes[i]))
                     {
                         return false;
                     }
@@ -225,6 +225,30 @@ namespace Ngo.Compiler.Semantics
                 if (source is InterfaceTypeSymbol sourceIface && sourceIface.Methods.Count == 0)
                     return true;
                 return Satisfies(source, targetIface);
+            }
+
+            // Instantiated type structural equality: same generic type + same type args
+            if (source is InstantiatedTypeSymbol sourceInst && target is InstantiatedTypeSymbol targetInst)
+            {
+                if (sourceInst.GenericType == targetInst.GenericType
+                    && sourceInst.TypeArguments.Count == targetInst.TypeArguments.Count)
+                {
+                    for (int i = 0; i < sourceInst.TypeArguments.Count; i++)
+                    {
+                        if (!IsAssignable(sourceInst.TypeArguments[i], targetInst.TypeArguments[i]))
+                        {
+                            return false;
+                        }
+                    }
+
+                    return true;
+                }
+            }
+
+            // Type parameter: assignable to itself only (identity checked above)
+            if (source is TypeParameterSymbol || target is TypeParameterSymbol)
+            {
+                return false;
             }
 
             // byte ↔ uint8, rune ↔ int32
@@ -334,6 +358,13 @@ namespace Ngo.Compiler.Semantics
                 && (sourceSlice.ElementType.TypeKind == TypeKind.Uint8
                     || sourceSlice.ElementType.TypeKind == TypeKind.Int32)
                 && target.TypeKind == TypeKind.String)
+            {
+                return true;
+            }
+
+            // Slice → Array conversion (Go 1.20+)
+            if (source is SliceTypeSymbol sliceSrc && target is ArrayTypeSymbol arrTarget
+                && CommonType(sliceSrc.ElementType, arrTarget.ElementType) != null)
             {
                 return true;
             }

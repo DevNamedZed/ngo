@@ -117,6 +117,8 @@ namespace Ngo.Compiler.Semantics
                     return ResolveSelectStatement((SelectStatementSyntax)syntax);
                 case SyntaxKind.LabeledStatement:
                     return ResolveLabeledStatement((LabeledStatementSyntax)syntax);
+                case SyntaxKind.TypeDeclaration:
+                    return ResolveLocalTypeDeclaration((TypeDeclarationSyntax)syntax);
                 default:
                     _context.Errors.ReportError(_context.SpanOf(syntax), ErrorCode.UnsupportedSyntax,
                         $"Statement kind '{syntax.Kind}' is not yet supported");
@@ -850,6 +852,12 @@ namespace Ngo.Compiler.Semantics
                     keyType = chanType.ElementType;
                     valueType = null;
                 }
+                else if (TypeChecker.IsInteger(iterable.Type))
+                {
+                    // Go 1.22: for i := range N — iterate 0..N-1
+                    keyType = BuiltinTypes.Int;
+                    valueType = null;
+                }
                 else
                 {
                     _context.Errors.ReportError(span, ErrorCode.InvalidRange,
@@ -1110,6 +1118,88 @@ namespace Ngo.Compiler.Semantics
             }
 
             return false;
+        }
+
+        private AstNode? ResolveLocalTypeDeclaration(TypeDeclarationSyntax syntax)
+        {
+            // Handle type declarations inside function bodies
+            foreach (var spec in syntax.Specs)
+            {
+                var name = spec.Name.Text;
+
+                if (spec.AssignToken != null)
+                {
+                    // Type alias
+                    var underlying = _typeResolver.ResolveType(spec.Type);
+                    if (underlying == null) underlying = TypeSymbol.Error;
+                    var alias = new TypeSymbol(name, underlying.TypeKind, underlying);
+                    _context.Scope.TryDeclare(alias);
+                    continue;
+                }
+
+                if (spec.Type is StructTypeSyntax structSyntax)
+                {
+                    var structType = new StructTypeSymbol(name, new List<FieldSymbol>());
+                    _context.Scope.TryDeclare(structType);
+
+                    var fields = new List<FieldSymbol>();
+                    int ordinal = 0;
+                    foreach (var fieldSyntax in structSyntax.Fields)
+                    {
+                        var fieldType = _typeResolver.ResolveType(fieldSyntax.Type);
+                        if (fieldType == null) fieldType = TypeSymbol.Error;
+
+                        if (fieldSyntax.Names.HasValue)
+                        {
+                            for (int i = 0; i < fieldSyntax.Names.Value.Count; i++)
+                            {
+                                var fieldName = fieldSyntax.Names.Value[i].Text;
+                                fields.Add(new FieldSymbol(fieldName, fieldType, ordinal++));
+                            }
+                        }
+                        else
+                        {
+                            var embeddedName = fieldType.Name;
+                            fields.Add(new FieldSymbol(embeddedName, fieldType, ordinal++,
+                                isEmbedded: true));
+                        }
+                    }
+
+                    structType.SetFields(fields);
+                    return new TypeDeclaration(structType, _context.SpanOf(spec));
+                }
+
+                if (spec.Type is InterfaceTypeSyntax ifaceSyntax)
+                {
+                    var ifaceType = new InterfaceTypeSymbol(name, new List<MethodSymbol>());
+                    _context.Scope.TryDeclare(ifaceType);
+
+                    var methods = new List<MethodSymbol>();
+                    foreach (var member in ifaceSyntax.Members)
+                    {
+                        if (member is MethodSpecSyntax methodSpec)
+                        {
+                            var parameters = _typeResolver.ResolveParameterList(methodSpec.Parameters);
+                            var returnTypes = _typeResolver.ResolveResultTypes(methodSpec.Result);
+                            var method = new MethodSymbol(methodSpec.Name.Text, ifaceType, false,
+                                parameters, returnTypes);
+                            methods.Add(method);
+                        }
+                    }
+
+                    ifaceType.SetMethods(methods);
+                    return new TypeDeclaration(ifaceType, _context.SpanOf(spec));
+                }
+
+                // Non-struct type definition (e.g., type MyInt int)
+                var resolvedType = _typeResolver.ResolveType(spec.Type);
+                if (resolvedType == null) resolvedType = TypeSymbol.Error;
+                var namedType = new TypeSymbol(name, resolvedType.TypeKind, resolvedType);
+                _context.Scope.TryDeclare(namedType);
+                return new TypeDeclaration(namedType, _context.SpanOf(spec));
+            }
+
+            return null;
         }
     }
 }

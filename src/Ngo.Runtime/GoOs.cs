@@ -48,6 +48,47 @@ namespace Ngo.Runtime
             Environment.SetEnvironmentVariable(key, value);
         }
 
+        public static (string, bool) LookupEnv(string key)
+        {
+            var val = Environment.GetEnvironmentVariable(key);
+            return val != null ? (val, true) : ("", false);
+        }
+
+        public static Slice<string> Environ()
+        {
+            var envVars = Environment.GetEnvironmentVariables();
+            var result = new string[envVars.Count];
+            int i = 0;
+            foreach (System.Collections.DictionaryEntry entry in envVars)
+            {
+                result[i++] = $"{entry.Key}={entry.Value}";
+            }
+
+            return new Slice<string>(result);
+        }
+
+        public static bool IsNotExist(object? err)
+        {
+            if (err is string s)
+                return s.Contains("does not exist") || s.Contains("no such file")
+                    || s.Contains("not found");
+            return false;
+        }
+
+        public static bool IsExist(object? err)
+        {
+            if (err is string s)
+                return s.Contains("already exists");
+            return false;
+        }
+
+        public static bool IsPermission(object? err)
+        {
+            if (err is string s)
+                return s.Contains("permission denied") || s.Contains("access denied");
+            return false;
+        }
+
         // os.Create(name string) (*File, error)
         public static (GoFile, object?) Create(string name)
         {
@@ -148,10 +189,147 @@ namespace Ngo.Runtime
             }
         }
 
+        // os.Rename(oldpath, newpath string) error
+        public static object? Rename(string oldpath, string newpath)
+        {
+            try
+            {
+                File.Move(oldpath, newpath);
+                return null;
+            }
+            catch (Exception ex)
+            {
+                return ex.Message;
+            }
+        }
+
+        // os.Stat(name string) (FileInfo, error)
+        public static (GoFileInfo, object?) Stat(string name)
+        {
+            try
+            {
+                if (File.Exists(name))
+                {
+                    var info = new FileInfo(name);
+                    return (new GoFileInfo(info.Name, info.Length, info.Attributes.HasFlag(FileAttributes.Directory)), null);
+                }
+                if (Directory.Exists(name))
+                {
+                    return (new GoFileInfo(Path.GetFileName(name), 0, true), null);
+                }
+                return (GoFileInfo.Empty, $"stat {name}: no such file or directory");
+            }
+            catch (Exception ex)
+            {
+                return (GoFileInfo.Empty, ex.Message);
+            }
+        }
+
+        // os.TempDir() string
+        public static string TempDir()
+        {
+            return Path.GetTempPath();
+        }
+
+        // os.UserHomeDir() (string, error)
+        public static (string, object?) UserHomeDir()
+        {
+            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            if (string.IsNullOrEmpty(home))
+                return ("", "os: user home directory not found");
+            return (home, null);
+        }
+
+        // os.ReadDir(name string) ([]DirEntry, error)
+        public static (Slice<GoDirEntry>, object?) ReadDir(string name)
+        {
+            try
+            {
+                var entries = new System.Collections.Generic.List<GoDirEntry>();
+                foreach (var dir in Directory.GetDirectories(name))
+                {
+                    entries.Add(new GoDirEntry(Path.GetFileName(dir), true));
+                }
+                foreach (var file in Directory.GetFiles(name))
+                {
+                    entries.Add(new GoDirEntry(Path.GetFileName(file), false));
+                }
+                entries.Sort((a, b) => string.Compare(a.NameValue, b.NameValue, StringComparison.Ordinal));
+                return (new Slice<GoDirEntry>(entries.ToArray()), null);
+            }
+            catch (Exception ex)
+            {
+                return (new Slice<GoDirEntry>(Array.Empty<GoDirEntry>()), ex.Message);
+            }
+        }
+
+        // os.Chmod(name string, mode FileMode) error
+        public static object? Chmod(string name, long mode)
+        {
+            try
+            {
+                // Simplified: .NET doesn't have full Unix chmod
+                if ((mode & 0x80) == 0) // no owner write
+                {
+                    File.SetAttributes(name, File.GetAttributes(name) | FileAttributes.ReadOnly);
+                }
+                else
+                {
+                    var attrs = File.GetAttributes(name);
+                    if ((attrs & FileAttributes.ReadOnly) != 0)
+                        File.SetAttributes(name, attrs & ~FileAttributes.ReadOnly);
+                }
+                return null;
+            }
+            catch (Exception ex)
+            {
+                return ex.Message;
+            }
+        }
+
         // os.Stdin, os.Stdout, os.Stderr
         public static readonly GoFile Stdin = new GoFile(Console.OpenStandardInput(), "/dev/stdin");
         public static readonly GoFile Stdout = new GoFile(Console.OpenStandardOutput(), "/dev/stdout");
         public static readonly GoFile Stderr = new GoFile(Console.OpenStandardError(), "/dev/stderr");
+    }
+
+    public sealed class GoFileInfo
+    {
+        public static readonly GoFileInfo Empty = new GoFileInfo("", 0, false);
+
+        public string NameValue { get; }
+        public long SizeValue { get; }
+        public bool IsDirValue { get; }
+
+        public GoFileInfo(string name, long size, bool isDir)
+        {
+            NameValue = name;
+            SizeValue = size;
+            IsDirValue = isDir;
+        }
+
+        public string Name() => NameValue;
+        public long Size() => SizeValue;
+        public bool IsDir() => IsDirValue;
+
+        public override string ToString() => NameValue;
+    }
+
+    public sealed class GoDirEntry
+    {
+        public string NameValue { get; }
+        public bool IsDirValue { get; }
+
+        public GoDirEntry(string name, bool isDir)
+        {
+            NameValue = name;
+            IsDirValue = isDir;
+        }
+
+        public string Name() => NameValue;
+        public bool IsDir() => IsDirValue;
+
+        public override string ToString() => NameValue;
     }
 
     /// <summary>

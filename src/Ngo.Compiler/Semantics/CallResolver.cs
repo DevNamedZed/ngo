@@ -50,6 +50,21 @@ namespace Ngo.Compiler.Semantics
         {
             var span = _context.SpanOf(syntax);
 
+            // Explicit type arguments: Max[int](3, 5) or Pair[int, string](1, "a")
+            if (syntax.Function is TypeArgumentListSyntax typeArgListSyntax)
+            {
+                return ResolveGenericCallWithExplicitArgs(typeArgListSyntax, syntax, span);
+            }
+
+            if (syntax.Function is IndexExpressionSyntax indexSyntax)
+            {
+                var result = TryResolveGenericCallWithSingleArg(indexSyntax, syntax, span);
+                if (result != null)
+                {
+                    return result;
+                }
+            }
+
             // Check if this is a type conversion or builtin function
             if (syntax.Function is IdentifierNameSyntax idSyntax)
             {
@@ -82,6 +97,9 @@ namespace Ngo.Compiler.Semantics
                     case "complex": return _builtinResolver.ResolveComplex(syntax, span);
                     case "real": return _builtinResolver.ResolveReal(syntax, span);
                     case "imag": return _builtinResolver.ResolveImag(syntax, span);
+                    case "min": return _builtinResolver.ResolveMin(syntax, span);
+                    case "max": return _builtinResolver.ResolveMax(syntax, span);
+                    case "clear": return _builtinResolver.ResolveClear(syntax, span);
                     case "close":
                     case "panic":
                     case "recover":
@@ -205,6 +223,12 @@ namespace Ngo.Compiler.Semantics
             if (funcExpr is IdentifierExpression idExpr && idExpr.Symbol is FunctionSymbol funcSymbol)
             {
                 var arguments = BindArguments(syntax);
+
+                // Generic function with type inference: Max(3, 5) → infer T=int
+                if (funcSymbol.IsGeneric)
+                {
+                    return ResolveGenericCallWithInference(funcSymbol, arguments, span);
+                }
 
                 if (funcSymbol.IsVariadic)
                 {
@@ -433,7 +457,183 @@ namespace Ngo.Compiler.Semantics
                 arguments.Add(_resolveExpression(syntax.Arguments[i]));
             }
 
+            // Multi-return spread: f(g()) where g returns multiple values
+            if (arguments.Count == 1
+                && arguments[0] is CallExpression innerCall
+                && innerCall.Function.ReturnTypes.Count > 1)
+            {
+                innerCall.IsSpreadArg = true;
+                var spread = new List<Expression> { innerCall };
+                for (int i = 1; i < innerCall.Function.ReturnTypes.Count; i++)
+                {
+                    spread.Add(new SpreadElement(innerCall, i,
+                        innerCall.Function.ReturnTypes[i], innerCall.Span));
+                }
+
+                return spread;
+            }
+
             return arguments;
+        }
+
+        private Expression ResolveGenericCallWithExplicitArgs(
+            TypeArgumentListSyntax typeArgListSyntax,
+            CallExpressionSyntax syntax,
+            TextSpan span)
+        {
+            // Resolve the base function
+            var funcExpr = _resolveExpression(typeArgListSyntax.Expression);
+            if (funcExpr is ErrorExpression)
+            {
+                return funcExpr;
+            }
+
+            if (!(funcExpr is IdentifierExpression idExpr && idExpr.Symbol is FunctionSymbol funcSymbol))
+            {
+                _context.Errors.ReportError(span, ErrorCode.InvalidOperation,
+                    "Type arguments can only be applied to generic functions");
+                return new ErrorExpression("Not a generic function", span);
+            }
+
+            if (!funcSymbol.IsGeneric)
+            {
+                _context.Errors.ReportError(span, ErrorCode.WrongTypeArgumentCount,
+                    $"Function '{funcSymbol.Name}' is not generic");
+                return new ErrorExpression("Not generic", span);
+            }
+
+            // Resolve type arguments
+            var typeArgs = new List<TypeSymbol>();
+            for (int i = 0; i < typeArgListSyntax.TypeArguments.Count; i++)
+            {
+                var resolved = _typeResolver.ResolveType(typeArgListSyntax.TypeArguments[i]);
+                typeArgs.Add(resolved ?? TypeSymbol.Error);
+            }
+
+            return ResolveGenericCallWithTypeArgs(funcSymbol, typeArgs, syntax, span);
+        }
+
+        private Expression? TryResolveGenericCallWithSingleArg(
+            IndexExpressionSyntax indexSyntax,
+            CallExpressionSyntax syntax,
+            TextSpan span)
+        {
+            // Check if the base expression is a generic function
+            if (indexSyntax.Expression is IdentifierNameSyntax idSyntax)
+            {
+                var symbol = _context.Scope.Lookup(idSyntax.Identifier.Text);
+                if (symbol is FunctionSymbol funcSymbol && funcSymbol.IsGeneric)
+                {
+                    var typeArg = _typeResolver.ResolveType(indexSyntax.Index);
+                    if (typeArg == null)
+                    {
+                        typeArg = TypeSymbol.Error;
+                    }
+
+                    return ResolveGenericCallWithTypeArgs(funcSymbol, new[] { typeArg }, syntax, span);
+                }
+            }
+
+            return null;
+        }
+
+        private Expression ResolveGenericCallWithTypeArgs(
+            FunctionSymbol funcSymbol,
+            IReadOnlyList<TypeSymbol> typeArgs,
+            CallExpressionSyntax syntax,
+            TextSpan span)
+        {
+            // Validate type argument count
+            if (typeArgs.Count != funcSymbol.TypeParameters.Count)
+            {
+                _context.Errors.ReportError(span, ErrorCode.WrongTypeArgumentCount,
+                    $"Function '{funcSymbol.Name}' expects {funcSymbol.TypeParameters.Count} type arguments, got {typeArgs.Count}");
+                return new ErrorExpression("Wrong type argument count", span);
+            }
+
+            // Validate constraints
+            for (int i = 0; i < typeArgs.Count; i++)
+            {
+                if (typeArgs[i] != TypeSymbol.Error &&
+                    !ConstraintChecker.Satisfies(typeArgs[i], funcSymbol.TypeParameters[i].Constraint))
+                {
+                    _context.Errors.ReportError(span, ErrorCode.ConstraintNotSatisfied,
+                        $"Type '{typeArgs[i].Name}' does not satisfy constraint '{funcSymbol.TypeParameters[i].Constraint.Name}'");
+                }
+            }
+
+            // Substitute type parameters in parameter and return types
+            var substParams = TypeSubstituter.SubstituteParams(
+                funcSymbol.Parameters, funcSymbol.TypeParameters, typeArgs);
+            var substReturnTypes = TypeSubstituter.SubstituteTypes(
+                funcSymbol.ReturnTypes, funcSymbol.TypeParameters, typeArgs);
+
+            // Bind and validate arguments
+            var arguments = BindArguments(syntax);
+            var substFunc = new FunctionSymbol(funcSymbol.Name, funcSymbol.TypeParameters,
+                substParams, substReturnTypes, funcSymbol.IsVariadic, funcSymbol.PackageName);
+
+            if (!ValidateArguments(arguments, substParams, $"Function '{funcSymbol.Name}'", span))
+            {
+                if (arguments.Count != substParams.Count)
+                {
+                    return new ErrorExpression("Wrong argument count", span);
+                }
+            }
+
+            var substReturnType = substReturnTypes.Count > 0 ? substReturnTypes[0] : BuiltinTypes.Void;
+            return new CallExpression(funcSymbol, arguments, span)
+            {
+                TypeArguments = typeArgs,
+                SubstitutedReturnType = substReturnType,
+                SubstitutedReturnTypes = substReturnTypes
+            };
+        }
+
+        private Expression ResolveGenericCallWithInference(
+            FunctionSymbol funcSymbol,
+            IReadOnlyList<Expression> arguments,
+            TextSpan span)
+        {
+            var typeArgs = TypeInferrer.InferTypeArguments(funcSymbol, arguments);
+            if (typeArgs == null)
+            {
+                _context.Errors.ReportError(span, ErrorCode.CannotInferTypeArguments,
+                    $"Cannot infer type arguments for generic function '{funcSymbol.Name}'");
+                return new ErrorExpression("Cannot infer type args", span);
+            }
+
+            // Validate constraints
+            for (int i = 0; i < typeArgs.Count; i++)
+            {
+                if (!ConstraintChecker.Satisfies(typeArgs[i], funcSymbol.TypeParameters[i].Constraint))
+                {
+                    _context.Errors.ReportError(span, ErrorCode.ConstraintNotSatisfied,
+                        $"Type '{typeArgs[i].Name}' does not satisfy constraint '{funcSymbol.TypeParameters[i].Constraint.Name}'");
+                }
+            }
+
+            // Substitute and validate
+            var substParams = TypeSubstituter.SubstituteParams(
+                funcSymbol.Parameters, funcSymbol.TypeParameters, typeArgs);
+            var substReturnTypes = TypeSubstituter.SubstituteTypes(
+                funcSymbol.ReturnTypes, funcSymbol.TypeParameters, typeArgs);
+
+            if (!ValidateArguments(arguments, substParams, $"Function '{funcSymbol.Name}'", span))
+            {
+                if (arguments.Count != substParams.Count)
+                {
+                    return new ErrorExpression("Wrong argument count", span);
+                }
+            }
+
+            var substReturnType = substReturnTypes.Count > 0 ? substReturnTypes[0] : BuiltinTypes.Void;
+            return new CallExpression(funcSymbol, arguments, span)
+            {
+                TypeArguments = typeArgs,
+                SubstitutedReturnType = substReturnType,
+                SubstitutedReturnTypes = substReturnTypes
+            };
         }
     }
 }

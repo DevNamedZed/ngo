@@ -69,6 +69,11 @@ namespace Ngo.Compiler.Semantics
                 }
 
                 var symbol = _context.Scope.Lookup(idSyntax.Identifier.Text);
+                if (symbol is TypeParameterSymbol typeParamSymbol)
+                {
+                    return typeParamSymbol;
+                }
+
                 if (symbol is TypeSymbol typeSymbol)
                 {
                     return typeSymbol;
@@ -77,6 +82,44 @@ namespace Ngo.Compiler.Semantics
                 _context.Errors.ReportError(_context.SpanOf(syntax), ErrorCode.UndeclaredName,
                     $"Undefined type '{idSyntax.Identifier.Text}'");
                 return null;
+            }
+
+            // Type instantiation with multiple type args: Type[int, string]
+            if (syntax is TypeArgumentListSyntax typeArgListSyntax)
+            {
+                var baseType = ResolveType(typeArgListSyntax.Expression);
+                if (baseType == null)
+                    return null;
+
+                var typeArgs = new List<TypeSymbol>();
+                for (int i = 0; i < typeArgListSyntax.TypeArguments.Count; i++)
+                {
+                    var arg = ResolveType(typeArgListSyntax.TypeArguments[i]);
+                    typeArgs.Add(arg ?? TypeSymbol.Error);
+                }
+
+                return new InstantiatedTypeSymbol(baseType, typeArgs);
+            }
+
+            // Single type arg instantiation: Type[int] — comes as IndexExpressionSyntax
+            // when the base resolves to a generic type
+            if (syntax is IndexExpressionSyntax indexSyntax)
+            {
+                // Check if this is a type instantiation
+                if (indexSyntax.Expression is IdentifierNameSyntax baseIdSyntax)
+                {
+                    var baseSym = _context.Scope.Lookup(baseIdSyntax.Identifier.Text);
+                    if (baseSym is StructTypeSymbol sts && sts.IsGeneric)
+                    {
+                        var argType = ResolveType(indexSyntax.Index);
+                        return new InstantiatedTypeSymbol(sts, new[] { argType ?? TypeSymbol.Error });
+                    }
+                    if (baseSym is InterfaceTypeSymbol its && its.IsGeneric)
+                    {
+                        var argType = ResolveType(indexSyntax.Index);
+                        return new InstantiatedTypeSymbol(its, new[] { argType ?? TypeSymbol.Error });
+                    }
+                }
             }
 
             if (syntax is PointerTypeSyntax pointerSyntax)

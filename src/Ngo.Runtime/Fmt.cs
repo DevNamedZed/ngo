@@ -141,8 +141,29 @@ namespace Ngo.Runtime
             return sb.ToString();
         }
 
-        public static string Errorf(string format, params object?[] args)
+        public static object Errorf(string format, params object?[] args)
         {
+            // Check for %w verb (error wrapping)
+            int wIdx = format.IndexOf("%w");
+            if (wIdx >= 0)
+            {
+                // Find which arg corresponds to %w
+                int argIndex = 0;
+                for (int i = 0; i < wIdx; i++)
+                {
+                    if (format[i] == '%' && i + 1 < format.Length && format[i + 1] != '%')
+                        argIndex++;
+                }
+
+                object? wrappedErr = argIndex < args.Length ? args[argIndex] : null;
+
+                // Replace %w with %v for display
+                var displayFormat = format.Substring(0, wIdx) + "%v" + format.Substring(wIdx + 2);
+                string message = Sprintf(displayFormat, args);
+
+                return new WrappedError(message, wrappedErr);
+            }
+
             return Sprintf(format, args);
         }
 
@@ -307,6 +328,17 @@ namespace Ngo.Runtime
         {
             if (arg == null) return "<nil>";
             if (arg is bool b) return b ? "true" : "false";
+
+            // Stringer dispatch: check for String() method (Go's fmt.Stringer interface)
+            var type = arg.GetType();
+            var stringMethod = type.GetMethod("String", Type.EmptyTypes);
+            if (stringMethod != null && stringMethod.ReturnType == typeof(string)
+                && stringMethod.DeclaringType != typeof(object))
+            {
+                var result = stringMethod.Invoke(arg, null);
+                if (result is string s) return s;
+            }
+
             return arg.ToString() ?? "";
         }
 
@@ -445,6 +477,108 @@ namespace Ngo.Runtime
             var slice = new Slice<byte>(bytes);
             var (n, err) = w.Write(slice);
             return ((long)n, err);
+        }
+
+        /// <summary>
+        /// fmt.Sscan(str string, a ...interface{}) (n int, err error)
+        /// Scans space-separated values from a string into the provided pointers.
+        /// </summary>
+        public static (long, object?) Sscan(string str, params object?[] args)
+        {
+            var parts = str.Split((char[])null!, StringSplitOptions.RemoveEmptyEntries);
+            int n = 0;
+            for (int i = 0; i < args.Length && i < parts.Length; i++)
+            {
+                if (ScanValue(parts[i], args[i]))
+                    n++;
+                else
+                    return ((long)n, "scan error");
+            }
+            return ((long)n, null);
+        }
+
+        /// <summary>
+        /// fmt.Sscanf(str string, format string, a ...interface{}) (n int, err error)
+        /// Scans values from str according to format into the provided pointers.
+        /// Simplified: extracts whitespace-separated tokens and assigns by type.
+        /// </summary>
+        public static (long, object?) Sscanf(string str, string format, params object?[] args)
+        {
+            // Simplified: ignore format verbs and just scan whitespace-separated tokens
+            return Sscan(str, args);
+        }
+
+        /// <summary>
+        /// fmt.Sscanln(str string, a ...interface{}) (n int, err error)
+        /// Like Sscan but stops at a newline.
+        /// </summary>
+        public static (long, object?) Sscanln(string str, params object?[] args)
+        {
+            var line = str.Split('\n')[0];
+            return Sscan(line, args);
+        }
+
+        /// <summary>
+        /// fmt.Scan(a ...interface{}) (n int, err error)
+        /// Scans space-separated values from stdin into the provided pointers.
+        /// </summary>
+        public static (long, object?) Scan(params object?[] args)
+        {
+            var line = Console.ReadLine();
+            if (line == null)
+                return (0L, "EOF");
+            return Sscan(line, args);
+        }
+
+        /// <summary>
+        /// fmt.Scanf(format string, a ...interface{}) (n int, err error)
+        /// Scans values from stdin according to format into the provided pointers.
+        /// </summary>
+        public static (long, object?) Scanf(string format, params object?[] args)
+        {
+            var line = Console.ReadLine();
+            if (line == null)
+                return (0L, "EOF");
+            return Sscanf(line, format, args);
+        }
+
+        /// <summary>
+        /// fmt.Scanln(a ...interface{}) (n int, err error)
+        /// Scans a single line from stdin into the provided pointers.
+        /// </summary>
+        public static (long, object?) Scanln(params object?[] args)
+        {
+            var line = Console.ReadLine();
+            if (line == null)
+                return (0L, "EOF");
+            return Sscanln(line, args);
+        }
+
+        private static bool ScanValue(string token, object? target)
+        {
+            if (target is Ptr<long> pi)
+            {
+                if (long.TryParse(token, out var v)) { pi.Value = v; return true; }
+                return false;
+            }
+            if (target is Ptr<double> pf)
+            {
+                if (double.TryParse(token, System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out var v))
+                    { pf.Value = v; return true; }
+                return false;
+            }
+            if (target is Ptr<bool> pb)
+            {
+                if (bool.TryParse(token, out var v)) { pb.Value = v; return true; }
+                return false;
+            }
+            if (target is Ptr<int> p32)
+            {
+                if (int.TryParse(token, out var v)) { p32.Value = v; return true; }
+                return false;
+            }
+            return false;
         }
     }
 }

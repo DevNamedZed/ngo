@@ -21,6 +21,7 @@ using System.Reflection;
 using System.Reflection.Emit;
 using Ngo.Compiler.Ast;
 using Ngo.Compiler.Symbols;
+using Ngo.Runtime;
 
 namespace Ngo.Compiler.Emit
 {
@@ -56,10 +57,30 @@ namespace Ngo.Compiler.Emit
 
         private void EmitStructType(StructTypeSymbol structType)
         {
+            var typeVisibility = (_ctx.Options.IsLibrary && !_ctx.IsExported(structType.Name))
+                ? TypeAttributes.NotPublic
+                : TypeAttributes.Public;
             var typeBuilder = _ctx.Module.DefineType(
-                structType.Name,
-                TypeAttributes.Public | TypeAttributes.SequentialLayout | TypeAttributes.Sealed,
+                _ctx.QualifyName(structType.Name),
+                typeVisibility | TypeAttributes.SequentialLayout | TypeAttributes.Sealed,
                 typeof(System.ValueType));
+
+            // Define generic type parameters if this is a generic struct
+            if (structType.IsGeneric)
+            {
+                var paramNames = new string[structType.TypeParameters.Count];
+                for (int i = 0; i < structType.TypeParameters.Count; i++)
+                {
+                    paramNames[i] = structType.TypeParameters[i].Name;
+                }
+
+                var genericParams = typeBuilder.DefineGenericParameters(paramNames);
+                for (int i = 0; i < structType.TypeParameters.Count; i++)
+                {
+                    _ctx.Mapper.Register(structType.TypeParameters[i], genericParams[i]);
+                    ApplyConstraints(genericParams[i], structType.TypeParameters[i].Constraint);
+                }
+            }
 
             // Register early so self-referential fields (e.g. Next *Node) can resolve
             _ctx.Mapper.Register(structType, typeBuilder);
@@ -67,17 +88,55 @@ namespace Ngo.Compiler.Emit
             foreach (var field in structType.Fields)
             {
                 var fieldType = _ctx.Mapper.Map(field.Type);
-                var fb = typeBuilder.DefineField(field.Name, fieldType, FieldAttributes.Public);
+                var fieldVisibility = (_ctx.Options.IsLibrary && !_ctx.IsExported(field.Name))
+                    ? FieldAttributes.Assembly
+                    : FieldAttributes.Public;
+                var fb = typeBuilder.DefineField(field.Name, fieldType, fieldVisibility);
+                if (field.Tag != null)
+                {
+                    var tagCtor = typeof(GoTagAttribute).GetConstructor(new[] { typeof(string) })!;
+                    fb.SetCustomAttribute(new CustomAttributeBuilder(tagCtor, new object[] { field.Tag }));
+                }
                 _ctx.StructFields[field] = fb;
             }
+            // If the struct has a String() string method, add a ToString() override
+            // This enables fmt.Stringer dispatch via FormatValue reflection
+            var stringMethod = structType.LookupMethod("String");
+            if (stringMethod != null && stringMethod.Parameters.Count == 0
+                && stringMethod.ReturnTypes.Count == 1
+                && stringMethod.ReturnTypes[0].TypeKind == TypeKind.String)
+            {
+                // Pre-create the static method that will hold the String() body
+                var staticMethodName = structType.Name + "_String";
+                var staticStringMethod = _ctx.PackageType.DefineMethod(staticMethodName,
+                    MethodAttributes.Public | MethodAttributes.Static,
+                    typeof(string), new[] { typeBuilder });
+                _ctx.Methods[stringMethod] = staticStringMethod;
+
+                // Define ToString() override on the struct that delegates to the static method
+                var toString = typeBuilder.DefineMethod("ToString",
+                    MethodAttributes.Public | MethodAttributes.Virtual | MethodAttributes.HideBySig,
+                    typeof(string), Type.EmptyTypes);
+                var il = toString.GetILGenerator();
+                il.Emit(OpCodes.Ldarg_0);
+                il.Emit(OpCodes.Ldobj, typeBuilder);
+                il.Emit(OpCodes.Call, staticStringMethod);
+                il.Emit(OpCodes.Ret);
+                typeBuilder.DefineMethodOverride(toString,
+                    typeof(object).GetMethod("ToString")!);
+            }
+
             _ctx.StructTypes[structType] = typeBuilder;
         }
 
         private void EmitInterfaceType(InterfaceTypeSymbol interfaceType)
         {
+            var typeVisibility = (_ctx.Options.IsLibrary && !_ctx.IsExported(interfaceType.Name))
+                ? TypeAttributes.NotPublic
+                : TypeAttributes.Public;
             var typeBuilder = _ctx.Module.DefineType(
-                interfaceType.Name,
-                TypeAttributes.Public | TypeAttributes.Interface | TypeAttributes.Abstract);
+                _ctx.QualifyName(interfaceType.Name),
+                typeVisibility | TypeAttributes.Interface | TypeAttributes.Abstract);
 
             foreach (var method in interfaceType.Methods)
             {
@@ -101,15 +160,6 @@ namespace Ngo.Compiler.Emit
 
         public void EmitFunction(FunctionDeclaration func)
         {
-            var parameters = func.Symbol.Parameters;
-            var paramTypes = new Type[parameters.Count];
-            for (int i = 0; i < parameters.Count; i++)
-            {
-                paramTypes[i] = _ctx.Mapper.Map(parameters[i].Type);
-            }
-
-            var returnType = _ctx.Mapper.MapReturnType(func.Symbol.ReturnTypes);
-
             // Go allows multiple init() functions — give each a unique IL name
             var methodName = func.Symbol.Name;
             if (methodName == "init")
@@ -117,59 +167,205 @@ namespace Ngo.Compiler.Emit
                 methodName = "init$" + _initCounter++;
             }
 
-            var method = _ctx.PackageType.DefineMethod(
-                methodName,
-                MethodAttributes.Public | MethodAttributes.Static,
-                returnType,
-                paramTypes);
+            var isInitOrMain = methodName.StartsWith("init$") || methodName == "main";
+            var methodVisibility = (_ctx.Options.IsLibrary && !isInitOrMain && !_ctx.IsExported(func.Symbol.Name))
+                ? MethodAttributes.Assembly
+                : MethodAttributes.Public;
 
-            for (int i = 0; i < parameters.Count; i++)
+            if (func.Symbol.IsGeneric)
             {
-                method.DefineParameter(i + 1, ParameterAttributes.None, parameters[i].Name);
-            }
+                // Generic function: define method with placeholder types first,
+                // then add generic parameters, then set real types
+                var method = _ctx.PackageType.DefineMethod(
+                    methodName,
+                    methodVisibility | MethodAttributes.Static);
 
-            _ctx.Methods[func.Symbol] = method;
+                var typeParams = func.Symbol.TypeParameters;
+                var paramNames = new string[typeParams.Count];
+                for (int i = 0; i < typeParams.Count; i++)
+                {
+                    paramNames[i] = typeParams[i].Name;
+                }
+
+                var genericParams = method.DefineGenericParameters(paramNames);
+                for (int i = 0; i < typeParams.Count; i++)
+                {
+                    _ctx.Mapper.Register(typeParams[i], genericParams[i]);
+                    ApplyConstraints(genericParams[i], typeParams[i].Constraint);
+                }
+
+                // Now set return type and parameter types (type params now resolve)
+                var parameters = func.Symbol.Parameters;
+                var paramTypes = new Type[parameters.Count];
+                for (int i = 0; i < parameters.Count; i++)
+                {
+                    paramTypes[i] = _ctx.Mapper.Map(parameters[i].Type);
+                }
+
+                var returnType = _ctx.Mapper.MapReturnType(func.Symbol.ReturnTypes);
+                method.SetReturnType(returnType);
+                method.SetParameters(paramTypes);
+
+                for (int i = 0; i < parameters.Count; i++)
+                {
+                    method.DefineParameter(i + 1, ParameterAttributes.None, parameters[i].Name);
+                }
+
+                _ctx.Methods[func.Symbol] = method;
+            }
+            else
+            {
+                var parameters = func.Symbol.Parameters;
+                var paramTypes = new Type[parameters.Count];
+                for (int i = 0; i < parameters.Count; i++)
+                {
+                    paramTypes[i] = _ctx.Mapper.Map(parameters[i].Type);
+                }
+
+                var returnType = _ctx.Mapper.MapReturnType(func.Symbol.ReturnTypes);
+                var method = _ctx.PackageType.DefineMethod(
+                    methodName,
+                    methodVisibility | MethodAttributes.Static,
+                    returnType,
+                    paramTypes);
+
+                for (int i = 0; i < parameters.Count; i++)
+                {
+                    method.DefineParameter(i + 1, ParameterAttributes.None, parameters[i].Name);
+                }
+
+                _ctx.Methods[func.Symbol] = method;
+            }
         }
 
         public void EmitMethod(MethodDeclaration decl)
         {
+            // Skip if already pre-created (e.g., Stringer ToString override)
+            if (_ctx.Methods.ContainsKey(decl.Symbol))
+                return;
+
             // Methods are emitted as static methods on the package type
             // with the receiver as the first parameter
-            var receiverType = _ctx.Mapper.Map(decl.Receiver.Type);
-            var parameters = decl.Symbol.Parameters;
-            var paramTypes = new Type[parameters.Count + 1];
-            paramTypes[0] = receiverType;
-            for (int i = 0; i < parameters.Count; i++)
-            {
-                paramTypes[i + 1] = _ctx.Mapper.Map(parameters[i].Type);
-            }
-
-            var returnType = _ctx.Mapper.MapReturnType(decl.Symbol.ReturnTypes);
 
             // Name format: ReceiverType_MethodName
             var methodName = $"{decl.Symbol.ReceiverType.Name}_{decl.Symbol.Name}";
-            var method = _ctx.PackageType.DefineMethod(
-                methodName,
-                MethodAttributes.Public | MethodAttributes.Static,
-                returnType,
-                paramTypes);
+            var methodVisibility = (_ctx.Options.IsLibrary && !_ctx.IsExported(decl.Symbol.Name))
+                ? MethodAttributes.Assembly
+                : MethodAttributes.Public;
 
-            method.DefineParameter(1, ParameterAttributes.None, decl.Receiver.Name);
-            for (int i = 0; i < parameters.Count; i++)
+            // Check if receiver type is generic — if so, mirror type params on method
+            var receiverBaseType = decl.Symbol.ReceiverType;
+            if (receiverBaseType is PointerTypeSymbol ptrSym)
             {
-                method.DefineParameter(i + 2, ParameterAttributes.None, parameters[i].Name);
+                receiverBaseType = ptrSym.ElementType;
             }
 
-            _ctx.Methods[decl.Symbol] = method;
+            StructTypeSymbol? genericStruct = receiverBaseType is StructTypeSymbol sts && sts.IsGeneric
+                ? sts
+                : null;
+
+            if (genericStruct != null)
+            {
+                var method = _ctx.PackageType.DefineMethod(
+                    methodName,
+                    methodVisibility | MethodAttributes.Static);
+
+                // Mirror the type's generic parameters onto the method
+                var typeParams = genericStruct.TypeParameters;
+                var paramNames = new string[typeParams.Count];
+                for (int i = 0; i < typeParams.Count; i++)
+                {
+                    paramNames[i] = typeParams[i].Name;
+                }
+
+                var genericParams = method.DefineGenericParameters(paramNames);
+                for (int i = 0; i < typeParams.Count; i++)
+                {
+                    _ctx.Mapper.Register(typeParams[i], genericParams[i]);
+                    ApplyConstraints(genericParams[i], typeParams[i].Constraint);
+                }
+
+                // Now set types (type params now resolve)
+                var receiverType = _ctx.Mapper.Map(decl.Receiver.Type);
+                var parameters = decl.Symbol.Parameters;
+                var paramTypes = new Type[parameters.Count + 1];
+                paramTypes[0] = receiverType;
+                for (int i = 0; i < parameters.Count; i++)
+                {
+                    paramTypes[i + 1] = _ctx.Mapper.Map(parameters[i].Type);
+                }
+
+                var returnType = _ctx.Mapper.MapReturnType(decl.Symbol.ReturnTypes);
+                method.SetReturnType(returnType);
+                method.SetParameters(paramTypes);
+
+                method.DefineParameter(1, ParameterAttributes.None, decl.Receiver.Name);
+                for (int i = 0; i < parameters.Count; i++)
+                {
+                    method.DefineParameter(i + 2, ParameterAttributes.None, parameters[i].Name);
+                }
+
+                _ctx.Methods[decl.Symbol] = method;
+            }
+            else
+            {
+                var receiverType = _ctx.Mapper.Map(decl.Receiver.Type);
+                var parameters = decl.Symbol.Parameters;
+                var paramTypes = new Type[parameters.Count + 1];
+                paramTypes[0] = receiverType;
+                for (int i = 0; i < parameters.Count; i++)
+                {
+                    paramTypes[i + 1] = _ctx.Mapper.Map(parameters[i].Type);
+                }
+
+                var returnType = _ctx.Mapper.MapReturnType(decl.Symbol.ReturnTypes);
+                var method = _ctx.PackageType.DefineMethod(
+                    methodName,
+                    methodVisibility | MethodAttributes.Static,
+                    returnType,
+                    paramTypes);
+
+                method.DefineParameter(1, ParameterAttributes.None, decl.Receiver.Name);
+                for (int i = 0; i < parameters.Count; i++)
+                {
+                    method.DefineParameter(i + 2, ParameterAttributes.None, parameters[i].Name);
+                }
+
+                _ctx.Methods[decl.Symbol] = method;
+            }
+        }
+
+        private static void ApplyConstraints(
+            GenericTypeParameterBuilder genericParam,
+            Symbols.ConstraintInfo constraint)
+        {
+            // any, comparable, union types → unconstrained in .NET
+            if (constraint == Symbols.ConstraintInfo.Any || constraint == Symbols.ConstraintInfo.Comparable)
+            {
+                return;
+            }
+
+            // Union type elements can't be expressed in .NET
+            if (constraint.TypeElements.Count > 0)
+            {
+                return;
+            }
+
+            // Interface method constraints → SetInterfaceConstraints
+            // Only if we can map the constraint to a .NET interface type
+            // For now, leave unconstrained (Go validates at semantic analysis level)
         }
 
         public void EmitPackageVar(VarDeclaration decl)
         {
             var fieldType = _ctx.Mapper.Map(decl.Symbol.Type);
+            var fieldVisibility = (_ctx.Options.IsLibrary && !_ctx.IsExported(decl.Symbol.Name))
+                ? FieldAttributes.Assembly
+                : FieldAttributes.Public;
             var field = _ctx.PackageType.DefineField(
                 decl.Symbol.Name,
                 fieldType,
-                FieldAttributes.Public | FieldAttributes.Static);
+                fieldVisibility | FieldAttributes.Static);
             _ctx.PackageFields[decl.Symbol] = field;
         }
 
@@ -189,7 +385,7 @@ namespace Ngo.Compiler.Emit
             var wrapperName = $"{concreteType.Name}__{interfaceType.Name}__Wrapper";
 
             var wrapperBuilder = _ctx.Module.DefineType(
-                wrapperName,
+                _ctx.QualifyName(wrapperName),
                 TypeAttributes.Public | TypeAttributes.Sealed,
                 typeof(object),
                 new[] { interfaceClrType });
@@ -318,6 +514,11 @@ namespace Ngo.Compiler.Emit
             _ctx.WrapperTypes[key] = (wrapperType, ctor);
 
             return wrapperType;
+        }
+
+        public void EmitStringerOverrides(System.Collections.Generic.IReadOnlyList<MethodDeclaration> methods)
+        {
+            // No-op: stringer overrides are now emitted inline during EmitStructType
         }
     }
 }

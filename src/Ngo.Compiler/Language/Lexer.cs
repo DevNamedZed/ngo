@@ -377,6 +377,8 @@ namespace Ngo.Compiler.Language
                 case ',':  _pos++; return SyntaxKind.CommaToken;
                 case ';':  _pos++; return SyntaxKind.SemicolonToken;
 
+                case '~':  _pos++; return SyntaxKind.TildeToken;
+
                 case '\'': return ScanRuneLiteral(out value);
                 case '"':  return ScanStringLiteral(out value);
                 case '`':  return ScanRawStringLiteral(out value);

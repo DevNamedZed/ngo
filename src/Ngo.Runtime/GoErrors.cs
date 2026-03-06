@@ -21,5 +21,53 @@ namespace Ngo.Runtime
     public static class GoErrors
     {
         public static object New(string text) => text;
+
+        public static object? Unwrap(object? err)
+        {
+            if (err is WrappedError w) return w.Inner;
+            return null;
+        }
+
+        public static bool Is(object? err, object? target)
+        {
+            while (err != null)
+            {
+                if (Equals(err, target)) return true;
+                if (err is string s1 && target is string s2 && s1 == s2) return true;
+                if (err is WrappedError w) { err = w.Inner; continue; }
+                break;
+            }
+            return false;
+        }
+
+        public static bool As(object? err, object? target)
+        {
+            // In Go, errors.As checks if err (or any in its chain) matches the type pointed to by target.
+            // Since we don't have typed errors with pointer semantics, this is a simplified version:
+            // returns true if err is assignable to target's type.
+            if (err == null || target == null) return false;
+            var targetType = target.GetType();
+            while (err != null)
+            {
+                if (targetType.IsInstanceOfType(err)) return true;
+                if (err is WrappedError w) { err = w.Inner; continue; }
+                break;
+            }
+            return false;
+        }
+    }
+
+    public sealed class WrappedError
+    {
+        public string Message { get; }
+        public object? Inner { get; }
+
+        public WrappedError(string message, object? inner)
+        {
+            Message = message;
+            Inner = inner;
+        }
+
+        public override string ToString() => Message;
     }
 }

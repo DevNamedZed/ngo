@@ -19,6 +19,7 @@
 using System;
 using System.Reflection.Emit;
 using Ngo.Compiler.Ast;
+using Ngo.Compiler.Semantics;
 using Ngo.Compiler.Symbols;
 using Ngo.Runtime;
 
@@ -58,6 +59,10 @@ namespace Ngo.Compiler.Emit
             {
                 EmitForRangeChannel(forRange);
             }
+            else if (TypeChecker.IsInteger(iterableType))
+            {
+                EmitForRangeInt(forRange);
+            }
             else
             {
                 throw new NotSupportedException($"for-range over {iterableType.TypeKind} not supported");
@@ -84,7 +89,7 @@ namespace Ngo.Compiler.Emit
             _ctx.IL.Emit(OpCodes.Ldc_I4_0);
             _ctx.IL.Emit(OpCodes.Stloc, indexLocal);
 
-            if (forRange.Key != null)
+            if (forRange.Key != null && !_ctx.CapturedSymbols.Contains(forRange.Key))
                 _ctx.Locals[forRange.Key] = indexLocal;
 
             // Condition: i < len
@@ -115,8 +120,6 @@ namespace Ngo.Compiler.Emit
                     elemTypeSymbol = ((ArrayTypeSymbol)forRange.Iterable.Type).ElementType;
 
                 var elemClrType = _ctx.Mapper.Map(elemTypeSymbol);
-                var valueLocal = _ctx.IL.DeclareLocal(elemClrType);
-                _ctx.Locals[forRange.Value] = valueLocal;
 
                 if (isArray)
                 {
@@ -141,7 +144,18 @@ namespace Ngo.Compiler.Emit
                             _ctx.IL.Emit(OpCodes.Ldind_Ref);
                     }
                 }
-                _ctx.IL.Emit(OpCodes.Stloc, valueLocal);
+
+                // Go 1.22: if captured, wrap in new Box per iteration
+                EmitStoreRangeVar(forRange.Value, elemClrType);
+            }
+
+            // Go 1.22: if key is captured, wrap in new Box per iteration
+            if (forRange.Key != null && _ctx.CapturedSymbols.Contains(forRange.Key))
+            {
+                // indexLocal has the raw int; wrap in Box<long> for the captured local
+                _ctx.IL.Emit(OpCodes.Ldloc, indexLocal);
+                _ctx.IL.Emit(OpCodes.Conv_I8);
+                EmitStoreRangeVar(forRange.Key, typeof(long));
             }
 
             // Body
@@ -344,6 +358,89 @@ namespace Ngo.Compiler.Emit
             _ctx.IL.MarkLabel(continueLabel);
             _ctx.IL.Emit(OpCodes.Br, loopLabel);
             _ctx.IL.MarkLabel(endLabel);
+        }
+        private void EmitForRangeInt(ForRangeStatement forRange)
+        {
+            // for i := range N → for i := 0; i < N; i++
+            var condLabel = _ctx.IL.DefineLabel();
+            var bodyLabel = _ctx.IL.DefineLabel();
+            var continueLabel = _ctx.IL.DefineLabel();
+            var endLabel = _ctx.IL.DefineLabel();
+
+            // Evaluate N and store as limit
+            _body.EmitExpression(forRange.Iterable);
+            var limitLocal = _ctx.IL.DeclareLocal(typeof(long));
+            _ctx.IL.Emit(OpCodes.Stloc, limitLocal);
+
+            // i := 0
+            LocalBuilder? keyLocal = null;
+            if (forRange.Key != null)
+            {
+                keyLocal = _ctx.IL.DeclareLocal(typeof(long));
+                _ctx.Locals[forRange.Key] = keyLocal;
+                _ctx.IL.Emit(OpCodes.Ldc_I8, 0L);
+                _ctx.IL.Emit(OpCodes.Stloc, keyLocal);
+            }
+            else
+            {
+                // Even without a key variable, we need a counter
+                keyLocal = _ctx.IL.DeclareLocal(typeof(long));
+                _ctx.IL.Emit(OpCodes.Ldc_I8, 0L);
+                _ctx.IL.Emit(OpCodes.Stloc, keyLocal);
+            }
+
+            _ctx.IL.Emit(OpCodes.Br, condLabel);
+
+            // Body
+            _ctx.IL.MarkLabel(bodyLabel);
+
+            _body.PushLoopLabels(endLabel, continueLabel);
+            _body.EmitBlock(forRange.Body);
+            _ctx.LoopLabels.Pop();
+
+            // i++
+            _ctx.IL.MarkLabel(continueLabel);
+            _ctx.IL.Emit(OpCodes.Ldloc, keyLocal);
+            _ctx.IL.Emit(OpCodes.Ldc_I8, 1L);
+            _ctx.IL.Emit(OpCodes.Add);
+            _ctx.IL.Emit(OpCodes.Stloc, keyLocal);
+
+            // i < N
+            _ctx.IL.MarkLabel(condLabel);
+            _ctx.IL.Emit(OpCodes.Ldloc, keyLocal);
+            _ctx.IL.Emit(OpCodes.Ldloc, limitLocal);
+            _ctx.IL.Emit(OpCodes.Clt);
+            _ctx.IL.Emit(OpCodes.Brtrue, bodyLabel);
+
+            _ctx.IL.MarkLabel(endLabel);
+        }
+
+        /// <summary>
+        /// Go 1.22: Store a range variable value. If the variable is captured by a closure,
+        /// creates a new Box per iteration so each closure gets its own copy.
+        /// Expects the value to be on the evaluation stack.
+        /// </summary>
+        private void EmitStoreRangeVar(LocalSymbol sym, Type clrType)
+        {
+            if (_ctx.CapturedSymbols.Contains(sym))
+            {
+                // Wrap in a new Box<T> each iteration
+                var boxType = typeof(Box<>).MakeGenericType(clrType);
+                var boxCtor = boxType.GetConstructor(new[] { clrType })!;
+                _ctx.IL.Emit(OpCodes.Newobj, boxCtor);
+                var boxLocal = _ctx.IL.DeclareLocal(boxType);
+                _ctx.IL.Emit(OpCodes.Stloc, boxLocal);
+                _ctx.Locals[sym] = boxLocal;
+            }
+            else
+            {
+                if (!_ctx.Locals.TryGetValue(sym, out var local))
+                {
+                    local = _ctx.IL.DeclareLocal(clrType);
+                    _ctx.Locals[sym] = local;
+                }
+                _ctx.IL.Emit(OpCodes.Stloc, local);
+            }
         }
     }
 }

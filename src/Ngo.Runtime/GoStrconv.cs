@@ -98,5 +98,48 @@ namespace Ngo.Runtime
                 _ => false,
             };
         }
+
+        public static (long value, object? error) ParseUint(string s, long @base, long bitSize)
+        {
+            try
+            {
+                ulong result = Convert.ToUInt64(s, (int)(@base == 0 ? 10 : @base));
+                return ((long)result, null);
+            }
+            catch
+            {
+                return (0, $"strconv.ParseUint: parsing \"{s}\": invalid syntax");
+            }
+        }
+
+        public static string FormatUint(long i, long @base)
+        {
+            ulong u = (ulong)i;
+            return (int)@base switch
+            {
+                2 => Convert.ToString((long)u, 2),
+                8 => Convert.ToString((long)u, 8),
+                16 => u.ToString("x"),
+                _ => u.ToString(),
+            };
+        }
+
+        public static string Quote(string s)
+        {
+            return "\"" + s.Replace("\\", "\\\\").Replace("\"", "\\\"")
+                .Replace("\n", "\\n").Replace("\t", "\\t").Replace("\r", "\\r") + "\"";
+        }
+
+        public static (string value, object? error) Unquote(string s)
+        {
+            if (s.Length >= 2 && s[0] == '"' && s[s.Length - 1] == '"')
+            {
+                var inner = s.Substring(1, s.Length - 2);
+                inner = inner.Replace("\\\\", "\\").Replace("\\\"", "\"")
+                    .Replace("\\n", "\n").Replace("\\t", "\t").Replace("\\r", "\r");
+                return (inner, null);
+            }
+            return ("", $"strconv.Unquote: invalid syntax");
+        }
     }
 }

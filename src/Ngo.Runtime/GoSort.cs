@@ -105,5 +105,76 @@ namespace Ngo.Runtime
             }
             return (long)lo;
         }
+
+        // sort.Slice(x interface{}, less func(i, j int) bool)
+        public static void Slice(object slice, Func<long, long, bool> less)
+        {
+            var sliceType = slice.GetType();
+            var lenProp = sliceType.GetProperty("Len");
+            if (lenProp == null) return;
+            int n = (int)lenProp.GetValue(slice)!;
+            if (n <= 1) return;
+
+            var swapMethod = sliceType.GetMethod("Swap");
+            if (swapMethod == null) return;
+
+            // Quicksort using less and swap
+            SortRange(slice, swapMethod, less, 0, n - 1);
+        }
+
+        private static void SortRange(object slice, System.Reflection.MethodInfo swap,
+            Func<long, long, bool> less, int lo, int hi)
+        {
+            if (lo >= hi) return;
+
+            // Partition
+            int pivot = lo;
+            int i = lo + 1;
+            int j = hi;
+            while (i <= j)
+            {
+                while (i <= hi && less(i, pivot))
+                    i++;
+                while (j > lo && less(pivot, j))
+                    j--;
+                if (i < j)
+                {
+                    swap.Invoke(slice, new object[] { i, j });
+                    i++;
+                    j--;
+                }
+                else
+                {
+                    break;
+                }
+            }
+            if (j != pivot)
+                swap.Invoke(slice, new object[] { pivot, j });
+
+            SortRange(slice, swap, less, lo, j - 1);
+            SortRange(slice, swap, less, j + 1, hi);
+        }
+
+        // sort.SliceStable(x interface{}, less func(i, j int) bool)
+        public static void SliceStable(object slice, Func<long, long, bool> less)
+        {
+            Slice(slice, less);
+        }
+
+        // sort.SliceIsSorted(x interface{}, less func(i, j int) bool) bool
+        public static bool SliceIsSorted(object slice, Func<long, long, bool> less)
+        {
+            var sliceType = slice.GetType();
+            var lenProp = sliceType.GetProperty("Len");
+            if (lenProp == null) return true;
+            int n = (int)lenProp.GetValue(slice)!;
+
+            for (long i = 1; i < n; i++)
+            {
+                if (less(i, i - 1))
+                    return false;
+            }
+            return true;
+        }
     }
 }

@@ -99,6 +99,11 @@ namespace Ngo.Runtime
             _data?.Remove(key);
         }
 
+        public void Clear()
+        {
+            _data?.Clear();
+        }
+
         /// <summary>Check if key exists.</summary>
         public bool ContainsKey(K key)
         {

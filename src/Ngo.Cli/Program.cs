@@ -23,6 +23,8 @@ using Ngo.Compiler;
 using Ngo.Compiler.Emit;
 using Ngo.Compiler.Language;
 using Ngo.Compiler.Semantics;
+using System.Collections.Generic;
+using System.Linq;
 
 namespace Ngo.Cli;
 
@@ -77,6 +79,12 @@ class Program
                 }
                 return VerifyFile(args[1]);
 
+            case "test":
+                return RunTests(args.Length >= 2 ? args[1] : ".");
+
+            case "get":
+                return GetModules(args.Length >= 2 ? args[1] : ".");
+
             case "check":
                 if (args.Length < 2)
                 {
@@ -104,87 +112,158 @@ class Program
         Console.WriteLine();
         Console.WriteLine("Usage:");
         Console.WriteLine("  ngo run <file.go>          Compile and run a Go source file");
-        Console.WriteLine("  ngo build [-o out] <file>  Compile to a .NET assembly");
+        Console.WriteLine("  ngo build [options] <file> Compile to a .NET assembly");
+        Console.WriteLine("    -o <output>              Output file path");
+        Console.WriteLine("    --library                Emit as .NET library (visibility from Go exports)");
+        Console.WriteLine("    --namespace <ns>         Set .NET namespace (implies --library)");
         Console.WriteLine("  ngo verify <assembly.dll>  Verify IL of a compiled assembly");
+        Console.WriteLine("  ngo get [dir]              Download module dependencies from go.mod");
+        Console.WriteLine("  ngo test [dir]             Run tests in *_test.go files");
         Console.WriteLine("  ngo check <file.go>        Check a Go source file for errors");
         Console.WriteLine("  ngo version                Print version information");
         Console.WriteLine("  ngo help                   Print this help message");
     }
 
+    static IReadOnlyList<(SyntaxTree tree, string filePath)> ParseGoSources(string path)
+    {
+        var results = new List<(SyntaxTree, string)>();
+
+        if (Directory.Exists(path))
+        {
+            // Directory mode: compile all .go files in directory
+            var goFiles = Directory.GetFiles(path, "*.go");
+            foreach (var file in goFiles)
+            {
+                if (file.EndsWith("_test.go", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                var source = File.ReadAllText(file);
+                results.Add((SyntaxTree.Parse(source), file));
+            }
+        }
+        else if (File.Exists(path))
+        {
+            var source = File.ReadAllText(path);
+            results.Add((SyntaxTree.Parse(source), path));
+        }
+
+        return results;
+    }
+
     static int RunFile(string filePath)
     {
-        if (!File.Exists(filePath))
+        var sources = ParseGoSources(filePath);
+        if (sources.Count == 0)
         {
-            Console.Error.WriteLine($"ngo: file not found: {filePath}");
+            Console.Error.WriteLine(Directory.Exists(filePath)
+                ? $"ngo: no .go files found in {filePath}"
+                : $"ngo: file not found: {filePath}");
             return 1;
         }
 
-        var source = File.ReadAllText(filePath);
+        // Set project root for user-package resolution
+        var projectRoot = Directory.Exists(filePath)
+            ? Path.GetFullPath(filePath)
+            : Path.GetDirectoryName(Path.GetFullPath(filePath))!;
+        PackageRegistry.SetProjectRoot(projectRoot);
 
-        // Parse + analyze
-        var tree = SyntaxTree.Parse(source);
-        var result = SemanticAnalyzer.Analyze(tree, checkUnused: true);
-
-        if (result.HasErrors)
-        {
-            PrintErrors(source, filePath, result.Errors);
-            return 1;
-        }
-
-        // Emit
-        Assembly assembly;
         try
         {
-            assembly = AssemblyEmitter.Emit(result);
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"ngo: internal compiler error during code generation");
-            Console.Error.WriteLine($"  {ex.Message}");
-            return 2;
-        }
+            var trees = new List<SyntaxTree>();
+            foreach (var (tree, _) in sources)
+                trees.Add(tree);
 
-        var entryPoint = AssemblyEmitter.FindEntryPoint(assembly);
-        if (entryPoint == null)
-        {
-            Console.Error.WriteLine($"{filePath}: error: no main function found in package main");
-            return 1;
-        }
+            var result = SemanticAnalyzer.Analyze(trees, checkUnused: true);
 
-        // Run
-        try
-        {
-            entryPoint.Invoke(null, null);
-        }
-        catch (TargetInvocationException ex) when (ex.InnerException != null)
-        {
-            var inner = ex.InnerException;
-            if (inner is Ngo.Runtime.GoPanicException panic)
+            if (result.HasErrors)
             {
-                Console.Error.WriteLine($"goroutine 1 [running]:");
-                Console.Error.WriteLine($"panic: {panic.Value}");
-                Console.Error.WriteLine();
-                Console.Error.WriteLine($"exit status 2");
+                // Show errors with the appropriate file name
+                foreach (var (tree, path) in sources)
+                {
+                    var fileErrors = new List<CompileError>();
+                    foreach (var err in result.Errors)
+                    {
+                        // Approximate: assign errors to the first file for now
+                        fileErrors.Add(err);
+                    }
+                    if (fileErrors.Count > 0)
+                    {
+                        PrintErrors(tree.SourceText, path, fileErrors);
+                        break;
+                    }
+                }
+                return 1;
+            }
+
+            // Emit
+            Assembly assembly;
+            try
+            {
+                assembly = AssemblyEmitter.Emit(result);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"ngo: internal compiler error during code generation");
+                Console.Error.WriteLine($"  {ex.Message}");
                 return 2;
             }
 
-            Console.Error.WriteLine($"ngo: runtime error: {inner.Message}");
-            return 2;
-        }
+            var entryPoint = AssemblyEmitter.FindEntryPoint(assembly);
+            if (entryPoint == null)
+            {
+                Console.Error.WriteLine($"{filePath}: error: no main function found in package main");
+                return 1;
+            }
 
-        return 0;
+            // Run
+            try
+            {
+                entryPoint.Invoke(null, null);
+            }
+            catch (TargetInvocationException ex) when (ex.InnerException != null)
+            {
+                var inner = ex.InnerException;
+                if (inner is Ngo.Runtime.GoPanicException panic)
+                {
+                    Console.Error.WriteLine($"goroutine 1 [running]:");
+                    Console.Error.WriteLine($"panic: {panic.Value}");
+                    Console.Error.WriteLine();
+                    Console.Error.WriteLine($"exit status 2");
+                    return 2;
+                }
+
+                Console.Error.WriteLine($"ngo: runtime error: {inner.Message}");
+                return 2;
+            }
+
+            return 0;
+        }
+        finally
+        {
+            PackageRegistry.SetProjectRoot(null);
+        }
     }
 
     static int BuildFile(string[] args)
     {
         string? outputPath = null;
         string? filePath = null;
+        bool isLibrary = false;
+        string? ns = null;
 
         for (int i = 0; i < args.Length; i++)
         {
             if (args[i] == "-o" && i + 1 < args.Length)
             {
                 outputPath = args[++i];
+            }
+            else if (args[i] == "--library")
+            {
+                isLibrary = true;
+            }
+            else if (args[i] == "--namespace" && i + 1 < args.Length)
+            {
+                ns = args[++i];
+                isLibrary = true;
             }
             else if (filePath == null)
             {
@@ -200,20 +279,26 @@ class Program
         if (filePath == null)
         {
             Console.Error.WriteLine("ngo build: missing file argument");
-            Console.Error.WriteLine("Usage: ngo build [-o output] <file.go>");
+            Console.Error.WriteLine("Usage: ngo build [--library] [--namespace <ns>] [-o output] <file.go>");
             return 1;
         }
 
-        if (!File.Exists(filePath))
+        var sources = ParseGoSources(filePath);
+        if (sources.Count == 0)
         {
-            Console.Error.WriteLine($"ngo: file not found: {filePath}");
+            Console.Error.WriteLine(Directory.Exists(filePath)
+                ? $"ngo: no .go files found in {filePath}"
+                : $"ngo: file not found: {filePath}");
             return 1;
         }
 
         // Default output: same name as input but with .dll extension
         if (outputPath == null)
         {
-            outputPath = Path.ChangeExtension(Path.GetFileName(filePath), ".dll");
+            var baseName = Directory.Exists(filePath)
+                ? Path.GetFileName(Path.GetFullPath(filePath))
+                : Path.GetFileNameWithoutExtension(filePath);
+            outputPath = baseName + ".dll";
         }
 
         var outputDir = Path.GetDirectoryName(Path.GetFullPath(outputPath));
@@ -222,24 +307,40 @@ class Program
             Directory.CreateDirectory(outputDir);
         }
 
-        var source = File.ReadAllText(filePath);
+        // Set project root for user-package resolution
+        var projectRoot = Directory.Exists(filePath)
+            ? Path.GetFullPath(filePath)
+            : Path.GetDirectoryName(Path.GetFullPath(filePath))!;
+        PackageRegistry.SetProjectRoot(projectRoot);
 
-        // Parse + analyze
-        var tree = SyntaxTree.Parse(source);
-        var result = SemanticAnalyzer.Analyze(tree, checkUnused: true);
+        try
+        {
+
+        var trees = new List<SyntaxTree>();
+        foreach (var (tree, _) in sources)
+            trees.Add(tree);
+
+        var result = SemanticAnalyzer.Analyze(trees, checkUnused: true);
 
         if (result.HasErrors)
         {
-            PrintErrors(source, filePath, result.Errors);
+            foreach (var (tree, path) in sources)
+            {
+                PrintErrors(tree.SourceText, path, result.Errors);
+                break;
+            }
             return 1;
         }
 
         var assemblyName = Path.GetFileNameWithoutExtension(outputPath);
+        var emitOptions = (isLibrary || ns != null)
+            ? new EmitOptions { IsLibrary = true, Namespace = ns }
+            : null;
 
         // Emit to file
         try
         {
-            AssemblyEmitter.EmitToFile(result, outputPath, assemblyName);
+            AssemblyEmitter.EmitToFile(result, outputPath, assemblyName, emitOptions);
         }
         catch (Exception ex)
         {
@@ -276,6 +377,12 @@ class Program
 
         Console.WriteLine($"ngo: wrote {outputPath}");
         return 0;
+
+        }
+        finally
+        {
+            PackageRegistry.SetProjectRoot(null);
+        }
     }
 
     static int VerifyFile(string filePath)
@@ -313,24 +420,291 @@ class Program
 
     static int CheckFile(string filePath)
     {
-        if (!File.Exists(filePath))
+        var sources = ParseGoSources(filePath);
+        if (sources.Count == 0)
         {
-            Console.Error.WriteLine($"ngo: file not found: {filePath}");
+            Console.Error.WriteLine(Directory.Exists(filePath)
+                ? $"ngo: no .go files found in {filePath}"
+                : $"ngo: file not found: {filePath}");
             return 1;
         }
 
-        var source = File.ReadAllText(filePath);
-        var tree = SyntaxTree.Parse(source);
-        var result = SemanticAnalyzer.Analyze(tree, checkUnused: true);
+        var projectRoot = Directory.Exists(filePath)
+            ? Path.GetFullPath(filePath)
+            : Path.GetDirectoryName(Path.GetFullPath(filePath))!;
+        PackageRegistry.SetProjectRoot(projectRoot);
 
-        if (result.HasErrors)
+        try
         {
-            PrintErrors(source, filePath, result.Errors);
+            var trees = new List<SyntaxTree>();
+            foreach (var (tree, _) in sources)
+                trees.Add(tree);
+
+            var result = SemanticAnalyzer.Analyze(trees, checkUnused: true);
+
+            if (result.HasErrors)
+            {
+                foreach (var (tree, path) in sources)
+                {
+                    PrintErrors(tree.SourceText, path, result.Errors);
+                    break;
+                }
+                return 1;
+            }
+
+            Console.WriteLine($"{filePath}: ok");
+            return 0;
+        }
+        finally
+        {
+            PackageRegistry.SetProjectRoot(null);
+        }
+    }
+
+    static int RunTests(string dirPath)
+    {
+        if (!Directory.Exists(dirPath))
+        {
+            Console.Error.WriteLine($"ngo test: directory not found: {dirPath}");
             return 1;
         }
 
-        Console.WriteLine($"{filePath}: ok");
-        return 0;
+        var fullDir = Path.GetFullPath(dirPath);
+
+        // Collect all .go files (including *_test.go)
+        var allGoFiles = Directory.GetFiles(fullDir, "*.go");
+        var testFiles = new List<string>();
+        var sourceFiles = new List<string>();
+
+        foreach (var f in allGoFiles)
+        {
+            if (Path.GetFileName(f).EndsWith("_test.go", StringComparison.OrdinalIgnoreCase))
+                testFiles.Add(f);
+            else
+                sourceFiles.Add(f);
+        }
+
+        if (testFiles.Count == 0)
+        {
+            Console.WriteLine("?   no test files");
+            return 0;
+        }
+
+        PackageRegistry.SetProjectRoot(fullDir);
+
+        try
+        {
+            // Parse all files
+            var trees = new List<SyntaxTree>();
+            foreach (var f in sourceFiles.Concat(testFiles))
+            {
+                var source = File.ReadAllText(f);
+                trees.Add(SyntaxTree.Parse(source));
+            }
+
+            // Analyze (don't check unused — test files may import testing but not use all)
+            var result = SemanticAnalyzer.Analyze(trees, checkUnused: false);
+
+            if (result.HasErrors)
+            {
+                foreach (var err in result.Errors)
+                    Console.Error.WriteLine($"  {err.Message}");
+                Console.Error.WriteLine("FAIL");
+                return 1;
+            }
+
+            // Find test functions: func Test*(t *testing.T)
+            var testFuncs = new List<Ngo.Compiler.Ast.FunctionDeclaration>();
+            foreach (var func in result.Root.Functions)
+            {
+                if (func.Symbol.Name.StartsWith("Test")
+                    && func.Symbol.Name.Length > 4
+                    && func.Symbol.Parameters.Count == 1
+                    && func.Symbol.Parameters[0].Type is Ngo.Compiler.Symbols.PointerTypeSymbol pt
+                    && pt.ElementType.Name == "T")
+                {
+                    testFuncs.Add(func);
+                }
+            }
+
+            if (testFuncs.Count == 0)
+            {
+                Console.WriteLine("?   no test functions");
+                return 0;
+            }
+
+            // Emit the assembly
+            Assembly assembly;
+            try
+            {
+                assembly = AssemblyEmitter.Emit(result);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"ngo test: compilation error: {ex.Message}");
+                return 2;
+            }
+
+            // Find the package type in the emitted assembly
+            var packageType = assembly.GetTypes().FirstOrDefault(t => t.IsAbstract && t.IsSealed);
+            if (packageType == null)
+            {
+                Console.Error.WriteLine("ngo test: cannot find package type in assembly");
+                return 2;
+            }
+
+            // Run each test
+            int passed = 0;
+            int failed = 0;
+            int skipped = 0;
+            var startTime = DateTime.UtcNow;
+
+            foreach (var testFunc in testFuncs)
+            {
+                var method = packageType.GetMethod(testFunc.Symbol.Name,
+                    BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                if (method == null)
+                {
+                    Console.Error.WriteLine($"--- FAIL: {testFunc.Symbol.Name} (method not found)");
+                    failed++;
+                    continue;
+                }
+
+                var t = new Ngo.Runtime.GoTestingT(testFunc.Symbol.Name);
+                var testStart = DateTime.UtcNow;
+
+                try
+                {
+                    method.Invoke(null, new object[] { t });
+                }
+                catch (TargetInvocationException ex) when (ex.InnerException is Ngo.Runtime.GoTestFailException)
+                {
+                    // Already handled — t.Failed() is true
+                }
+                catch (TargetInvocationException ex) when (ex.InnerException is Ngo.Runtime.GoTestSkipException)
+                {
+                    // Already handled — t.Skipped() is true
+                }
+                catch (TargetInvocationException ex) when (ex.InnerException is Ngo.Runtime.GoPanicException panic)
+                {
+                    Console.Error.WriteLine($"--- FAIL: {testFunc.Symbol.Name} (panic: {panic.Value})");
+                    failed++;
+                    continue;
+                }
+                catch (TargetInvocationException ex)
+                {
+                    Console.Error.WriteLine($"--- FAIL: {testFunc.Symbol.Name} ({ex.InnerException?.Message})");
+                    failed++;
+                    continue;
+                }
+                finally
+                {
+                    t.RunCleanups();
+                }
+
+                var elapsed = DateTime.UtcNow - testStart;
+                var elapsedStr = $"({elapsed.TotalSeconds:F2}s)";
+
+                if (t.Skipped())
+                {
+                    Console.WriteLine($"--- SKIP: {testFunc.Symbol.Name} {elapsedStr}");
+                    foreach (var log in t.GetLogs())
+                        Console.WriteLine($"        {log}");
+                    skipped++;
+                }
+                else if (t.Failed())
+                {
+                    Console.WriteLine($"--- FAIL: {testFunc.Symbol.Name} {elapsedStr}");
+                    foreach (var log in t.GetLogs())
+                        Console.WriteLine($"        {log}");
+                    failed++;
+                }
+                else
+                {
+                    Console.WriteLine($"--- PASS: {testFunc.Symbol.Name} {elapsedStr}");
+                    passed++;
+                }
+            }
+
+            var totalElapsed = DateTime.UtcNow - startTime;
+
+            Console.WriteLine();
+            if (failed > 0)
+            {
+                Console.WriteLine($"FAIL");
+                Console.WriteLine($"{passed} passed, {failed} failed, {skipped} skipped ({totalElapsed.TotalSeconds:F3}s)");
+                return 1;
+            }
+
+            Console.WriteLine($"ok");
+            Console.WriteLine($"{passed} passed, {skipped} skipped ({totalElapsed.TotalSeconds:F3}s)");
+            return 0;
+        }
+        finally
+        {
+            PackageRegistry.SetProjectRoot(null);
+        }
+    }
+
+    static int GetModules(string dir)
+    {
+        var fullDir = Path.GetFullPath(dir);
+        if (!Directory.Exists(fullDir))
+        {
+            Console.Error.WriteLine($"ngo get: directory not found: {dir}");
+            return 1;
+        }
+
+        var resolver = new Ngo.Compiler.Semantics.GoModuleResolver();
+        resolver.LoadGoMod(fullDir);
+
+        if (resolver.ModuleName == null)
+        {
+            Console.Error.WriteLine("ngo get: no go.mod found");
+            return 1;
+        }
+
+        if (resolver.Requirements.Count == 0)
+        {
+            Console.WriteLine("ngo get: no dependencies in go.mod");
+            return 0;
+        }
+
+        Console.WriteLine($"module {resolver.ModuleName}");
+        Console.WriteLine($"{resolver.Requirements.Count} dependencies");
+        Console.WriteLine();
+
+        int downloaded = 0;
+        int cached = 0;
+        int failed = 0;
+
+        foreach (var (module, version) in resolver.Requirements)
+        {
+            var cachedDir = resolver.GetCachedModuleDir(module, version);
+            if (cachedDir != null)
+            {
+                Console.WriteLine($"  cached  {module}@{version}");
+                cached++;
+                continue;
+            }
+
+            Console.Write($"  get     {module}@{version} ...");
+            var result = resolver.DownloadModule(module, version);
+            if (result != null)
+            {
+                Console.WriteLine(" ok");
+                downloaded++;
+            }
+            else
+            {
+                Console.WriteLine(" FAILED");
+                failed++;
+            }
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"{downloaded} downloaded, {cached} cached, {failed} failed");
+        return failed > 0 ? 1 : 0;
     }
 
     static void PrintErrors(string source, string fileName,

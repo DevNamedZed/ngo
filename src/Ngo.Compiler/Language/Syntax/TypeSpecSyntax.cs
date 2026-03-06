@@ -24,13 +24,25 @@ namespace Ngo.Compiler.Language.Syntax
     public sealed class TypeSpecSyntax : SyntaxNode
     {
         public TypeSpecSyntax(SyntaxToken name, SyntaxToken? assignToken, ExpressionSyntax type)
-        { Name = name; AssignToken = assignToken; Type = type; }
+            : this(name, null, assignToken, type)
+        { }
+
+        public TypeSpecSyntax(SyntaxToken name, TypeParameterListSyntax? typeParameters,
+            SyntaxToken? assignToken, ExpressionSyntax type)
+        { Name = name; TypeParameters = typeParameters; AssignToken = assignToken; Type = type; }
+
         public SyntaxToken Name { get; }
+        public TypeParameterListSyntax? TypeParameters { get; }
         /// <summary>= token for type aliases (type Foo = Bar).</summary>
         public SyntaxToken? AssignToken { get; }
         public ExpressionSyntax Type { get; }
         public override SyntaxKind Kind => SyntaxKind.TypeSpec;
         public override IEnumerable<SyntaxNode> ChildNodes()
-        { yield return Name; if (AssignToken != null) yield return AssignToken; yield return Type; }
+        {
+            yield return Name;
+            if (TypeParameters != null) yield return TypeParameters;
+            if (AssignToken != null) yield return AssignToken;
+            yield return Type;
+        }
     }
 }

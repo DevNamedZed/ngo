@@ -58,5 +58,13 @@ namespace Ngo.Compiler.Symbols
 
             return null;
         }
+
+        public void CopyExportsFrom(PackageSymbol other)
+        {
+            foreach (var export in other.Exports)
+            {
+                AddExport(export.Value);
+            }
+        }
     }
 }

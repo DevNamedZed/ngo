@@ -25,9 +25,17 @@ namespace Ngo.Compiler.Language.Syntax
     {
         public FunctionDeclarationSyntax(SyntaxToken funcKeyword, SyntaxToken name,
             ParameterListSyntax parameters, SyntaxNode? result, BlockSyntax? body)
-        { FuncKeyword = funcKeyword; Name = name; Parameters = parameters; Result = result; Body = body; }
+            : this(funcKeyword, name, null, parameters, result, body)
+        { }
+
+        public FunctionDeclarationSyntax(SyntaxToken funcKeyword, SyntaxToken name,
+            TypeParameterListSyntax? typeParameters, ParameterListSyntax parameters,
+            SyntaxNode? result, BlockSyntax? body)
+        { FuncKeyword = funcKeyword; Name = name; TypeParameters = typeParameters; Parameters = parameters; Result = result; Body = body; }
+
         public SyntaxToken FuncKeyword { get; }
         public SyntaxToken Name { get; }
+        public TypeParameterListSyntax? TypeParameters { get; }
         public ParameterListSyntax Parameters { get; }
         /// <summary>Return type: ParameterListSyntax (parenthesized), ExpressionSyntax (single type), or null.</summary>
         public SyntaxNode? Result { get; }
@@ -35,7 +43,9 @@ namespace Ngo.Compiler.Language.Syntax
         public override SyntaxKind Kind => SyntaxKind.FunctionDeclaration;
         public override IEnumerable<SyntaxNode> ChildNodes()
         {
-            yield return FuncKeyword; yield return Name; yield return Parameters;
+            yield return FuncKeyword; yield return Name;
+            if (TypeParameters != null) yield return TypeParameters;
+            yield return Parameters;
             if (Result != null) yield return Result;
             if (Body != null) yield return Body;
         }

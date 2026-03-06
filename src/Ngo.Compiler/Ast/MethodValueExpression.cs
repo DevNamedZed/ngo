@@ -28,17 +28,20 @@ namespace Ngo.Compiler.Ast
     public sealed class MethodValueExpression : Expression
     {
         public MethodValueExpression(Expression receiver, MethodSymbol method,
-            FunctionTypeSymbol functionType, TextSpan span)
+            FunctionTypeSymbol functionType, TextSpan span,
+            bool isMethodExpression = false)
             : base(span)
         {
             Receiver = receiver;
             Method = method;
             FunctionType = functionType;
+            IsMethodExpression = isMethodExpression;
         }
 
         public Expression Receiver { get; }
         public MethodSymbol Method { get; }
         public FunctionTypeSymbol FunctionType { get; }
+        public bool IsMethodExpression { get; }
 
         public override TypeSymbol Type => FunctionType;
         public override NodeType NodeType => NodeType.MethodValueExpression;

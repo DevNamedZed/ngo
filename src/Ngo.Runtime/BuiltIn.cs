@@ -114,5 +114,15 @@ namespace Ngo.Runtime
             if (arg is bool b) return b ? "true" : "false";
             return arg.ToString() ?? "";
         }
+
+        public static object? UnwrapInterface(object? value)
+        {
+            if (value == null) return null;
+            var type = value.GetType();
+            var field = type.GetField("_value");
+            if (field != null)
+                return field.GetValue(value);
+            return value;
+        }
     }
 }

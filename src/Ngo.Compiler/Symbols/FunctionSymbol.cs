@@ -34,13 +34,24 @@ namespace Ngo.Compiler.Symbols
         public FunctionSymbol(string name, IReadOnlyList<ParameterSymbol> parameters,
             IReadOnlyList<TypeSymbol> returnTypes, bool isVariadic = false,
             string? packageName = null)
+            : this(name, Array.Empty<TypeParameterSymbol>(), parameters, returnTypes,
+                  isVariadic, packageName)
+        {
+        }
+
+        public FunctionSymbol(string name, IReadOnlyList<TypeParameterSymbol> typeParameters,
+            IReadOnlyList<ParameterSymbol> parameters, IReadOnlyList<TypeSymbol> returnTypes,
+            bool isVariadic = false, string? packageName = null)
             : base(name, SymbolKind.Function)
         {
+            TypeParameters = typeParameters;
             Parameters = parameters;
             ReturnTypes = returnTypes;
             IsVariadic = isVariadic;
             PackageName = packageName;
         }
+
+        public IReadOnlyList<TypeParameterSymbol> TypeParameters { get; }
 
         public IReadOnlyList<ParameterSymbol> Parameters { get; }
 
@@ -52,5 +63,7 @@ namespace Ngo.Compiler.Symbols
 
         public TypeSymbol ReturnType =>
             ReturnTypes.Count > 0 ? ReturnTypes[0] : BuiltinTypes.Void;
+
+        public bool IsGeneric => TypeParameters.Count > 0;
     }
 }

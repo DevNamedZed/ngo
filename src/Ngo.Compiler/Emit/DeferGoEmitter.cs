@@ -413,7 +413,7 @@ namespace Ngo.Compiler.Emit
                     paramTypes[i] = argLocals[i].type;
                 var lambdaMethod = _ctx.PackageType.DefineMethod(
                     lambdaName,
-                    MethodAttributes.Private | MethodAttributes.Static,
+                    MethodAttributes.Public | MethodAttributes.Static,
                     typeof(void),
                     paramTypes);
 
@@ -534,47 +534,54 @@ namespace Ngo.Compiler.Emit
 
         private void EmitClosureAction(MethodBuilder lambdaMethod, List<(LocalBuilder local, Type type)> argLocals)
         {
-            if (argLocals.Count == 1)
-            {
-                // Fall through to universal approach below
-            }
+            // Create a closure class with instance fields to capture arg values.
+            // Each call site gets its own instance, so defer in loops works correctly.
+            var closureName = $"__defer_closure_{_body.LambdaCounter++}";
+            var closureBuilder = _ctx.Module.DefineType(
+                closureName,
+                TypeAttributes.Public | TypeAttributes.Sealed);
 
-            var fieldNames = new FieldBuilder[argLocals.Count];
+            var argFields = new List<FieldBuilder>();
             for (int i = 0; i < argLocals.Count; i++)
             {
-                var captureFieldName = $"__capture_{_body.LambdaCounter}_{i}";
-                fieldNames[i] = _ctx.PackageType.DefineField(
-                    captureFieldName,
-                    argLocals[i].type,
-                    FieldAttributes.Public | FieldAttributes.Static);
+                argFields.Add(closureBuilder.DefineField(
+                    $"_a{i}", argLocals[i].type, FieldAttributes.Public));
             }
 
-            // Store captured values into static fields
-            for (int i = 0; i < argLocals.Count; i++)
-            {
-                _ctx.IL.Emit(OpCodes.Ldloc, argLocals[i].local);
-                _ctx.IL.Emit(OpCodes.Stsfld, fieldNames[i]);
-            }
-
-            // Create a no-arg wrapper that loads from the static fields and calls the lambda
-            var wrapperName = $"__wrap_{_body.LambdaCounter++}";
-            var wrapperMethod = _ctx.PackageType.DefineMethod(
-                wrapperName,
-                MethodAttributes.Public | MethodAttributes.Static,
+            // Invoke(): loads captured args and calls the lambda
+            var invokeMethod = closureBuilder.DefineMethod(
+                "Invoke",
+                MethodAttributes.Public,
                 typeof(void),
                 Type.EmptyTypes);
 
-            var wrapperIL = wrapperMethod.GetILGenerator();
+            var invokeIL = invokeMethod.GetILGenerator();
+            for (int i = 0; i < argFields.Count; i++)
+            {
+                invokeIL.Emit(OpCodes.Ldarg_0);
+                invokeIL.Emit(OpCodes.Ldfld, argFields[i]);
+            }
+            invokeIL.Emit(OpCodes.Call, lambdaMethod);
+            invokeIL.Emit(OpCodes.Ret);
+
+            var closureType = closureBuilder.CreateType()!;
+
+            // Create closure instance and populate fields with eagerly-evaluated args
+            var closureLocal = _ctx.IL.DeclareLocal(closureType);
+            _ctx.IL.Emit(OpCodes.Newobj, closureType.GetConstructor(Type.EmptyTypes)!);
+            _ctx.IL.Emit(OpCodes.Stloc, closureLocal);
+
             for (int i = 0; i < argLocals.Count; i++)
             {
-                wrapperIL.Emit(OpCodes.Ldsfld, fieldNames[i]);
+                _ctx.IL.Emit(OpCodes.Ldloc, closureLocal);
+                _ctx.IL.Emit(OpCodes.Ldloc, argLocals[i].local);
+                _ctx.IL.Emit(OpCodes.Stfld, closureType.GetField($"_a{i}")!);
             }
-            wrapperIL.Emit(OpCodes.Call, lambdaMethod);
-            wrapperIL.Emit(OpCodes.Ret);
 
-            // Create Action from the wrapper
-            _ctx.IL.Emit(OpCodes.Ldnull);
-            _ctx.IL.Emit(OpCodes.Ldftn, wrapperMethod);
+            // Create Action from closure.Invoke
+            var runtimeInvoke = closureType.GetMethod("Invoke")!;
+            _ctx.IL.Emit(OpCodes.Ldloc, closureLocal);
+            _ctx.IL.Emit(OpCodes.Ldftn, runtimeInvoke);
             var actionCtor = typeof(Action).GetConstructor(new[] { typeof(object), typeof(IntPtr) })!;
             _ctx.IL.Emit(OpCodes.Newobj, actionCtor);
         }
@@ -859,6 +866,13 @@ namespace Ngo.Compiler.Emit
                 "io" => typeof(GoIo),
                 "log" => typeof(GoLog),
                 "fmt" => typeof(Fmt),
+                "ioutil" => typeof(GoIo),
+                "hex" => typeof(GoHex),
+                "sha256" => typeof(GoSha256),
+                "crand" => typeof(GoCryptoRand),
+                "flag" => typeof(GoFlag),
+                "http" => typeof(GoHttp),
+                "reflect" => typeof(GoReflect),
                 _ => null,
             };
         }

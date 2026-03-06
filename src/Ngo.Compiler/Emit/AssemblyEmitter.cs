@@ -37,7 +37,7 @@ namespace Ngo.Compiler.Emit
         /// <summary>
         /// Emits an in-memory assembly for immediate execution (used by ngo run).
         /// </summary>
-        public static Assembly Emit(AnalysisResult result, string assemblyName = "NgoProgram")
+        public static Assembly Emit(AnalysisResult result, string assemblyName = "NgoProgram", EmitOptions? options = null)
         {
             if (result.HasErrors)
                 throw new InvalidOperationException("Cannot emit assembly from source with errors.");
@@ -46,7 +46,7 @@ namespace Ngo.Compiler.Emit
             var asmBuilder = AssemblyBuilder.DefineDynamicAssembly(asmName, AssemblyBuilderAccess.Run);
             var moduleBuilder = asmBuilder.DefineDynamicModule(assemblyName);
 
-            EmitCore(result, moduleBuilder);
+            EmitCore(result, moduleBuilder, options);
 
             return asmBuilder;
         }
@@ -54,7 +54,7 @@ namespace Ngo.Compiler.Emit
         /// <summary>
         /// Emits a persisted assembly to disk (used by ngo build).
         /// </summary>
-        public static void EmitToFile(AnalysisResult result, string outputPath, string assemblyName = "NgoProgram")
+        public static void EmitToFile(AnalysisResult result, string outputPath, string assemblyName = "NgoProgram", EmitOptions? options = null)
         {
             if (result.HasErrors)
                 throw new InvalidOperationException("Cannot emit assembly from source with errors.");
@@ -63,7 +63,7 @@ namespace Ngo.Compiler.Emit
             var ab = new PersistedAssemblyBuilder(asmName, typeof(object).Assembly);
             var moduleBuilder = ab.DefineDynamicModule(assemblyName);
 
-            var ctx = EmitCore(result, moduleBuilder);
+            var ctx = EmitCore(result, moduleBuilder, options);
 
             // Find main() entry point
             MethodBuilder? entryPointMethod = null;
@@ -108,25 +108,43 @@ namespace Ngo.Compiler.Emit
         /// <summary>
         /// Shared 3-pass emit logic used by both Emit and EmitToFile.
         /// </summary>
-        private static EmitContext EmitCore(AnalysisResult result, ModuleBuilder moduleBuilder)
+        private static EmitContext EmitCore(AnalysisResult result, ModuleBuilder moduleBuilder, EmitOptions? options = null)
         {
             var mapper = new TypeMapper();
-            var ctx = new EmitContext(moduleBuilder, mapper);
+            var ctx = new EmitContext(moduleBuilder, mapper, options);
 
-            var root = result.Root;
+            // First emit any user-defined dependency packages
+            var userPackages = Semantics.PackageRegistry.GetAllUserPackages();
+            foreach (var kvp in userPackages)
+            {
+                EmitPackage(kvp.Value.Root, ctx);
+            }
+
+            // Then emit the main package
+            EmitPackage(result.Root, ctx);
+
+            return ctx;
+        }
+
+        private static void EmitPackage(Ast.SourceFile root, EmitContext ctx)
+        {
             var packageName = root.Package.Symbol.Name;
 
             // Create the package static class
-            ctx.PackageType = moduleBuilder.DefineType(
-                packageName,
+            var previousPackageType = ctx.PackageType;
+            ctx.PackageType = ctx.ModuleBuilder.DefineType(
+                ctx.QualifyName(packageName),
                 TypeAttributes.Public | TypeAttributes.Abstract | TypeAttributes.Sealed);
 
             var declEmitter = new DeclarationEmitter(ctx);
             ctx.DeclEmitter = declEmitter;
             var bodyEmitter = new MethodBodyEmitter(ctx);
 
-            // Emit builtin error interface before user types
-            declEmitter.EmitBuiltinErrorInterface();
+            // Emit builtin error interface before user types (only for the first package)
+            if (previousPackageType == null)
+            {
+                declEmitter.EmitBuiltinErrorInterface();
+            }
 
             // Pass 1: Define user types (structs, interfaces)
             foreach (var typeDecl in root.Types)
@@ -137,15 +155,23 @@ namespace Ngo.Compiler.Emit
             // Finalize struct types and register the runtime types in the mapper
             foreach (var kvp in ctx.StructTypes)
             {
-                var runtimeType = kvp.Value.CreateType()!;
-                ctx.Mapper.Register(kvp.Key, runtimeType);
+                if (!ctx.FinalizedTypes.Contains(kvp.Key))
+                {
+                    var runtimeType = kvp.Value.CreateType()!;
+                    ctx.Mapper.Register(kvp.Key, runtimeType);
+                    ctx.FinalizedTypes.Add(kvp.Key);
+                }
             }
 
             // Finalize interface types and register the runtime types
             foreach (var kvp in ctx.InterfaceTypes)
             {
-                var runtimeType = kvp.Value.CreateType()!;
-                ctx.Mapper.Register(kvp.Key, runtimeType);
+                if (!ctx.FinalizedTypes.Contains(kvp.Key))
+                {
+                    var runtimeType = kvp.Value.CreateType()!;
+                    ctx.Mapper.Register(kvp.Key, runtimeType);
+                    ctx.FinalizedTypes.Add(kvp.Key);
+                }
             }
 
             // Pass 2: Define all function and method signatures
@@ -190,9 +216,19 @@ namespace Ngo.Compiler.Emit
                 bodyEmitter.EmitPackageInit(root.Variables, initFuncs);
             }
 
-            ctx.PackageType.CreateType();
+            // In library mode, emit a public Initialize() method that triggers the .cctor
+            if (ctx.Options.IsLibrary)
+            {
+                var initMethod = ctx.PackageType.DefineMethod(
+                    "Initialize",
+                    MethodAttributes.Public | MethodAttributes.Static,
+                    typeof(void),
+                    Type.EmptyTypes);
+                var initIL = initMethod.GetILGenerator();
+                initIL.Emit(OpCodes.Ret);
+            }
 
-            return ctx;
+            ctx.PackageType.CreateType();
         }
 
         /// <summary>
@@ -202,6 +238,20 @@ namespace Ngo.Compiler.Emit
         public static MethodInfo? FindEntryPoint(Assembly assembly, string packageName = "main")
         {
             var type = assembly.GetType(packageName);
+
+            // Search with namespace prefix if flat name not found
+            if (type == null)
+            {
+                foreach (var t in assembly.GetTypes())
+                {
+                    if (t.Name == packageName || t.FullName?.EndsWith("." + packageName) == true)
+                    {
+                        type = t;
+                        break;
+                    }
+                }
+            }
+
             if (type == null) return null;
             return type.GetMethod("main", BindingFlags.Public | BindingFlags.Static);
         }

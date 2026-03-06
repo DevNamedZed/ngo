@@ -25,6 +25,11 @@ namespace Ngo.Compiler.Semantics
     {
         public static AnalysisResult Analyze(SyntaxTree tree, bool checkUnused = false)
         {
+            return Analyze(new[] { tree }, checkUnused);
+        }
+
+        public static AnalysisResult Analyze(IReadOnlyList<SyntaxTree> trees, bool checkUnused = false)
+        {
             var universe = AnalysisContext.CreateUniverseScope();
             var context = new AnalysisContext(universe);
             context.CheckUnused = checkUnused;
@@ -46,9 +51,15 @@ namespace Ngo.Compiler.Semantics
                 declarationResolver.ResolveVarDeclarationStatement,
                 declarationResolver.ResolveConstDeclarationStatement);
 
-            var root = declarationResolver.ResolveSourceFile(tree.Root);
+            var roots = new List<Language.Syntax.SourceFileSyntax>();
+            foreach (var tree in trees)
+                roots.Add(tree.Root);
 
-            var allErrors = new List<CompileError>(tree.Errors);
+            var root = declarationResolver.ResolveSourceFiles(roots);
+
+            var allErrors = new List<CompileError>();
+            foreach (var tree in trees)
+                allErrors.AddRange(tree.Errors);
             allErrors.AddRange(context.Errors.ToReadOnlyList());
             return new AnalysisResult(root, allErrors);
         }

@@ -360,6 +360,21 @@ namespace Ngo.Compiler.Semantics
                         return BuiltinTypes.UntypedBool;
                     }
 
+                    // Struct equality: same named type
+                    if (left is StructTypeSymbol && right is StructTypeSymbol
+                        && left.Name == right.Name)
+                    {
+                        return BuiltinTypes.UntypedBool;
+                    }
+
+                    // Array equality: same element type and length
+                    if (left is ArrayTypeSymbol leftArr && right is ArrayTypeSymbol rightArr
+                        && leftArr.Length == rightArr.Length
+                        && TypeChecker.CommonType(leftArr.ElementType, rightArr.ElementType) != null)
+                    {
+                        return BuiltinTypes.UntypedBool;
+                    }
+
                     return null;
 
                 case BinaryOperator.Less:
@@ -544,6 +559,39 @@ namespace Ngo.Compiler.Semantics
             if (target.Type == TypeSymbol.Error)
             {
                 return new ErrorExpression("Error target", span);
+            }
+
+            // Method expression: Type.Method → func(receiver, args...) returns
+            if (target is IdentifierExpression typeId && typeId.Symbol is TypeSymbol typeSymbol
+                && typeSymbol is StructTypeSymbol methodExprStruct)
+            {
+                var method = methodExprStruct.LookupMethod(fieldName);
+                if (method != null)
+                {
+                    // Include receiver type as first parameter
+                    var paramTypes = new TypeSymbol[method.Parameters.Count + 1];
+                    paramTypes[0] = method.IsPointerReceiver
+                        ? new PointerTypeSymbol(typeSymbol) : typeSymbol;
+                    for (int i = 0; i < method.Parameters.Count; i++)
+                        paramTypes[i + 1] = method.Parameters[i].Type;
+                    var funcType = new FunctionTypeSymbol(paramTypes, method.ReturnTypes);
+                    return new MethodValueExpression(target, method, funcType, span,
+                        isMethodExpression: true);
+                }
+
+                // Check promoted methods from embedded structs
+                var promoted = methodExprStruct.LookupPromotedMethod(fieldName);
+                if (promoted.HasValue)
+                {
+                    var (_, promotedMethod) = promoted.Value;
+                    var paramTypes = new TypeSymbol[promotedMethod.Parameters.Count + 1];
+                    paramTypes[0] = typeSymbol;
+                    for (int i = 0; i < promotedMethod.Parameters.Count; i++)
+                        paramTypes[i + 1] = promotedMethod.Parameters[i].Type;
+                    var funcType = new FunctionTypeSymbol(paramTypes, promotedMethod.ReturnTypes);
+                    return new MethodValueExpression(target, promotedMethod, funcType, span,
+                        isMethodExpression: true);
+                }
             }
 
             var targetType = target.Type;
@@ -915,6 +963,37 @@ namespace Ngo.Compiler.Semantics
         private Expression ResolveIndexExpression(IndexExpressionSyntax syntax)
         {
             var span = _context.SpanOf(syntax);
+
+            // Check if this is a generic function instantiation: Max[int]
+            if (syntax.Expression is IdentifierNameSyntax idSyntax)
+            {
+                var symbol = _context.Scope.Lookup(idSyntax.Identifier.Text);
+                if (symbol is FunctionSymbol funcSymbol && funcSymbol.IsGeneric)
+                {
+                    var typeArg = _typeResolver.ResolveType(syntax.Index);
+                    if (typeArg == null)
+                    {
+                        typeArg = TypeSymbol.Error;
+                    }
+
+                    // Substitute type params in the function signature to produce a function type
+                    var typeArgs = new[] { typeArg };
+                    var substParams = TypeSubstituter.SubstituteParams(
+                        funcSymbol.Parameters, funcSymbol.TypeParameters, typeArgs);
+                    var substReturnTypes = TypeSubstituter.SubstituteTypes(
+                        funcSymbol.ReturnTypes, funcSymbol.TypeParameters, typeArgs);
+
+                    var paramTypes = new List<TypeSymbol>();
+                    for (int i = 0; i < substParams.Count; i++)
+                    {
+                        paramTypes.Add(substParams[i].Type);
+                    }
+
+                    var funcType = new FunctionTypeSymbol(paramTypes, substReturnTypes);
+                    return new IdentifierExpression(funcSymbol, funcType, span);
+                }
+            }
+
             var target = ResolveExpression(syntax.Expression);
             var index = ResolveExpression(syntax.Index);
 

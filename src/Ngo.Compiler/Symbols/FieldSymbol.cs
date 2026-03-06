@@ -20,12 +20,14 @@ namespace Ngo.Compiler.Symbols
 {
     public sealed class FieldSymbol : Symbol
     {
-        public FieldSymbol(string name, TypeSymbol type, int ordinal, bool isEmbedded = false)
+        public FieldSymbol(string name, TypeSymbol type, int ordinal,
+            bool isEmbedded = false, string? tag = null)
             : base(name, SymbolKind.Field)
         {
             Type = type;
             Ordinal = ordinal;
             IsEmbedded = isEmbedded;
+            Tag = tag;
         }
 
         public TypeSymbol Type { get; }
@@ -33,5 +35,8 @@ namespace Ngo.Compiler.Symbols
         public int Ordinal { get; }
 
         public bool IsEmbedded { get; }
+
+        /// <summary>Raw struct tag string (e.g. `json:"name,omitempty"`).</summary>
+        public string? Tag { get; }
     }
 }

@@ -687,7 +687,7 @@ func f(s string) {
     {
         var result = Analyze(@"package main
 func main() {
-    for k := range 42 {
+    for k := range true {
     }
 }");
         Assert.IsTrue(result.HasErrors);

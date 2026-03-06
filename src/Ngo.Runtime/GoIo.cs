@@ -93,6 +93,42 @@ namespace Ngo.Runtime
             var (n, err) = w.Write(slice);
             return ((long)n, err);
         }
+
+        /// <summary>
+        /// io.NopCloser(r Reader) ReadCloser
+        /// Returns a ReadCloser that wraps r with a no-op Close.
+        /// </summary>
+        public static NopCloserReader NopCloser(IGoReader r)
+        {
+            return new NopCloserReader(r);
+        }
+
+        /// <summary>
+        /// io.LimitReader(r Reader, n int64) Reader
+        /// Returns a Reader that reads at most n bytes from r.
+        /// </summary>
+        public static LimitedReader LimitReader(IGoReader r, long n)
+        {
+            return new LimitedReader(r, n);
+        }
+
+        /// <summary>
+        /// io.MultiReader(readers ...Reader) Reader
+        /// Returns a Reader that concatenates the provided readers.
+        /// </summary>
+        public static MultiReaderImpl MultiReader(params IGoReader[] readers)
+        {
+            return new MultiReaderImpl(readers);
+        }
+
+        /// <summary>
+        /// io.MultiWriter(writers ...Writer) Writer
+        /// Returns a Writer that writes to all provided writers.
+        /// </summary>
+        public static MultiWriterImpl MultiWriter(params IGoWriter[] writers)
+        {
+            return new MultiWriterImpl(writers);
+        }
     }
 
     /// <summary>Go io.Reader interface — Read(p []byte) (n int, err error)</summary>
@@ -148,6 +184,95 @@ namespace Ngo.Runtime
 
             string err = _pos >= _data.Length ? GoIo.EOF : "";
             return (n, err);
+        }
+    }
+
+    /// <summary>A ReadCloser wrapping a Reader with a no-op Close (io.NopCloser).</summary>
+    public sealed class NopCloserReader : IGoReader, IGoCloser
+    {
+        private readonly IGoReader _inner;
+
+        public NopCloserReader(IGoReader inner)
+        {
+            _inner = inner;
+        }
+
+        public (int, string) Read(Slice<byte> p) => _inner.Read(p);
+        public string Close() => "";
+    }
+
+    /// <summary>A Reader that reads at most N bytes (io.LimitReader).</summary>
+    public sealed class LimitedReader : IGoReader
+    {
+        private readonly IGoReader _inner;
+        private long _remaining;
+
+        public LimitedReader(IGoReader inner, long n)
+        {
+            _inner = inner;
+            _remaining = n;
+        }
+
+        public (int, string) Read(Slice<byte> p)
+        {
+            if (_remaining <= 0)
+                return (0, GoIo.EOF);
+
+            if (p.Len > _remaining)
+                p = p.Reslice(0, (int)_remaining);
+
+            var (n, err) = _inner.Read(p);
+            _remaining -= n;
+            return (n, err);
+        }
+    }
+
+    /// <summary>A Reader that concatenates multiple readers (io.MultiReader).</summary>
+    public sealed class MultiReaderImpl : IGoReader
+    {
+        private readonly IGoReader[] _readers;
+        private int _current;
+
+        public MultiReaderImpl(IGoReader[] readers)
+        {
+            _readers = readers;
+            _current = 0;
+        }
+
+        public (int, string) Read(Slice<byte> p)
+        {
+            while (_current < _readers.Length)
+            {
+                var (n, err) = _readers[_current].Read(p);
+                if (n > 0 || err != GoIo.EOF)
+                    return (n, err);
+                _current++;
+            }
+            return (0, GoIo.EOF);
+        }
+    }
+
+    /// <summary>A Writer that writes to all provided writers (io.MultiWriter).</summary>
+    public sealed class MultiWriterImpl : IGoWriter
+    {
+        private readonly IGoWriter[] _writers;
+
+        public MultiWriterImpl(IGoWriter[] writers)
+        {
+            _writers = writers;
+        }
+
+        public (int, string) Write(Slice<byte> p)
+        {
+            foreach (var w in _writers)
+            {
+                var (n, err) = w.Write(p);
+                if (err != "")
+                    return (n, err);
+                if (n != p.Len)
+                    return (n, "short write");
+            }
+            return (p.Len, "");
         }
     }
 }

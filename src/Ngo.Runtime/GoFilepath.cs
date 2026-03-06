@@ -67,5 +67,123 @@ namespace Ngo.Runtime
         {
             return (Path.GetFullPath(path), "");
         }
+
+        /// <summary>filepath.Rel(basepath, targpath string) (string, error)</summary>
+        public static (string, string) Rel(string basepath, string targpath)
+        {
+            try
+            {
+                return (Path.GetRelativePath(basepath, targpath), "");
+            }
+            catch (System.Exception ex)
+            {
+                return ("", ex.Message);
+            }
+        }
+
+        /// <summary>filepath.Match(pattern, name string) (matched bool, err error)</summary>
+        public static (bool, string) Match(string pattern, string name)
+        {
+            try
+            {
+                // Simple glob matching: * matches any sequence, ? matches one char
+                bool matched = MatchGlob(pattern, name);
+                return (matched, "");
+            }
+            catch (System.Exception ex)
+            {
+                return (false, ex.Message);
+            }
+        }
+
+        /// <summary>filepath.Glob(pattern string) (matches []string, err error)</summary>
+        public static (Slice<string>, string) Glob(string pattern)
+        {
+            try
+            {
+                var dir = Path.GetDirectoryName(pattern);
+                var filePattern = Path.GetFileName(pattern);
+                if (string.IsNullOrEmpty(dir)) dir = ".";
+                var files = Directory.GetFiles(dir, filePattern);
+                return (new Slice<string>(files), "");
+            }
+            catch (System.Exception ex)
+            {
+                return (new Slice<string>(System.Array.Empty<string>()), ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// filepath.Walk(root string, fn WalkFunc) error
+        /// WalkFunc = func(path string, info os.FileInfo, err error) error
+        /// Simplified: fn receives (path, nil, nil) for each entry.
+        /// </summary>
+        public static object? Walk(string root, System.Action<string, object?, object?> fn)
+        {
+            try
+            {
+                WalkDir(root, fn);
+                return null;
+            }
+            catch (System.Exception ex)
+            {
+                return ex.Message;
+            }
+        }
+
+        private static void WalkDir(string dir, System.Action<string, object?, object?> fn)
+        {
+            fn(dir, null, null);
+            try
+            {
+                foreach (var entry in Directory.GetFileSystemEntries(dir))
+                {
+                    if (Directory.Exists(entry))
+                        WalkDir(entry, fn);
+                    else
+                        fn(entry, null, null);
+                }
+            }
+            catch
+            {
+                // Skip directories we can't read
+            }
+        }
+
+        private static bool MatchGlob(string pattern, string name)
+        {
+            int pi = 0, ni = 0;
+            int starPi = -1, starNi = -1;
+
+            while (ni < name.Length)
+            {
+                if (pi < pattern.Length && (pattern[pi] == '?' || pattern[pi] == name[ni]))
+                {
+                    pi++;
+                    ni++;
+                }
+                else if (pi < pattern.Length && pattern[pi] == '*')
+                {
+                    starPi = pi;
+                    starNi = ni;
+                    pi++;
+                }
+                else if (starPi >= 0)
+                {
+                    pi = starPi + 1;
+                    starNi++;
+                    ni = starNi;
+                }
+                else
+                {
+                    return false;
+                }
+            }
+
+            while (pi < pattern.Length && pattern[pi] == '*')
+                pi++;
+
+            return pi == pattern.Length;
+        }
     }
 }

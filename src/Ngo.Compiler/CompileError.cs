@@ -60,6 +60,9 @@ namespace Ngo.Compiler
         DuplicateLabel,
         GotoJumpsOverDeclaration,
         GotoJumpsIntoBlock,
+        CannotInferTypeArguments,
+        ConstraintNotSatisfied,
+        WrongTypeArgumentCount,
     }
 
     public sealed class CompileError

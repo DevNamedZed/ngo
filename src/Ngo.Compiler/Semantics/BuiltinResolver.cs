@@ -364,5 +364,80 @@ namespace Ngo.Compiler.Semantics
                 Array.Empty<ParameterSymbol>(), resultType);
             return new CallExpression(funcSymbol, new List<Expression> { arg }, span);
         }
+
+        public Expression ResolveMin(CallExpressionSyntax syntax, TextSpan span)
+        {
+            if (syntax.Arguments.Count < 2)
+            {
+                _context.Errors.ReportError(span, ErrorCode.WrongArgumentCount,
+                    $"min expects at least 2 arguments, got {syntax.Arguments.Count}");
+                return new ErrorExpression("Wrong arg count", span);
+            }
+
+            var args = new List<Expression>();
+            for (int i = 0; i < syntax.Arguments.Count; i++)
+            {
+                args.Add(_resolveExpression(syntax.Arguments[i]));
+            }
+
+            // Result type is the type of the first argument (all must be ordered/comparable)
+            var resultType = args[0].Type;
+            if (resultType.TypeKind == TypeKind.UntypedInt) resultType = BuiltinTypes.Int;
+            if (resultType.TypeKind == TypeKind.UntypedFloat) resultType = BuiltinTypes.Float64;
+            if (resultType.TypeKind == TypeKind.UntypedString) resultType = BuiltinTypes.String;
+
+            var funcSymbol = new FunctionSymbol("min",
+                Array.Empty<ParameterSymbol>(), resultType);
+            return new CallExpression(funcSymbol, args, span);
+        }
+
+        public Expression ResolveMax(CallExpressionSyntax syntax, TextSpan span)
+        {
+            if (syntax.Arguments.Count < 2)
+            {
+                _context.Errors.ReportError(span, ErrorCode.WrongArgumentCount,
+                    $"max expects at least 2 arguments, got {syntax.Arguments.Count}");
+                return new ErrorExpression("Wrong arg count", span);
+            }
+
+            var args = new List<Expression>();
+            for (int i = 0; i < syntax.Arguments.Count; i++)
+            {
+                args.Add(_resolveExpression(syntax.Arguments[i]));
+            }
+
+            var resultType = args[0].Type;
+            if (resultType.TypeKind == TypeKind.UntypedInt) resultType = BuiltinTypes.Int;
+            if (resultType.TypeKind == TypeKind.UntypedFloat) resultType = BuiltinTypes.Float64;
+            if (resultType.TypeKind == TypeKind.UntypedString) resultType = BuiltinTypes.String;
+
+            var funcSymbol = new FunctionSymbol("max",
+                Array.Empty<ParameterSymbol>(), resultType);
+            return new CallExpression(funcSymbol, args, span);
+        }
+
+        public Expression ResolveClear(CallExpressionSyntax syntax, TextSpan span)
+        {
+            if (syntax.Arguments.Count != 1)
+            {
+                _context.Errors.ReportError(span, ErrorCode.WrongArgumentCount,
+                    $"clear expects 1 argument, got {syntax.Arguments.Count}");
+                return new ErrorExpression("Wrong arg count", span);
+            }
+
+            var arg = _resolveExpression(syntax.Arguments[0]);
+
+            if (arg.Type != TypeSymbol.Error
+                && arg.Type is not MapTypeSymbol
+                && arg.Type is not SliceTypeSymbol)
+            {
+                _context.Errors.ReportError(span, ErrorCode.InvalidOperation,
+                    $"Invalid argument type '{arg.Type.Name}' for clear");
+            }
+
+            var clearSymbol = new FunctionSymbol("clear",
+                new[] { new ParameterSymbol("m", arg.Type, 0) }, BuiltinTypes.Void);
+            return new CallExpression(clearSymbol, new[] { arg }, span);
+        }
     }
 }

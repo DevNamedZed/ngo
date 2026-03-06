@@ -41,6 +41,8 @@ namespace Ngo.Compiler.Language
                 case SyntaxKind.ConstDeclaration: VisitConstDeclaration((ConstDeclarationSyntax)node); break;
                 case SyntaxKind.ConstSpec: VisitConstSpec((ConstSpecSyntax)node); break;
                 case SyntaxKind.ErrorNode: VisitErrorNode((ErrorNodeSyntax)node); break;
+                case SyntaxKind.TypeParameterList: VisitTypeParameterList((TypeParameterListSyntax)node); break;
+                case SyntaxKind.TypeParameterDecl: VisitTypeParameterDecl((TypeParameterDeclSyntax)node); break;
 
                 // Statements
                 case SyntaxKind.Block: VisitBlock((BlockSyntax)node); break;
@@ -79,6 +81,7 @@ namespace Ngo.Compiler.Language
                 case SyntaxKind.CompositeLiteral: VisitCompositeLiteral((CompositeLiteralSyntax)node); break;
                 case SyntaxKind.KeyValuePair: VisitKeyValueExpression((KeyValueExpressionSyntax)node); break;
                 case SyntaxKind.FunctionLiteral: VisitFunctionLiteral((FunctionLiteralSyntax)node); break;
+                case SyntaxKind.TypeArgumentList: VisitTypeArgumentList((TypeArgumentListSyntax)node); break;
 
                 // Types
                 case SyntaxKind.PointerType: VisitPointerType((PointerTypeSyntax)node); break;
@@ -91,6 +94,8 @@ namespace Ngo.Compiler.Language
                 case SyntaxKind.InterfaceType: VisitInterfaceType((InterfaceTypeSyntax)node); break;
                 case SyntaxKind.MethodSpec: VisitMethodSpec((MethodSpecSyntax)node); break;
                 case SyntaxKind.FunctionType: VisitFuncType((FuncTypeSyntax)node); break;
+                case SyntaxKind.UnionType: VisitUnionType((UnionTypeSyntax)node); break;
+                case SyntaxKind.UnionTerm: VisitUnionTerm((UnionTermSyntax)node); break;
 
                 default: DefaultVisit(node); break;
             }
@@ -120,6 +125,8 @@ namespace Ngo.Compiler.Language
         protected virtual void VisitConstDeclaration(ConstDeclarationSyntax node) => DefaultVisit(node);
         protected virtual void VisitConstSpec(ConstSpecSyntax node) => DefaultVisit(node);
         protected virtual void VisitErrorNode(ErrorNodeSyntax node) => DefaultVisit(node);
+        protected virtual void VisitTypeParameterList(TypeParameterListSyntax node) => DefaultVisit(node);
+        protected virtual void VisitTypeParameterDecl(TypeParameterDeclSyntax node) => DefaultVisit(node);
 
         // Statements
         protected virtual void VisitBlock(BlockSyntax node) => DefaultVisit(node);
@@ -158,6 +165,7 @@ namespace Ngo.Compiler.Language
         protected virtual void VisitCompositeLiteral(CompositeLiteralSyntax node) => DefaultVisit(node);
         protected virtual void VisitKeyValueExpression(KeyValueExpressionSyntax node) => DefaultVisit(node);
         protected virtual void VisitFunctionLiteral(FunctionLiteralSyntax node) => DefaultVisit(node);
+        protected virtual void VisitTypeArgumentList(TypeArgumentListSyntax node) => DefaultVisit(node);
 
         // Types
         protected virtual void VisitPointerType(PointerTypeSyntax node) => DefaultVisit(node);
@@ -170,6 +178,8 @@ namespace Ngo.Compiler.Language
         protected virtual void VisitInterfaceType(InterfaceTypeSyntax node) => DefaultVisit(node);
         protected virtual void VisitMethodSpec(MethodSpecSyntax node) => DefaultVisit(node);
         protected virtual void VisitFuncType(FuncTypeSyntax node) => DefaultVisit(node);
+        protected virtual void VisitUnionType(UnionTypeSyntax node) => DefaultVisit(node);
+        protected virtual void VisitUnionTerm(UnionTermSyntax node) => DefaultVisit(node);
     }
 
     public abstract class SyntaxVisitor<TResult>
@@ -196,6 +206,8 @@ namespace Ngo.Compiler.Language
                 SyntaxKind.ConstDeclaration => VisitConstDeclaration((ConstDeclarationSyntax)node),
                 SyntaxKind.ConstSpec => VisitConstSpec((ConstSpecSyntax)node),
                 SyntaxKind.ErrorNode => VisitErrorNode((ErrorNodeSyntax)node),
+                SyntaxKind.TypeParameterList => VisitTypeParameterList((TypeParameterListSyntax)node),
+                SyntaxKind.TypeParameterDecl => VisitTypeParameterDecl((TypeParameterDeclSyntax)node),
 
                 // Statements
                 SyntaxKind.Block => VisitBlock((BlockSyntax)node),
@@ -234,6 +246,7 @@ namespace Ngo.Compiler.Language
                 SyntaxKind.CompositeLiteral => VisitCompositeLiteral((CompositeLiteralSyntax)node),
                 SyntaxKind.KeyValuePair => VisitKeyValueExpression((KeyValueExpressionSyntax)node),
                 SyntaxKind.FunctionLiteral => VisitFunctionLiteral((FunctionLiteralSyntax)node),
+                SyntaxKind.TypeArgumentList => VisitTypeArgumentList((TypeArgumentListSyntax)node),
 
                 // Types
                 SyntaxKind.PointerType => VisitPointerType((PointerTypeSyntax)node),
@@ -246,6 +259,8 @@ namespace Ngo.Compiler.Language
                 SyntaxKind.InterfaceType => VisitInterfaceType((InterfaceTypeSyntax)node),
                 SyntaxKind.MethodSpec => VisitMethodSpec((MethodSpecSyntax)node),
                 SyntaxKind.FunctionType => VisitFuncType((FuncTypeSyntax)node),
+                SyntaxKind.UnionType => VisitUnionType((UnionTypeSyntax)node),
+                SyntaxKind.UnionTerm => VisitUnionTerm((UnionTermSyntax)node),
 
                 _ => DefaultVisit(node),
             };
@@ -271,6 +286,8 @@ namespace Ngo.Compiler.Language
         protected virtual TResult? VisitConstDeclaration(ConstDeclarationSyntax node) => DefaultVisit(node);
         protected virtual TResult? VisitConstSpec(ConstSpecSyntax node) => DefaultVisit(node);
         protected virtual TResult? VisitErrorNode(ErrorNodeSyntax node) => DefaultVisit(node);
+        protected virtual TResult? VisitTypeParameterList(TypeParameterListSyntax node) => DefaultVisit(node);
+        protected virtual TResult? VisitTypeParameterDecl(TypeParameterDeclSyntax node) => DefaultVisit(node);
 
         // Statements
         protected virtual TResult? VisitBlock(BlockSyntax node) => DefaultVisit(node);
@@ -309,6 +326,7 @@ namespace Ngo.Compiler.Language
         protected virtual TResult? VisitCompositeLiteral(CompositeLiteralSyntax node) => DefaultVisit(node);
         protected virtual TResult? VisitKeyValueExpression(KeyValueExpressionSyntax node) => DefaultVisit(node);
         protected virtual TResult? VisitFunctionLiteral(FunctionLiteralSyntax node) => DefaultVisit(node);
+        protected virtual TResult? VisitTypeArgumentList(TypeArgumentListSyntax node) => DefaultVisit(node);
 
         // Types
         protected virtual TResult? VisitPointerType(PointerTypeSyntax node) => DefaultVisit(node);
@@ -321,5 +339,7 @@ namespace Ngo.Compiler.Language
         protected virtual TResult? VisitInterfaceType(InterfaceTypeSyntax node) => DefaultVisit(node);
         protected virtual TResult? VisitMethodSpec(MethodSpecSyntax node) => DefaultVisit(node);
         protected virtual TResult? VisitFuncType(FuncTypeSyntax node) => DefaultVisit(node);
+        protected virtual TResult? VisitUnionType(UnionTypeSyntax node) => DefaultVisit(node);
+        protected virtual TResult? VisitUnionTerm(UnionTermSyntax node) => DefaultVisit(node);
     }
 }

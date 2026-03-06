@@ -100,12 +100,16 @@ namespace Ngo.Compiler.Language
 
         protected override SyntaxNode? VisitFunctionDeclaration(FunctionDeclarationSyntax node)
         {
+            var typeParams = node.TypeParameters != null
+                ? (TypeParameterListSyntax)Visit(node.TypeParameters)! : null;
             var parameters = (ParameterListSyntax)Visit(node.Parameters)!;
             var result = node.Result != null ? Visit(node.Result) : null;
             var body = node.Body != null ? (BlockSyntax)Visit(node.Body)! : null;
-            if (parameters == node.Parameters && result == node.Result && body == node.Body)
+            if (typeParams == node.TypeParameters && parameters == node.Parameters
+                && result == node.Result && body == node.Body)
                 return node;
-            return new FunctionDeclarationSyntax(node.FuncKeyword, node.Name, parameters, result, body);
+            return new FunctionDeclarationSyntax(node.FuncKeyword, node.Name,
+                typeParams, parameters, result, body);
         }
 
         protected override SyntaxNode? VisitMethodDeclaration(MethodDeclarationSyntax node)
@@ -147,10 +151,12 @@ namespace Ngo.Compiler.Language
 
         protected override SyntaxNode? VisitTypeSpec(TypeSpecSyntax node)
         {
+            var typeParams = node.TypeParameters != null
+                ? (TypeParameterListSyntax)Visit(node.TypeParameters)! : null;
             var type = (ExpressionSyntax)Visit(node.Type)!;
-            if (type == node.Type)
+            if (typeParams == node.TypeParameters && type == node.Type)
                 return node;
-            return new TypeSpecSyntax(node.Name, node.AssignToken, type);
+            return new TypeSpecSyntax(node.Name, typeParams, node.AssignToken, type);
         }
 
         protected override SyntaxNode? VisitVarDeclaration(VarDeclarationSyntax node)
@@ -533,6 +539,48 @@ namespace Ngo.Compiler.Language
             if (key == node.Key && value == node.Value)
                 return node;
             return new KeyValueExpressionSyntax(key, node.Colon, value);
+        }
+
+        protected override SyntaxNode? VisitTypeParameterList(TypeParameterListSyntax node)
+        {
+            var parameters = VisitSeparatedList(node.Parameters);
+            if (parameters.GetWithSeparators() == node.Parameters.GetWithSeparators())
+                return node;
+            return new TypeParameterListSyntax(node.OpenBracket, parameters, node.CloseBracket);
+        }
+
+        protected override SyntaxNode? VisitTypeParameterDecl(TypeParameterDeclSyntax node)
+        {
+            var constraint = (ExpressionSyntax)Visit(node.Constraint)!;
+            if (constraint == node.Constraint)
+                return node;
+            return new TypeParameterDeclSyntax(node.Names, constraint);
+        }
+
+        protected override SyntaxNode? VisitTypeArgumentList(TypeArgumentListSyntax node)
+        {
+            var expression = (ExpressionSyntax)Visit(node.Expression)!;
+            var typeArgs = VisitSeparatedList(node.TypeArguments);
+            if (expression == node.Expression
+                && typeArgs.GetWithSeparators() == node.TypeArguments.GetWithSeparators())
+                return node;
+            return new TypeArgumentListSyntax(expression, node.OpenBracket, typeArgs, node.CloseBracket);
+        }
+
+        protected override SyntaxNode? VisitUnionType(UnionTypeSyntax node)
+        {
+            var terms = VisitList(node.Terms);
+            if (terms == node.Terms)
+                return node;
+            return new UnionTypeSyntax(terms);
+        }
+
+        protected override SyntaxNode? VisitUnionTerm(UnionTermSyntax node)
+        {
+            var type = (ExpressionSyntax)Visit(node.Type)!;
+            if (type == node.Type)
+                return node;
+            return new UnionTermSyntax(node.Tilde, type, node.Pipe);
         }
 
         protected override SyntaxNode? VisitFunctionLiteral(FunctionLiteralSyntax node)

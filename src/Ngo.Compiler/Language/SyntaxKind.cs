@@ -115,6 +115,7 @@ namespace Ngo.Compiler.Language
         // Special
         EndOfFileToken = 197,
         ErrorToken = 198,
+        TildeToken = 199,           // ~
 
         // ----------------------------------------------------------------
         // Token kinds — Keywords (300-399)
@@ -169,6 +170,8 @@ namespace Ngo.Compiler.Language
         Parameter = 1109,
         Receiver = 1110,
         ResultList = 1111,
+        TypeParameterList = 1112,
+        TypeParameterDecl = 1113,
 
         // ----------------------------------------------------------------
         // Node kinds — Statements (1200-1299)
@@ -213,6 +216,7 @@ namespace Ngo.Compiler.Language
         KeyValuePair = 1312,
         ElementList = 1313,
         ArgumentList = 1314,
+        TypeArgumentList = 1315,
 
         // ----------------------------------------------------------------
         // Node kinds — Types (1400-1499)
@@ -230,6 +234,8 @@ namespace Ngo.Compiler.Language
         FieldDeclaration = 1410,
         MethodSpec = 1411,
         EmbeddedType = 1412,
+        UnionType = 1413,
+        UnionTerm = 1414,
 
         // ----------------------------------------------------------------
         // Node kinds — Error (1500+)

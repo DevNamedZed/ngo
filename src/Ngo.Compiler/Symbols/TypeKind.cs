@@ -53,5 +53,6 @@ namespace Ngo.Compiler.Symbols
         Interface,
         Function,
         Channel,
+        TypeParameter,
     }
 }

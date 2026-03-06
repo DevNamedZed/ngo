@@ -132,12 +132,122 @@ namespace Ngo.Runtime
             return new Slice<byte>(Encoding.UTF8.GetBytes(str));
         }
 
+        public static GoBuffer NewBuffer(Slice<byte> buf)
+        {
+            var b = new GoBuffer();
+            b.Write(buf);
+            return b;
+        }
+
         private static byte[] SliceToArray(Slice<byte> s)
         {
             var arr = new byte[s.Len];
             for (int i = 0; i < s.Len; i++)
                 arr[i] = s[i];
             return arr;
+        }
+    }
+
+    public sealed class GoBuffer : IGoReader, IGoWriter
+    {
+        private byte[] _buf = new byte[64];
+        private int _len;
+
+        public (int, string) Write(Slice<byte> p)
+        {
+            EnsureCapacity(_len + p.Len);
+            for (int i = 0; i < p.Len; i++)
+                _buf[_len++] = p[i];
+            return (p.Len, "");
+        }
+
+        public (long, object?) WriteString(string s)
+        {
+            var bytes = Encoding.UTF8.GetBytes(s);
+            EnsureCapacity(_len + bytes.Length);
+            Array.Copy(bytes, 0, _buf, _len, bytes.Length);
+            _len += bytes.Length;
+            return (bytes.Length, null);
+        }
+
+        public object? WriteByte(long c)
+        {
+            EnsureCapacity(_len + 1);
+            _buf[_len++] = (byte)c;
+            return null;
+        }
+
+        public (long, object?) ReadFrom(object reader)
+        {
+            if (reader is IGoReader r)
+            {
+                long total = 0;
+                var tmp = new Slice<byte>(new byte[4096]);
+                while (true)
+                {
+                    var (n, err) = r.Read(tmp);
+                    if (n > 0)
+                    {
+                        EnsureCapacity(_len + n);
+                        for (int i = 0; i < n; i++)
+                            _buf[_len++] = tmp[i];
+                        total += n;
+                    }
+                    if (err is string s && s == GoIo.EOF)
+                        break;
+                    if (err != null && err is string se && se != "")
+                        return (total, err);
+                    if (n == 0)
+                        break;
+                }
+                return (total, null);
+            }
+            return (0, "bytes.Buffer: ReadFrom: invalid reader");
+        }
+
+        public (int, string) Read(Slice<byte> p)
+        {
+            if (_len == 0) return (0, GoIo.EOF);
+            int n = Math.Min(p.Len, _len);
+            for (int i = 0; i < n; i++)
+                p[i] = _buf[i];
+            // Shift remaining bytes
+            Array.Copy(_buf, n, _buf, 0, _len - n);
+            _len -= n;
+            return (n, "");
+        }
+
+        public Slice<byte> Bytes()
+        {
+            var result = new byte[_len];
+            Array.Copy(_buf, result, _len);
+            return new Slice<byte>(result);
+        }
+
+        public string String()
+        {
+            return Encoding.UTF8.GetString(_buf, 0, _len);
+        }
+
+        public long Len() => _len;
+
+        public long Cap() => _buf.Length;
+
+        public void Reset()
+        {
+            _len = 0;
+        }
+
+        public override string ToString() => String();
+
+        private void EnsureCapacity(int needed)
+        {
+            if (needed <= _buf.Length) return;
+            int newCap = _buf.Length * 2;
+            if (newCap < needed) newCap = needed;
+            var newBuf = new byte[newCap];
+            Array.Copy(_buf, newBuf, _len);
+            _buf = newBuf;
         }
     }
 }

@@ -277,6 +277,12 @@ namespace Ngo.Compiler.Emit
             if (!_ctx.Methods.TryGetValue(mv.Method, out var targetMethod))
                 return;
 
+            if (mv.IsMethodExpression)
+            {
+                EmitMethodExpression(mv, targetMethod);
+                return;
+            }
+
             // Create a closure class that captures the receiver and forwards calls
             var closureName = $"__methodval_{_body.LambdaCounter++}";
             var receiverClrType = _ctx.Mapper.Map(mv.Receiver.Type);
@@ -328,6 +334,17 @@ namespace Ngo.Compiler.Emit
             var runtimeMethod = closureType.GetMethod("Invoke")!;
             _ctx.IL.Emit(OpCodes.Ldloc, closureLocal);
             _ctx.IL.Emit(OpCodes.Ldftn, runtimeMethod);
+            var delegateCtor = delegateType.GetConstructor(new[] { typeof(object), typeof(IntPtr) })!;
+            _ctx.IL.Emit(OpCodes.Newobj, delegateCtor);
+        }
+
+        private void EmitMethodExpression(MethodValueExpression mv, MethodBuilder targetMethod)
+        {
+            // Method expression: Type.Method → static wrapper func(receiver, args...) returns
+            // The target method IS already static (receiver as first param), so we can use it directly.
+            var delegateType = _ctx.Mapper.Map(mv.FunctionType);
+            _ctx.IL.Emit(OpCodes.Ldnull);
+            _ctx.IL.Emit(OpCodes.Ldftn, targetMethod);
             var delegateCtor = delegateType.GetConstructor(new[] { typeof(object), typeof(IntPtr) })!;
             _ctx.IL.Emit(OpCodes.Newobj, delegateCtor);
         }

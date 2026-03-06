@@ -220,13 +220,16 @@ namespace Ngo.Compiler.Language
                 return new MethodDeclarationSyntax(funcKeyword, receiver, name, parameters, result, body);
             }
 
-            // Function: func name(params) result { body }
+            // Function: func name[T any](params) result { body }
             {
                 var name = Expect(SyntaxKind.IdentifierToken);
+                TypeParameterListSyntax? typeParams = null;
+                if (At(SyntaxKind.OpenBracketToken) && LooksLikeTypeParameterList())
+                    typeParams = ParseTypeParameterList();
                 var parameters = ParseParameterList();
                 var result = ParseResult();
                 var body = At(SyntaxKind.OpenBraceToken) ? ParseBlock() : null;
-                return new FunctionDeclarationSyntax(funcKeyword, name, parameters, result, body);
+                return new FunctionDeclarationSyntax(funcKeyword, name, typeParams, parameters, result, body);
             }
         }
 
@@ -364,12 +367,16 @@ namespace Ngo.Compiler.Language
         {
             var name = Expect(SyntaxKind.IdentifierToken);
 
+            TypeParameterListSyntax? typeParams = null;
+            if (At(SyntaxKind.OpenBracketToken) && LooksLikeTypeParameterList())
+                typeParams = ParseTypeParameterList();
+
             SyntaxToken? assign = null;
             if (At(SyntaxKind.EqualsToken))
                 assign = Advance();
 
             var type = ParseType();
-            return new TypeSpecSyntax(name, assign, type);
+            return new TypeSpecSyntax(name, typeParams, assign, type);
         }
 
         // ================================================================
@@ -1360,7 +1367,21 @@ namespace Ngo.Compiler.Language
                 return new SliceExpressionSyntax(expr, open, first, colon1, high, colon2, max, close);
             }
 
-            // Simple index
+            // Multi type arguments: expr[T1, T2, ...]
+            if (At(SyntaxKind.CommaToken) && first != null)
+            {
+                var typeArgBuilder = new List<SyntaxNode> { first };
+                while (At(SyntaxKind.CommaToken))
+                {
+                    typeArgBuilder.Add(Advance()); // comma
+                    typeArgBuilder.Add(ParseExpression());
+                }
+                var close = Expect(SyntaxKind.CloseBracketToken);
+                var typeArgs = new SeparatedSyntaxList<ExpressionSyntax>(typeArgBuilder);
+                return new TypeArgumentListSyntax(expr, open, typeArgs, close);
+            }
+
+            // Simple index (or single type arg — disambiguated in semantics)
             var closeBracket = Expect(SyntaxKind.CloseBracketToken);
             return new IndexExpressionSyntax(expr, open, first!, closeBracket);
         }
@@ -1656,7 +1677,12 @@ namespace Ngo.Compiler.Language
 
             while (!At(SyntaxKind.CloseBraceToken) && !At(SyntaxKind.EndOfFileToken))
             {
-                if (At(SyntaxKind.IdentifierToken) && Peek(1).Kind == SyntaxKind.OpenParenToken)
+                if (At(SyntaxKind.TildeToken))
+                {
+                    // Union type element starting with ~
+                    members.Add(ParseUnionConstraint());
+                }
+                else if (At(SyntaxKind.IdentifierToken) && Peek(1).Kind == SyntaxKind.OpenParenToken)
                 {
                     // Method spec: name(params) result
                     var name = Advance();
@@ -1666,9 +1692,17 @@ namespace Ngo.Compiler.Language
                 }
                 else
                 {
-                    // Embedded type
+                    // Embedded type or union type element
                     var embeddedType = ParseType();
-                    members.Add(embeddedType);
+                    if (At(SyntaxKind.PipeToken))
+                    {
+                        // Union type: int | float64 | ...
+                        members.Add(ParseUnionConstraintContinuation(embeddedType));
+                    }
+                    else
+                    {
+                        members.Add(embeddedType);
+                    }
                 }
 
                 SkipSemicolon();
@@ -1676,6 +1710,182 @@ namespace Ngo.Compiler.Language
 
             var close = Expect(SyntaxKind.CloseBraceToken);
             return new InterfaceTypeSyntax(interfaceKeyword, open, members, close);
+        }
+
+        // ================================================================
+        // Generics: Type parameter lists and type argument lists
+        // ================================================================
+
+        /// <summary>
+        /// Disambiguates [N]T (array type) from [T any] (type parameter list).
+        /// Called when current token is [. Uses lookahead heuristics.
+        /// </summary>
+        private bool LooksLikeTypeParameterList()
+        {
+            // Must be at [
+            if (!At(SyntaxKind.OpenBracketToken)) return false;
+
+            var next = Peek(1);
+
+            // [123...] or [...]  → array, not type params
+            if (next.Kind == SyntaxKind.IntLiteralToken || next.Kind == SyntaxKind.EllipsisToken)
+                return false;
+
+            // [] → slice type, not type params
+            if (next.Kind == SyntaxKind.CloseBracketToken)
+                return false;
+
+            // [ident ...] — look further
+            if (next.Kind == SyntaxKind.IdentifierToken)
+            {
+                var afterIdent = Peek(2);
+                // [T any] or [T comparable] or [T interface{...}] — two idents = type params
+                if (afterIdent.Kind == SyntaxKind.IdentifierToken)
+                    return true;
+                // [T, U ...] — comma after ident = type params
+                if (afterIdent.Kind == SyntaxKind.CommaToken)
+                    return true;
+                // [T interface...] — type params
+                if (afterIdent.Kind == SyntaxKind.InterfaceKeyword)
+                    return true;
+                // [T ~int] — tilde = type params
+                if (afterIdent.Kind == SyntaxKind.TildeToken)
+                    return true;
+                // [T] — single ident followed by close bracket. This is ambiguous.
+                // In declaration context (where we call this), treat as type param only
+                // if what follows the ] looks like a type start (struct, interface, etc.)
+                // rather than a type (which would be array [T]someType).
+                // However, for declarations, [T] is always type param since
+                // array types use literal sizes. We check if T is not a known builtin number.
+                if (afterIdent.Kind == SyntaxKind.CloseBracketToken)
+                    return true;
+            }
+
+            // [~...] — tilde can only appear in type param constraints
+            if (next.Kind == SyntaxKind.TildeToken)
+                return true;
+
+            return false;
+        }
+
+        private TypeParameterListSyntax ParseTypeParameterList()
+        {
+            var open = Expect(SyntaxKind.OpenBracketToken);
+            var builder = new List<SyntaxNode>();
+
+            builder.Add(ParseTypeParameterDecl());
+
+            while (At(SyntaxKind.CommaToken))
+            {
+                builder.Add(Advance()); // comma
+                if (At(SyntaxKind.CloseBracketToken))
+                    break; // trailing comma
+                builder.Add(ParseTypeParameterDecl());
+            }
+
+            var close = Expect(SyntaxKind.CloseBracketToken);
+            var parameters = new SeparatedSyntaxList<TypeParameterDeclSyntax>(builder);
+            return new TypeParameterListSyntax(open, parameters, close);
+        }
+
+        private TypeParameterDeclSyntax ParseTypeParameterDecl()
+        {
+            // Parse name(s): T  or  T, U
+            var nameBuilder = new List<SyntaxNode>();
+            nameBuilder.Add(Expect(SyntaxKind.IdentifierToken));
+
+            // Check if next is comma followed by identifier followed by non-] non-, token
+            // (i.e., grouped names like T, U comparable)
+            while (At(SyntaxKind.CommaToken) && Peek(1).Kind == SyntaxKind.IdentifierToken)
+            {
+                // Peek further: if after the next ident we see another ident or ~,
+                // that's the constraint, so these commas separate names sharing a constraint.
+                // If we see , or ] then the next ident is a new decl group.
+                var afterNextIdent = Peek(2);
+                if (afterNextIdent.Kind == SyntaxKind.IdentifierToken
+                    || afterNextIdent.Kind == SyntaxKind.TildeToken
+                    || afterNextIdent.Kind == SyntaxKind.InterfaceKeyword
+                    || afterNextIdent.Kind == SyntaxKind.PipeToken)
+                {
+                    nameBuilder.Add(Advance()); // comma
+                    nameBuilder.Add(Advance()); // identifier
+                }
+                else
+                {
+                    break;
+                }
+            }
+
+            var names = new SeparatedSyntaxList<SyntaxToken>(nameBuilder);
+
+            // Parse constraint: any, comparable, interface{...}, ~int | ~float64, etc.
+            ExpressionSyntax constraint;
+            if (At(SyntaxKind.TildeToken))
+            {
+                constraint = ParseUnionConstraint();
+            }
+            else
+            {
+                constraint = ParseType();
+                // Check for union: type | type
+                if (At(SyntaxKind.PipeToken))
+                {
+                    constraint = ParseUnionConstraintContinuation(constraint);
+                }
+            }
+
+            return new TypeParameterDeclSyntax(names, constraint);
+        }
+
+        private UnionTypeSyntax ParseUnionConstraint()
+        {
+            var terms = new List<UnionTermSyntax>();
+
+            do
+            {
+                SyntaxToken? tilde = null;
+                if (At(SyntaxKind.TildeToken))
+                    tilde = Advance();
+
+                var type = ParseType();
+
+                SyntaxToken? pipe = null;
+                if (At(SyntaxKind.PipeToken))
+                    pipe = Advance();
+
+                terms.Add(new UnionTermSyntax(tilde, type, pipe));
+            }
+            while (terms[terms.Count - 1].Pipe != null);
+
+            return new UnionTypeSyntax(terms);
+        }
+
+        private UnionTypeSyntax ParseUnionConstraintContinuation(ExpressionSyntax firstType)
+        {
+            var terms = new List<UnionTermSyntax>();
+
+            // First term (already parsed type, now we see |)
+            var pipe = Advance(); // |
+            terms.Add(new UnionTermSyntax(null, firstType, pipe));
+
+            // Remaining terms
+            do
+            {
+                SyntaxToken? tilde = null;
+                if (At(SyntaxKind.TildeToken))
+                    tilde = Advance();
+
+                var type = ParseType();
+
+                SyntaxToken? nextPipe = null;
+                if (At(SyntaxKind.PipeToken))
+                    nextPipe = Advance();
+
+                terms.Add(new UnionTermSyntax(tilde, type, nextPipe));
+            }
+            while (terms[terms.Count - 1].Pipe != null);
+
+            return new UnionTypeSyntax(terms);
         }
 
         // ================================================================

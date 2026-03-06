@@ -16,6 +16,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
+using System;
 using System.Collections.Generic;
 
 namespace Ngo.Compiler.Symbols
@@ -26,6 +27,16 @@ namespace Ngo.Compiler.Symbols
             : base(name, TypeKind.Interface, null)
         {
             Methods = methods;
+        }
+
+        public IReadOnlyList<TypeParameterSymbol> TypeParameters { get; private set; }
+            = Array.Empty<TypeParameterSymbol>();
+
+        public bool IsGeneric => TypeParameters.Count > 0;
+
+        public void SetTypeParameters(IReadOnlyList<TypeParameterSymbol> typeParameters)
+        {
+            TypeParameters = typeParameters;
         }
 
         public new IReadOnlyList<MethodSymbol> Methods { get; private set; }

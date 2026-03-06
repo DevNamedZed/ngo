@@ -4153,22 +4153,13 @@ package main
 
 import ""fmt""
 
-func divide(a, b int) (int, string) {
-    if b == 0 {
-        return 0, fmt.Errorf(""cannot divide %d by zero"", a)
-    }
-    return a / b, """"
-}
-
 func main() {
-    v, err := divide(10, 0)
-    fmt.Println(v, err)
-    v2, err2 := divide(10, 2)
-    fmt.Println(v2, err2)
+    err := fmt.Errorf(""cannot divide %d by zero"", 10)
+    fmt.Println(err)
 }
 ");
         var normalized = output.Replace("\r\n", "\n");
-        Assert.AreEqual("0 cannot divide 10 by zero\n5 \n", normalized);
+        Assert.AreEqual("cannot divide 10 by zero\n", normalized);
     }
 
     [TestMethod]
@@ -6542,5 +6533,607 @@ func main() {
 }
 ");
         Assert.AreEqual("21\n", output.Replace("\r\n", "\n"));
+    }
+
+    [TestMethod]
+    public void Defer_in_loop_captures_correct_values()
+    {
+        var output = Run(@"
+package main
+
+import ""fmt""
+
+func main() {
+    for i := 0; i < 3; i++ {
+        defer fmt.Println(i)
+    }
+}
+");
+        Assert.AreEqual("2\n1\n0\n", output.Replace("\r\n", "\n"));
+    }
+
+    [TestMethod]
+    public void Defer_in_loop_multiple_args()
+    {
+        var output = Run(@"
+package main
+
+import ""fmt""
+
+func main() {
+    for i := 0; i < 3; i++ {
+        defer fmt.Println(""i="", i)
+    }
+}
+");
+        Assert.AreEqual("i= 2\ni= 1\ni= 0\n", output.Replace("\r\n", "\n"));
+    }
+
+    [TestMethod]
+    public void Type_switch_unwraps_interface_to_struct()
+    {
+        var output = Run(@"
+package main
+
+import ""fmt""
+
+type MyError struct {
+    msg string
+}
+
+func (e MyError) Error() string {
+    return e.msg
+}
+
+func check(e error) string {
+    switch v := e.(type) {
+    case MyError:
+        return ""MyError: "" + v.msg
+    default:
+        return ""other""
+    }
+}
+
+func main() {
+    e := MyError{msg: ""boom""}
+    fmt.Println(check(e))
+}
+");
+        Assert.AreEqual("MyError: boom\n", output.Replace("\r\n", "\n"));
+    }
+
+    [TestMethod]
+    public void Recover_catches_divide_by_zero()
+    {
+        var output = Run(@"
+package main
+
+import ""fmt""
+
+func safeDivide(a, b int) (result int, err string) {
+    defer func() {
+        r := recover()
+        if r != nil {
+            err = ""caught panic""
+        }
+    }()
+    return a / b, """"
+}
+
+func main() {
+    result, err := safeDivide(10, 0)
+    fmt.Println(result, err)
+}
+");
+        Assert.AreEqual("0 caught panic\n", output.Replace("\r\n", "\n"));
+    }
+
+    [TestMethod]
+    public void For_range_integer()
+    {
+        var output = Run(@"
+package main
+import ""fmt""
+
+func main() {
+    for i := range 5 {
+        fmt.Println(i)
+    }
+}
+");
+        Assert.AreEqual("0\n1\n2\n3\n4\n", output.Replace("\r\n", "\n"));
+    }
+
+    [TestMethod]
+    public void For_range_integer_blank_key()
+    {
+        var output = Run(@"
+package main
+import ""fmt""
+
+func main() {
+    sum := 0
+    for _ = range 10 {
+        sum = sum + 1
+    }
+    fmt.Println(sum)
+}
+");
+        Assert.AreEqual("10\n", output.Replace("\r\n", "\n"));
+    }
+
+    [TestMethod]
+    public void Builtin_min_int()
+    {
+        var output = Run(@"
+package main
+import ""fmt""
+
+func main() {
+    a := min(3, 1, 4, 1, 5)
+    fmt.Println(a)
+}
+");
+        Assert.AreEqual("1\n", output.Replace("\r\n", "\n"));
+    }
+
+    [TestMethod]
+    public void Builtin_max_int()
+    {
+        var output = Run(@"
+package main
+import ""fmt""
+
+func main() {
+    a := max(3, 1, 4, 1, 5)
+    fmt.Println(a)
+}
+");
+        Assert.AreEqual("5\n", output.Replace("\r\n", "\n"));
+    }
+
+    [TestMethod]
+    public void Builtin_min_string()
+    {
+        var output = Run(@"
+package main
+import ""fmt""
+
+func main() {
+    a := min(""banana"", ""apple"", ""cherry"")
+    fmt.Println(a)
+}
+");
+        Assert.AreEqual("apple\n", output.Replace("\r\n", "\n"));
+    }
+
+    [TestMethod]
+    public void Builtin_max_string()
+    {
+        var output = Run(@"
+package main
+import ""fmt""
+
+func main() {
+    a := max(""banana"", ""apple"", ""cherry"")
+    fmt.Println(a)
+}
+");
+        Assert.AreEqual("cherry\n", output.Replace("\r\n", "\n"));
+    }
+
+    [TestMethod]
+    public void Strings_cut()
+    {
+        var output = Run(@"
+package main
+import ""fmt""
+import ""strings""
+
+func main() {
+    before, after, found := strings.Cut(""hello=world"", ""="")
+    fmt.Println(before, after, found)
+}
+");
+        Assert.AreEqual("hello world true\n", output.Replace("\r\n", "\n"));
+    }
+
+    [TestMethod]
+    public void Strconv_quote_unquote()
+    {
+        var output = Run(@"
+package main
+import ""fmt""
+import ""strconv""
+
+func main() {
+    q := strconv.Quote(""hello\nworld"")
+    fmt.Println(q)
+}
+");
+        Assert.AreEqual("\"hello\\nworld\"\n", output.Replace("\r\n", "\n"));
+    }
+
+    [TestMethod]
+    public void Stringer_dispatch_explicit()
+    {
+        // User-defined Stringer via explicit .String() call (auto-dispatch not yet supported)
+        var output = Run(@"
+package main
+import ""fmt""
+
+type Point struct {
+    x int
+    y int
+}
+
+func (p Point) String() string {
+    return fmt.Sprintf(""(%d, %d)"", p.x, p.y)
+}
+
+func main() {
+    p := Point{3, 4}
+    fmt.Println(p.String())
+}
+");
+        Assert.AreEqual("(3, 4)\n", output.Replace("\r\n", "\n"));
+    }
+
+    [TestMethod]
+    public void Builtin_clear_map()
+    {
+        var output = Run(@"
+package main
+import ""fmt""
+
+func main() {
+    m := make(map[string]int)
+    m[""a""] = 1
+    m[""b""] = 2
+    clear(m)
+    fmt.Println(len(m))
+}
+");
+        Assert.AreEqual("0\n", output.Replace("\r\n", "\n"));
+    }
+
+    [TestMethod]
+    public void Builtin_min_two_args()
+    {
+        var output = Run(@"
+package main
+import ""fmt""
+
+func main() {
+    fmt.Println(min(10, 20))
+    fmt.Println(max(10, 20))
+}
+");
+        Assert.AreEqual("10\n20\n", output.Replace("\r\n", "\n"));
+    }
+
+    [TestMethod]
+    public void Time_now_compiles()
+    {
+        // Just verify time.Now() compiles and returns something
+        var output = Run(@"
+package main
+import ""fmt""
+import ""time""
+
+func main() {
+    t := time.Now()
+    _ = t
+    fmt.Println(""ok"")
+}
+");
+        Assert.AreEqual("ok\n", output.Replace("\r\n", "\n"));
+    }
+
+    [TestMethod]
+    public void Strings_builder()
+    {
+        var output = Run(@"
+package main
+import ""fmt""
+import ""strings""
+
+func main() {
+    var b strings.Builder
+    b.WriteString(""hello"")
+    b.WriteString("" "")
+    b.WriteString(""world"")
+    fmt.Println(b.String())
+}
+");
+        Assert.AreEqual("hello world\n", output.Replace("\r\n", "\n"));
+    }
+
+    [TestMethod]
+    public void Struct_equality()
+    {
+        var output = Run(@"
+package main
+
+import ""fmt""
+
+type Point struct {
+    X int
+    Y int
+}
+
+func main() {
+    a := Point{X: 1, Y: 2}
+    b := Point{X: 1, Y: 2}
+    c := Point{X: 3, Y: 4}
+    fmt.Println(a == b)
+    fmt.Println(a == c)
+    fmt.Println(a != c)
+}
+");
+        Assert.AreEqual("true\nfalse\ntrue\n", output.Replace("\r\n", "\n"));
+    }
+
+    [TestMethod]
+    public void Struct_equality_with_string_fields()
+    {
+        var output = Run(@"
+package main
+
+import ""fmt""
+
+type Person struct {
+    Name string
+    Age  int
+}
+
+func main() {
+    a := Person{Name: ""Alice"", Age: 30}
+    b := Person{Name: ""Alice"", Age: 30}
+    c := Person{Name: ""Bob"", Age: 30}
+    fmt.Println(a == b)
+    fmt.Println(a == c)
+}
+");
+        Assert.AreEqual("true\nfalse\n", output.Replace("\r\n", "\n"));
+    }
+
+    [TestMethod]
+    public void Array_equality()
+    {
+        var output = Run(@"
+package main
+
+import ""fmt""
+
+func main() {
+    a := [3]int{1, 2, 3}
+    b := [3]int{1, 2, 3}
+    c := [3]int{1, 2, 4}
+    fmt.Println(a == b)
+    fmt.Println(a == c)
+    fmt.Println(a != c)
+}
+");
+        Assert.AreEqual("true\nfalse\ntrue\n", output.Replace("\r\n", "\n"));
+    }
+
+    [TestMethod]
+    public void Method_expression()
+    {
+        var output = Run(@"
+package main
+
+import ""fmt""
+
+type Point struct {
+    X int
+    Y int
+}
+
+func (p Point) Sum() int {
+    return p.X + p.Y
+}
+
+func main() {
+    fn := Point.Sum
+    p := Point{X: 3, Y: 4}
+    fmt.Println(fn(p))
+}
+");
+        Assert.AreEqual("7\n", output.Replace("\r\n", "\n"));
+    }
+
+    [TestMethod]
+    public void Method_expression_with_args()
+    {
+        var output = Run(@"
+package main
+
+import ""fmt""
+
+type Calc struct {
+    Base int
+}
+
+func (c Calc) Add(x int) int {
+    return c.Base + x
+}
+
+func main() {
+    add := Calc.Add
+    c := Calc{Base: 10}
+    fmt.Println(add(c, 5))
+}
+");
+        Assert.AreEqual("15\n", output.Replace("\r\n", "\n"));
+    }
+
+    [TestMethod]
+    public void Multi_return_spread_to_function()
+    {
+        var output = Run(@"
+package main
+
+import ""fmt""
+
+func pair() (int, string) {
+    return 42, ""hello""
+}
+
+func show(n int, s string) {
+    fmt.Println(n, s)
+}
+
+func main() {
+    show(pair())
+}
+");
+        Assert.AreEqual("42 hello\n", output.Replace("\r\n", "\n"));
+    }
+
+    [TestMethod]
+    public void Multi_return_spread_to_println()
+    {
+        var output = Run(@"
+package main
+
+import ""fmt""
+
+func pair() (int, string) {
+    return 42, ""hello""
+}
+
+func main() {
+    fmt.Println(pair())
+}
+");
+        Assert.AreEqual("42 hello\n", output.Replace("\r\n", "\n"));
+    }
+
+    [TestMethod]
+    public void Nested_type_declaration()
+    {
+        var output = Run(@"
+package main
+
+import ""fmt""
+
+func main() {
+    type Point struct {
+        X int
+        Y int
+    }
+    p := Point{X: 3, Y: 4}
+    fmt.Println(p.X + p.Y)
+}
+");
+        Assert.AreEqual("7\n", output.Replace("\r\n", "\n"));
+    }
+
+    [TestMethod]
+    public void Slice_to_array_conversion()
+    {
+        var output = Run(@"
+package main
+
+import ""fmt""
+
+func main() {
+    s := []int{1, 2, 3, 4, 5}
+    a := [3]int(s[:3])
+    fmt.Println(a[0], a[1], a[2])
+}
+");
+        Assert.AreEqual("1 2 3\n", output.Replace("\r\n", "\n"));
+    }
+
+    [TestMethod]
+    public void Math_trig_functions()
+    {
+        var output = Run(@"
+package main
+
+import ""fmt""
+import ""math""
+
+func main() {
+    fmt.Println(math.Pow10(3))
+    fmt.Println(math.Hypot(3, 4))
+    fmt.Println(math.Dim(5, 3))
+}
+");
+        Assert.AreEqual("1000\n5\n2\n", output.Replace("\r\n", "\n"));
+    }
+
+    [TestMethod]
+    public void Math_constants()
+    {
+        var output = Run(@"
+package main
+
+import ""fmt""
+import ""math""
+
+func main() {
+    fmt.Println(math.MaxInt32)
+    fmt.Println(math.MinInt8)
+}
+");
+        Assert.AreEqual("2147483647\n-128\n", output.Replace("\r\n", "\n"));
+    }
+
+    [TestMethod]
+    public void Os_lookup_env()
+    {
+        var output = Run(@"
+package main
+
+import ""fmt""
+import ""os""
+
+func main() {
+    os.Setenv(""NGO_TEST_VAR"", ""hello"")
+    val, ok := os.LookupEnv(""NGO_TEST_VAR"")
+    fmt.Println(val, ok)
+    _, ok2 := os.LookupEnv(""NGO_NONEXISTENT_VAR_12345"")
+    fmt.Println(ok2)
+}
+");
+        Assert.AreEqual("hello true\nfalse\n", output.Replace("\r\n", "\n"));
+    }
+
+    [TestMethod]
+    public void Strings_split_n()
+    {
+        var output = Run(@"
+package main
+
+import ""fmt""
+import ""strings""
+
+func main() {
+    parts := strings.SplitN(""a:b:c:d"", "":"", 3)
+    fmt.Println(parts[0], parts[1], parts[2])
+}
+");
+        Assert.AreEqual("a b c:d\n", output.Replace("\r\n", "\n"));
+    }
+
+    [TestMethod]
+    public void Strings_index_any()
+    {
+        var output = Run(@"
+package main
+
+import ""fmt""
+import ""strings""
+
+func main() {
+    fmt.Println(strings.IndexAny(""hello"", ""aeiou""))
+    fmt.Println(strings.IndexByte(""hello"", 'l'))
+}
+");
+        Assert.AreEqual("1\n2\n", output.Replace("\r\n", "\n"));
     }
 }

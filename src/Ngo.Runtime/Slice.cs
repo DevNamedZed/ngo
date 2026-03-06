@@ -108,6 +108,18 @@ namespace Ngo.Runtime
             }
         }
 
+        /// <summary>Swaps elements at indices i and j.</summary>
+        public void Swap(int i, int j)
+        {
+            if ((uint)i >= (uint)Len)
+                throw new GoPanicException($"runtime error: index out of range [{i}] with length {Len}");
+            if ((uint)j >= (uint)Len)
+                throw new GoPanicException($"runtime error: index out of range [{j}] with length {Len}");
+            T tmp = _array![_offset + i];
+            _array[_offset + i] = _array[_offset + j];
+            _array[_offset + j] = tmp;
+        }
+
         /// <summary>2-index reslice: s[low:high]</summary>
         public Slice<T> Reslice(int low, int high)
         {

@@ -44,46 +44,69 @@ namespace Ngo.Compiler.Semantics
 
         public SourceFile ResolveSourceFile(SourceFileSyntax syntax)
         {
-            var packageDecl = ResolvePackageClause(syntax.PackageClause);
+            return ResolveSourceFiles(new[] { syntax });
+        }
+
+        public SourceFile ResolveSourceFiles(IReadOnlyList<SourceFileSyntax> files)
+        {
+            var packageDecl = ResolvePackageClause(files[0].PackageClause);
+
+            // Validate all files declare the same package
+            for (int i = 1; i < files.Count; i++)
+            {
+                if (files[i].PackageClause.Name.Text != files[0].PackageClause.Name.Text)
+                {
+                    _context.Errors.ReportError(_context.SpanOf(files[i].PackageClause),
+                        ErrorCode.TypeMismatch,
+                        $"Found package '{files[i].PackageClause.Name.Text}' but expected '{files[0].PackageClause.Name.Text}'");
+                }
+            }
 
             // Push package scope
             _context.PushScope("package");
 
-            // Process imports before declarations
-            var imports = ResolveImports(syntax.Imports);
+            // Process imports from all files
+            var imports = new List<ImportDeclaration>();
+            foreach (var file in files)
+            {
+                imports.AddRange(ResolveImports(file.Imports));
+            }
 
-            // Pass 1: register all type, function, and method signatures (forward declaration support)
+            // Pass 1: register all type, function, and method signatures from all files
             var functionSyntaxes = new List<FunctionDeclarationSyntax>();
             var methodSyntaxes = new List<MethodDeclarationSyntax>();
             var varSyntaxes = new List<VarDeclarationSyntax>();
             var typeSyntaxes = new List<TypeDeclarationSyntax>();
             var constSyntaxes = new List<ConstDeclarationSyntax>();
 
-            foreach (var member in syntax.Members)
+            foreach (var file in files)
             {
-                if (member is FunctionDeclarationSyntax funcSyntax)
+                foreach (var member in file.Members)
                 {
-                    functionSyntaxes.Add(funcSyntax);
-                }
-                else if (member is MethodDeclarationSyntax methodSyntax)
-                {
-                    methodSyntaxes.Add(methodSyntax);
-                }
-                else if (member is VarDeclarationSyntax varSyntax)
-                {
-                    varSyntaxes.Add(varSyntax);
-                }
-                else if (member is TypeDeclarationSyntax typeSyntax)
-                {
-                    typeSyntaxes.Add(typeSyntax);
-                    foreach (var spec in typeSyntax.Specs)
+                    if (member is FunctionDeclarationSyntax funcSyntax)
                     {
-                        RegisterTypeDeclaration(spec);
+                        functionSyntaxes.Add(funcSyntax);
                     }
-                }
-                else if (member is ConstDeclarationSyntax constSyntax)
-                {
-                    constSyntaxes.Add(constSyntax);
+                    else if (member is MethodDeclarationSyntax methodSyntax)
+                    {
+                        methodSyntaxes.Add(methodSyntax);
+                    }
+                    else if (member is VarDeclarationSyntax varSyntax)
+                    {
+                        varSyntaxes.Add(varSyntax);
+                    }
+                    else if (member is TypeDeclarationSyntax typeSyntax)
+                    {
+                        typeSyntaxes.Add(typeSyntax);
+                        foreach (var spec in typeSyntax.Specs)
+                        {
+                            RegisterTypeDeclaration(spec);
+                        }
+                    }
+                    else if (member is ConstDeclarationSyntax constSyntax)
+                    {
+                        constSyntaxes.Add(constSyntax);
+                    }
                 }
             }
 
@@ -139,7 +162,8 @@ namespace Ngo.Compiler.Semantics
             ReportUnusedImports(imports);
             _context.PopScope(); // package
 
-            return new SourceFile(packageDecl, imports, functions, methods, variables, types, constants, _context.SpanOf(syntax));
+            return new SourceFile(packageDecl, imports, functions, methods, variables, types, constants,
+                _context.SpanOf(files[0]));
         }
 
         private PackageDeclaration ResolvePackageClause(PackageClauseSyntax syntax)
@@ -237,8 +261,26 @@ namespace Ngo.Compiler.Semantics
 
         private void RegisterFunction(FunctionDeclarationSyntax syntax)
         {
+            // Resolve type parameters if present
+            IReadOnlyList<TypeParameterSymbol> typeParams;
+            if (syntax.TypeParameters != null)
+            {
+                typeParams = ResolveTypeParameterList(syntax.TypeParameters);
+                // Push type params into scope so parameter/return types can reference them
+                _context.PushScope("typeParams");
+                foreach (var tp in typeParams)
+                    _context.Scope.TryDeclare(tp);
+            }
+            else
+            {
+                typeParams = Array.Empty<TypeParameterSymbol>();
+            }
+
             var parameters = _typeResolver.ResolveParameterList(syntax.Parameters);
             var returnTypes = _typeResolver.ResolveResultTypes(syntax.Result);
+
+            if (syntax.TypeParameters != null)
+                _context.PopScope();
 
             // Detect variadic: last parameter in syntax has an ellipsis
             bool isVariadic = false;
@@ -248,7 +290,7 @@ namespace Ngo.Compiler.Semantics
                 isVariadic = lastParam.Ellipsis != null;
             }
 
-            var symbol = new FunctionSymbol(syntax.Name.Text, parameters, returnTypes, isVariadic);
+            var symbol = new FunctionSymbol(syntax.Name.Text, typeParams, parameters, returnTypes, isVariadic);
 
             // Go allows multiple init() functions — don't register in scope,
             // track separately instead
@@ -282,6 +324,12 @@ namespace Ngo.Compiler.Semantics
             var previousReturnTypes = _context.CurrentReturnTypes;
             var previousNamedReturns = _context.CurrentNamedReturns;
             _context.CurrentReturnTypes = symbol.ReturnTypes;
+
+            // Register type parameters in function scope
+            foreach (var tp in symbol.TypeParameters)
+            {
+                _context.Scope.TryDeclare(tp);
+            }
 
             foreach (var param in symbol.Parameters)
             {
@@ -488,10 +536,19 @@ namespace Ngo.Compiler.Semantics
                 return;
             }
 
+            // Resolve type parameters if present
+            IReadOnlyList<TypeParameterSymbol>? typeParams = null;
+            if (syntax.TypeParameters != null)
+            {
+                typeParams = ResolveTypeParameterList(syntax.TypeParameters);
+            }
+
             // Named type definition: create the type symbol now, fill in fields/methods in pass 2
             if (syntax.Type is StructTypeSyntax)
             {
                 var structType = new StructTypeSymbol(name, new List<FieldSymbol>());
+                if (typeParams != null)
+                    structType.SetTypeParameters(typeParams);
                 if (!_context.Scope.TryDeclare(structType))
                 {
                     _context.Errors.ReportError(_context.SpanOf(syntax), ErrorCode.AlreadyDeclared,
@@ -501,6 +558,8 @@ namespace Ngo.Compiler.Semantics
             else if (syntax.Type is InterfaceTypeSyntax)
             {
                 var ifaceType = new InterfaceTypeSymbol(name, new List<MethodSymbol>());
+                if (typeParams != null)
+                    ifaceType.SetTypeParameters(typeParams);
                 if (!_context.Scope.TryDeclare(ifaceType))
                 {
                     _context.Errors.ReportError(_context.SpanOf(syntax), ErrorCode.AlreadyDeclared,
@@ -532,6 +591,14 @@ namespace Ngo.Compiler.Semantics
 
             if (symbol is StructTypeSymbol structSymbol && syntax.Type is StructTypeSyntax structSyntax)
             {
+                // Push type params into scope for field resolution
+                if (structSymbol.IsGeneric)
+                {
+                    _context.PushScope("typeParams");
+                    foreach (var tp in structSymbol.TypeParameters)
+                        _context.Scope.TryDeclare(tp);
+                }
+
                 // Populate struct fields
                 var fields = new List<FieldSymbol>();
                 int ordinal = 0;
@@ -544,23 +611,30 @@ namespace Ngo.Compiler.Semantics
                         fieldType = TypeSymbol.Error;
                     }
 
+                    string? tagValue = ExtractTagString(fieldSyntax.Tag);
+
                     if (fieldSyntax.Names.HasValue)
                     {
                         for (int i = 0; i < fieldSyntax.Names.Value.Count; i++)
                         {
                             var fieldName = fieldSyntax.Names.Value[i].Text;
-                            fields.Add(new FieldSymbol(fieldName, fieldType, ordinal++));
+                            fields.Add(new FieldSymbol(fieldName, fieldType, ordinal++,
+                                tag: tagValue));
                         }
                     }
                     else
                     {
                         // Embedded field: use the type name as the field name
                         var embeddedName = fieldType.Name;
-                        fields.Add(new FieldSymbol(embeddedName, fieldType, ordinal++, isEmbedded: true));
+                        fields.Add(new FieldSymbol(embeddedName, fieldType, ordinal++,
+                            isEmbedded: true, tag: tagValue));
                     }
                 }
 
                 structSymbol.SetFields(fields);
+
+                if (structSymbol.IsGeneric)
+                    _context.PopScope();
             }
 
             if (symbol is InterfaceTypeSymbol ifaceSymbol && syntax.Type is InterfaceTypeSyntax ifaceSyntax)
@@ -762,6 +836,96 @@ namespace Ngo.Compiler.Semantics
             _context.FunctionLocals.Clear();
         }
 
+        private IReadOnlyList<TypeParameterSymbol> ResolveTypeParameterList(
+            TypeParameterListSyntax syntax)
+        {
+            var result = new List<TypeParameterSymbol>();
+            int ordinal = 0;
+
+            for (int i = 0; i < syntax.Parameters.Count; i++)
+            {
+                var decl = syntax.Parameters[i];
+                var constraint = ResolveConstraint(decl.Constraint);
+
+                for (int j = 0; j < decl.Names.Count; j++)
+                {
+                    var name = decl.Names[j].Text;
+                    result.Add(new TypeParameterSymbol(name, ordinal++, constraint));
+                }
+            }
+
+            return result;
+        }
+
+        private ConstraintInfo ResolveConstraint(ExpressionSyntax syntax)
+        {
+            // Handle identifier constraints: any, comparable, or named interface
+            if (syntax is IdentifierNameSyntax idSyntax)
+            {
+                if (idSyntax.Identifier.Text == "any")
+                    return ConstraintInfo.Any;
+                if (idSyntax.Identifier.Text == "comparable")
+                    return ConstraintInfo.Comparable;
+
+                // Named interface constraint
+                var symbol = _context.Scope.Lookup(idSyntax.Identifier.Text);
+                if (symbol is InterfaceTypeSymbol iface)
+                {
+                    return new ConstraintInfo(iface.Name, iface.Methods,
+                        Array.Empty<TypeElement>(), isComparable: false);
+                }
+
+                // Unknown constraint — treat as any
+                return ConstraintInfo.Any;
+            }
+
+            // Handle inline interface constraint
+            if (syntax is InterfaceTypeSyntax ifaceSyntax)
+            {
+                var methods = new List<MethodSymbol>();
+                var typeElements = new List<TypeElement>();
+
+                foreach (var member in ifaceSyntax.Members)
+                {
+                    if (member is MethodSpecSyntax methodSpec)
+                    {
+                        var parameters = _typeResolver.ResolveParameterList(methodSpec.Parameters);
+                        var returnTypes = _typeResolver.ResolveResultTypes(methodSpec.Result);
+                        methods.Add(new MethodSymbol(methodSpec.Name.Text, TypeSymbol.Error, false,
+                            parameters, returnTypes));
+                    }
+                    else if (member is UnionTypeSyntax unionSyntax)
+                    {
+                        foreach (var term in unionSyntax.Terms)
+                        {
+                            var termType = _typeResolver.ResolveType((ExpressionSyntax)term.Type);
+                            if (termType != null)
+                                typeElements.Add(new TypeElement(termType, term.Tilde != null));
+                        }
+                    }
+                }
+
+                return new ConstraintInfo("interface", methods, typeElements, isComparable: false);
+            }
+
+            // Handle union type constraint
+            if (syntax is UnionTypeSyntax unionConstraint)
+            {
+                var typeElements = new List<TypeElement>();
+                foreach (var term in unionConstraint.Terms)
+                {
+                    var termType = _typeResolver.ResolveType(term.Type);
+                    if (termType != null)
+                        typeElements.Add(new TypeElement(termType, term.Tilde != null));
+                }
+
+                return new ConstraintInfo("union", Array.Empty<MethodSymbol>(),
+                    typeElements, isComparable: false);
+            }
+
+            return ConstraintInfo.Any;
+        }
+
         private void ReportUnusedImports(IReadOnlyList<ImportDeclaration> imports)
         {
             if (!_context.CheckUnused) return;
@@ -773,6 +937,21 @@ namespace Ngo.Compiler.Semantics
                         $"'{import.Path}' imported and not used");
                 }
             }
+        }
+        private static string? ExtractTagString(SyntaxToken? tag)
+        {
+            if (tag == null) return null;
+            var text = tag.Text;
+            if (text.Length >= 2)
+            {
+                // Raw string: `...` → strip backticks
+                if (text[0] == '`')
+                    return text.Substring(1, text.Length - 2);
+                // Regular string: "..." → strip quotes
+                if (text[0] == '"')
+                    return text.Substring(1, text.Length - 2);
+            }
+            return text;
         }
     }
 }
