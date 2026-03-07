@@ -75,6 +75,26 @@ namespace Ngo.Compiler.Semantics
                     return ResolveTypeAssertExpression((TypeAssertExpressionSyntax)syntax);
                 case SyntaxKind.FunctionLiteral:
                     return ResolveFunctionLiteral((FunctionLiteralSyntax)syntax);
+
+                // Type expressions in expression position (conversions, composite literals, type args)
+                case SyntaxKind.SliceType:
+                case SyntaxKind.ArrayType:
+                case SyntaxKind.MapType:
+                case SyntaxKind.PointerType:
+                case SyntaxKind.ChannelType:
+                case SyntaxKind.InterfaceType:
+                case SyntaxKind.StructType:
+                {
+                    var resolvedType = _typeResolver.ResolveType(syntax);
+                    if (resolvedType != null)
+                    {
+                        return new IdentifierExpression(
+                            new LocalSymbol(resolvedType.Name, resolvedType),
+                            resolvedType, _context.SpanOf(syntax));
+                    }
+                    return new ErrorExpression($"Cannot resolve type: {syntax.Kind}", _context.SpanOf(syntax));
+                }
+
                 default:
                     _context.Errors.ReportError(_context.SpanOf(syntax), ErrorCode.UnsupportedSyntax,
                         $"Expression kind '{syntax.Kind}' is not yet supported");
@@ -94,15 +114,27 @@ namespace Ngo.Compiler.Semantics
                 paramTypes.Add(parameters[i].Type);
             }
 
-            var funcType = new FunctionTypeSymbol(paramTypes, returnTypes);
+            bool isVariadic = syntax.Parameters.Parameters.Count > 0
+                && syntax.Parameters.Parameters[syntax.Parameters.Parameters.Count - 1].Ellipsis != null;
+            var funcType = new FunctionTypeSymbol(paramTypes, returnTypes, isVariadic);
 
             _context.PushScope("closure");
             var previousReturnTypes = _context.CurrentReturnTypes;
+            var previousNamedReturns = _context.CurrentNamedReturns;
             _context.CurrentReturnTypes = returnTypes;
 
             foreach (var param in parameters)
             {
                 _context.Scope.TryDeclare(param);
+            }
+
+            // Declare named return variables in the closure scope
+            var namedReturns = ResolveNamedReturns(syntax.Result, returnTypes);
+            _context.CurrentNamedReturns = namedReturns;
+            foreach (var nr in namedReturns)
+            {
+                _context.Scope.TryDeclare(nr);
+                _context.TrackLocal(nr, _context.SpanOf(syntax));
             }
 
             var body = _resolveBlock(syntax.Body);
@@ -114,9 +146,40 @@ namespace Ngo.Compiler.Semantics
             }
 
             _context.CurrentReturnTypes = previousReturnTypes;
+            _context.CurrentNamedReturns = previousNamedReturns;
             _context.PopScope();
 
             return new FunctionLiteralExpression(parameters, returnTypes, body, funcType, span);
+        }
+
+        private IReadOnlyList<LocalSymbol> ResolveNamedReturns(
+            SyntaxNode? result, IReadOnlyList<TypeSymbol> returnTypes)
+        {
+            if (result is ParameterListSyntax paramList && paramList.Parameters.Count > 0)
+            {
+                var namedReturns = new List<LocalSymbol>();
+                int typeIndex = 0;
+                for (int i = 0; i < paramList.Parameters.Count; i++)
+                {
+                    var param = paramList.Parameters[i];
+                    if (param.Names.HasValue)
+                    {
+                        for (int j = 0; j < param.Names.Value.Count; j++)
+                        {
+                            var name = param.Names.Value[j].Text;
+                            if (name != "_" && typeIndex < returnTypes.Count)
+                                namedReturns.Add(new LocalSymbol(name, returnTypes[typeIndex]));
+                            typeIndex++;
+                        }
+                    }
+                    else
+                    {
+                        typeIndex++;
+                    }
+                }
+                return namedReturns;
+            }
+            return System.Array.Empty<LocalSymbol>();
         }
 
         private Expression ResolveLiteral(LiteralExpressionSyntax syntax)
@@ -167,8 +230,8 @@ namespace Ngo.Compiler.Semantics
                     var inner = text.Length >= 3 ? text.Substring(1, text.Length - 2) : "";
                     inner = InterpretStringEscapes(inner);
                     char value = inner.Length > 0 ? inner[0] : '\0';
-                    // Go rune literals are untyped constants, assignable to any integer type
-                    return new LiteralExpression((long)(int)value, BuiltinTypes.UntypedInt, span);
+                    // Go rune literals are untyped rune constants, default type is rune (int32)
+                    return new LiteralExpression((long)(int)value, BuiltinTypes.UntypedRune, span);
                 }
 
                 case SyntaxKind.ImaginaryLiteralToken:
@@ -341,6 +404,12 @@ namespace Ngo.Compiler.Semantics
                         return TypeChecker.CommonType(left, right);
                     }
 
+                    // Allow untyped float constants (e.g. 1e3) in integer context
+                    if (TypeChecker.IsInteger(left) && right.TypeKind == TypeKind.UntypedFloat)
+                        return left;
+                    if (left.TypeKind == TypeKind.UntypedFloat && TypeChecker.IsInteger(right))
+                        return right;
+
                     return null;
 
                 case BinaryOperator.ShiftLeft:
@@ -371,6 +440,31 @@ namespace Ngo.Compiler.Semantics
                     if (left is ArrayTypeSymbol leftArr && right is ArrayTypeSymbol rightArr
                         && leftArr.Length == rightArr.Length
                         && TypeChecker.CommonType(leftArr.ElementType, rightArr.ElementType) != null)
+                    {
+                        return BuiltinTypes.UntypedBool;
+                    }
+
+                    // Nil comparison: nilable types can be compared with nil
+                    // Also allow nil comparison with any named type (may be interface in Go)
+                    if (left.TypeKind == TypeKind.UntypedNil || right.TypeKind == TypeKind.UntypedNil)
+                    {
+                        return BuiltinTypes.UntypedBool;
+                    }
+
+                    // Interface comparison: interfaces can always be compared with == / !=
+                    if (left is InterfaceTypeSymbol || right is InterfaceTypeSymbol)
+                    {
+                        return BuiltinTypes.UntypedBool;
+                    }
+
+                    // Pointer comparison: pointers of the same type can be compared
+                    if (left is PointerTypeSymbol && right is PointerTypeSymbol)
+                    {
+                        return BuiltinTypes.UntypedBool;
+                    }
+
+                    // Channel comparison
+                    if (left is ChannelTypeSymbol && right is ChannelTypeSymbol)
                     {
                         return BuiltinTypes.UntypedBool;
                     }
@@ -425,9 +519,10 @@ namespace Ngo.Compiler.Semantics
                     return operand;
                 }
 
-                // Operand must be addressable (identifier, selector, or composite literal)
+                // Operand must be addressable (identifier, selector, index, or composite literal)
                 if (operand is not IdentifierExpression && operand is not SelectorExpression
-                    && operand is not CompositeLiteralExpression)
+                    && operand is not CompositeLiteralExpression && operand is not IndexExpression
+                    && operand is not DerefExpression)
                 {
                     _context.Errors.ReportError(span, ErrorCode.InvalidAddressOf,
                         "Cannot take address of expression");
@@ -463,14 +558,17 @@ namespace Ngo.Compiler.Semantics
                 var operand = ResolveExpression(syntax.Operand);
                 if (operand.Type == TypeSymbol.Error)
                 {
-                    return operand;
+                    // Still create a ReceiveExpression so select case handlers
+                    // recognize this as a receive operation even when the channel
+                    // expression has errors.
+                    return new ReceiveExpression(operand, TypeSymbol.Error, span);
                 }
 
                 if (operand.Type is not ChannelTypeSymbol chanType)
                 {
                     _context.Errors.ReportError(span, ErrorCode.InvalidOperation,
                         $"Cannot receive from non-channel type '{operand.Type.Name}'");
-                    return new ErrorExpression("Invalid receive", span);
+                    return new ReceiveExpression(operand, TypeSymbol.Error, span);
                 }
 
                 return new ReceiveExpression(operand, chanType.ElementType, span);
@@ -603,7 +701,10 @@ namespace Ngo.Compiler.Semantics
                 target = new DerefExpression(target, targetType, target.Span);
             }
 
-            if (targetType is StructTypeSymbol structType)
+            // Unwrap named type to access underlying struct/slice/etc fields and methods
+            var resolvedTargetType = targetType.Resolved();
+
+            if (resolvedTargetType is StructTypeSymbol structType)
             {
                 var field = structType.LookupField(fieldName);
                 if (field != null)
@@ -620,8 +721,9 @@ namespace Ngo.Compiler.Semantics
                     return new SelectorExpression(embeddedAccess, innerField, innerField.Type, span);
                 }
 
-                // Method value: p.Method used as a function value
-                var method = structType.LookupMethod(fieldName);
+                // Method value: check named type methods first, then underlying struct methods
+                var method = targetType.LookupMethod(fieldName)
+                    ?? structType.LookupMethod(fieldName);
                 if (method != null)
                 {
                     var paramTypes = new TypeSymbol[method.Parameters.Count];
@@ -631,6 +733,18 @@ namespace Ngo.Compiler.Semantics
                     return new MethodValueExpression(target, method, funcType, span);
                 }
 
+                // Check promoted methods from embedded structs
+                var promotedMethod = structType.LookupPromotedMethod(fieldName);
+                if (promotedMethod.HasValue)
+                {
+                    var (_, pm) = promotedMethod.Value;
+                    var paramTypes = new TypeSymbol[pm.Parameters.Count];
+                    for (int i = 0; i < pm.Parameters.Count; i++)
+                        paramTypes[i] = pm.Parameters[i].Type;
+                    var funcType = new FunctionTypeSymbol(paramTypes, pm.ReturnTypes);
+                    return new MethodValueExpression(target, pm, funcType, span);
+                }
+
                 _context.Errors.ReportError(span, ErrorCode.UndefinedField,
                     $"Type '{structType.Name}' has no field or method '{fieldName}'");
                 return new ErrorExpression($"Undefined field: {fieldName}", span);
@@ -638,6 +752,13 @@ namespace Ngo.Compiler.Semantics
 
             // Method value on non-struct types (including interfaces)
             var typeMethod = targetType.LookupMethod(fieldName);
+
+            // Also check resolved type for methods (handles named type aliases)
+            if (typeMethod == null && resolvedTargetType != targetType)
+            {
+                typeMethod = resolvedTargetType.LookupMethod(fieldName);
+            }
+
             if (typeMethod != null)
             {
                 var paramTypes = new TypeSymbol[typeMethod.Parameters.Count];
@@ -669,24 +790,27 @@ namespace Ngo.Compiler.Semantics
                 return new ErrorExpression("Invalid type", span);
             }
 
-            if (type is StructTypeSymbol structType)
+            // Check the type directly, or its underlying type for named types
+            var resolvedType = type.Resolved();
+
+            if (resolvedType is StructTypeSymbol structType)
             {
-                return ResolveStructCompositeLiteral(structType, syntax, span);
+                return ResolveStructCompositeLiteral(structType, syntax, span, type);
             }
 
-            if (type is SliceTypeSymbol sliceType)
+            if (resolvedType is SliceTypeSymbol sliceType)
             {
-                return ResolveSliceCompositeLiteral(sliceType, syntax, span);
+                return ResolveSliceCompositeLiteral(sliceType, syntax, span, type);
             }
 
-            if (type is ArrayTypeSymbol arrayType)
+            if (resolvedType is ArrayTypeSymbol arrayType)
             {
-                return ResolveArrayCompositeLiteral(arrayType, syntax, span);
+                return ResolveArrayCompositeLiteral(arrayType, syntax, span, type);
             }
 
-            if (type is MapTypeSymbol mapType)
+            if (resolvedType is MapTypeSymbol mapType)
             {
-                return ResolveMapCompositeLiteral(mapType, syntax, span);
+                return ResolveMapCompositeLiteral(mapType, syntax, span, type);
             }
 
             _context.Errors.ReportError(span, ErrorCode.InvalidCompositeLiteral,
@@ -695,14 +819,14 @@ namespace Ngo.Compiler.Semantics
         }
 
         private Expression ResolveStructCompositeLiteral(StructTypeSymbol structType,
-            CompositeLiteralSyntax syntax, TextSpan span)
+            CompositeLiteralSyntax syntax, TextSpan span, TypeSymbol namedType)
         {
             var initializers = new List<FieldInitializer>();
 
             if (syntax.Elements.Count == 0)
             {
                 // Empty literal: Point{} — zero value
-                return new CompositeLiteralExpression(structType, initializers, span);
+                return new CompositeLiteralExpression(namedType, initializers, span);
             }
 
             // Determine if keyed or positional by checking the first element
@@ -736,7 +860,7 @@ namespace Ngo.Compiler.Semantics
                         return new ErrorExpression("Undefined field", span);
                     }
 
-                    var value = ResolveExpression(kvSyntax.Value);
+                    var value = ResolveElementWithHint(kvSyntax.Value, field.Type);
                     if (!TypeChecker.IsAssignable(value.Type, field.Type))
                     {
                         _context.Errors.ReportError(_context.SpanOf(kvSyntax.Value), ErrorCode.TypeMismatch,
@@ -766,8 +890,8 @@ namespace Ngo.Compiler.Semantics
                         return new ErrorExpression("Mixed fields", span);
                     }
 
-                    var value = ResolveExpression(element);
                     var field = structType.Fields[i];
+                    var value = ResolveElementWithHint(element, field.Type);
 
                     if (!TypeChecker.IsAssignable(value.Type, field.Type))
                     {
@@ -779,11 +903,32 @@ namespace Ngo.Compiler.Semantics
                 }
             }
 
-            return new CompositeLiteralExpression(structType, initializers, span);
+            return new CompositeLiteralExpression(namedType, initializers, span);
+        }
+
+        private Expression ResolveElementWithHint(ExpressionSyntax element, TypeSymbol elementType)
+        {
+            // Handle composite literal type elision: []T{{a, b}} → inner {} gets type T
+            if (element is CompositeLiteralSyntax innerLit && innerLit.Type == null)
+            {
+                var resolvedElemType = elementType.UnderlyingType ?? elementType;
+                var innerSpan = _context.SpanOf(element);
+
+                if (resolvedElemType is StructTypeSymbol structType)
+                    return ResolveStructCompositeLiteral(structType, innerLit, innerSpan, elementType);
+                if (resolvedElemType is SliceTypeSymbol sliceElem)
+                    return ResolveSliceCompositeLiteral(sliceElem, innerLit, innerSpan, elementType);
+                if (resolvedElemType is ArrayTypeSymbol arrayElem)
+                    return ResolveArrayCompositeLiteral(arrayElem, innerLit, innerSpan, elementType);
+                if (resolvedElemType is MapTypeSymbol mapElem)
+                    return ResolveMapCompositeLiteral(mapElem, innerLit, innerSpan, elementType);
+            }
+
+            return ResolveExpression(element);
         }
 
         private Expression ResolveSliceCompositeLiteral(SliceTypeSymbol sliceType,
-            CompositeLiteralSyntax syntax, TextSpan span)
+            CompositeLiteralSyntax syntax, TextSpan span, TypeSymbol namedType)
         {
             var elements = new List<ElementInitializer>();
             int nextIndex = 0;
@@ -807,13 +952,13 @@ namespace Ngo.Compiler.Semantics
                         return new ErrorExpression("Invalid key", span);
                     }
                     index = (int)keyLong;
-                    value = ResolveExpression(kv.Value);
+                    value = ResolveElementWithHint(kv.Value, sliceType.ElementType);
                     nextIndex = index + 1;
                 }
                 else
                 {
                     index = nextIndex;
-                    value = ResolveExpression(element);
+                    value = ResolveElementWithHint(element, sliceType.ElementType);
                     nextIndex++;
                 }
 
@@ -835,11 +980,11 @@ namespace Ngo.Compiler.Semantics
                 elements.Add(new ElementInitializer(keyLit, value));
             }
 
-            return new CompositeLiteralExpression(sliceType, elements, span);
+            return new CompositeLiteralExpression(namedType, elements, span);
         }
 
         private Expression ResolveArrayCompositeLiteral(ArrayTypeSymbol arrayType,
-            CompositeLiteralSyntax syntax, TextSpan span)
+            CompositeLiteralSyntax syntax, TextSpan span, TypeSymbol namedType)
         {
             bool hasKeys = false;
             for (int i = 0; i < syntax.Elements.Count; i++)
@@ -873,13 +1018,13 @@ namespace Ngo.Compiler.Semantics
                         return new ErrorExpression("Invalid key", span);
                     }
                     index = (int)keyLong;
-                    value = ResolveExpression(kv.Value);
+                    value = ResolveElementWithHint(kv.Value, arrayType.ElementType);
                     nextIndex = index + 1;
                 }
                 else
                 {
                     index = nextIndex;
-                    value = ResolveExpression(element);
+                    value = ResolveElementWithHint(element, arrayType.ElementType);
                     nextIndex++;
                 }
 
@@ -907,11 +1052,11 @@ namespace Ngo.Compiler.Semantics
                 // [...]T — infer length from max index + 1
                 finalType = new ArrayTypeSymbol(arrayType.ElementType, maxIndex + 1);
             }
-            else if (!hasKeys && syntax.Elements.Count != arrayType.Length)
+            else if (!hasKeys && syntax.Elements.Count > arrayType.Length)
             {
                 _context.Errors.ReportError(span, ErrorCode.InvalidCompositeLiteral,
-                    $"Array literal has {syntax.Elements.Count} elements, expected {arrayType.Length}");
-                return new ErrorExpression("Wrong element count", span);
+                    $"Array literal has {syntax.Elements.Count} elements, exceeds array length {arrayType.Length}");
+                return new ErrorExpression("Too many elements", span);
             }
             else if (hasKeys && maxIndex >= arrayType.Length)
             {
@@ -920,11 +1065,12 @@ namespace Ngo.Compiler.Semantics
                 return new ErrorExpression("Index out of bounds", span);
             }
 
-            return new CompositeLiteralExpression(finalType, elements, span);
+            var resultType = namedType.UnderlyingType != null ? namedType : (TypeSymbol)finalType;
+            return new CompositeLiteralExpression(resultType, elements, span);
         }
 
         private Expression ResolveMapCompositeLiteral(MapTypeSymbol mapType,
-            CompositeLiteralSyntax syntax, TextSpan span)
+            CompositeLiteralSyntax syntax, TextSpan span, TypeSymbol namedType)
         {
             var elements = new List<ElementInitializer>();
 
@@ -939,8 +1085,8 @@ namespace Ngo.Compiler.Semantics
                     return new ErrorExpression("Not key:value", span);
                 }
 
-                var key = ResolveExpression(kvSyntax.Key);
-                var value = ResolveExpression(kvSyntax.Value);
+                var key = ResolveElementWithHint(kvSyntax.Key, mapType.KeyType);
+                var value = ResolveElementWithHint(kvSyntax.Value, mapType.ValueType);
 
                 if (!TypeChecker.IsAssignable(key.Type, mapType.KeyType))
                 {
@@ -957,7 +1103,7 @@ namespace Ngo.Compiler.Semantics
                 elements.Add(new ElementInitializer(key, value));
             }
 
-            return new CompositeLiteralExpression(mapType, elements, span);
+            return new CompositeLiteralExpression(namedType, elements, span);
         }
 
         private Expression ResolveIndexExpression(IndexExpressionSyntax syntax)
@@ -1002,7 +1148,23 @@ namespace Ngo.Compiler.Semantics
                 return new ErrorExpression("Error target", span);
             }
 
-            if (target.Type is SliceTypeSymbol sliceType)
+            var resolvedTargetType = target.Type.Resolved();
+            // Also unwrap named types with underlying composite types
+            if (resolvedTargetType == target.Type && resolvedTargetType.UnderlyingType != null)
+                resolvedTargetType = resolvedTargetType.UnderlyingType;
+
+            // Auto-dereference pointer to array/slice: (*t)[i] when t is *[N]T or *[]T
+            if (resolvedTargetType is PointerTypeSymbol ptrForIndex)
+            {
+                var inner = ptrForIndex.ElementType.Resolved();
+                if (inner is ArrayTypeSymbol || inner is SliceTypeSymbol)
+                {
+                    target = new DerefExpression(target, inner, span);
+                    resolvedTargetType = inner;
+                }
+            }
+
+            if (resolvedTargetType is SliceTypeSymbol sliceType)
             {
                 if (!TypeChecker.IsInteger(index.Type) && index.Type != TypeSymbol.Error)
                 {
@@ -1013,7 +1175,7 @@ namespace Ngo.Compiler.Semantics
                 return new Ast.IndexExpression(target, index, sliceType.ElementType, span);
             }
 
-            if (target.Type is ArrayTypeSymbol arrayType)
+            if (resolvedTargetType is ArrayTypeSymbol arrayType)
             {
                 if (!TypeChecker.IsInteger(index.Type) && index.Type != TypeSymbol.Error)
                 {
@@ -1024,7 +1186,7 @@ namespace Ngo.Compiler.Semantics
                 return new Ast.IndexExpression(target, index, arrayType.ElementType, span);
             }
 
-            if (target.Type is MapTypeSymbol mapType)
+            if (resolvedTargetType is MapTypeSymbol mapType)
             {
                 if (!TypeChecker.IsAssignable(index.Type, mapType.KeyType) && index.Type != TypeSymbol.Error)
                 {
@@ -1044,6 +1206,40 @@ namespace Ngo.Compiler.Semantics
                 }
 
                 return new Ast.IndexExpression(target, index, BuiltinTypes.Byte, span);
+            }
+
+            // Type parameter with union constraint: check if all type elements are indexable
+            if (resolvedTargetType is TypeParameterSymbol typeParam &&
+                typeParam.Constraint.TypeElements.Count > 0)
+            {
+                TypeSymbol? commonElement = null;
+                bool allIndexable = true;
+                foreach (var elem in typeParam.Constraint.TypeElements)
+                {
+                    var elemType = elem.Type;
+                    if (elemType is ArrayTypeSymbol arrElem)
+                    {
+                        commonElement ??= arrElem.ElementType;
+                    }
+                    else if (elemType is SliceTypeSymbol sliceElem)
+                    {
+                        commonElement ??= sliceElem.ElementType;
+                    }
+                    else if (elemType is MapTypeSymbol mapElem)
+                    {
+                        commonElement ??= mapElem.ValueType;
+                    }
+                    else
+                    {
+                        allIndexable = false;
+                        break;
+                    }
+                }
+
+                if (allIndexable && commonElement != null)
+                {
+                    return new Ast.IndexExpression(target, index, commonElement, span);
+                }
             }
 
             _context.Errors.ReportError(span, ErrorCode.InvalidIndex,
@@ -1085,13 +1281,23 @@ namespace Ngo.Compiler.Semantics
 
             TypeSymbol resultType;
 
-            if (operand.Type is SliceTypeSymbol sliceType)
+            var resolvedOpType = operand.Type.Resolved();
+            if (resolvedOpType == operand.Type && resolvedOpType.UnderlyingType != null)
+                resolvedOpType = resolvedOpType.UnderlyingType;
+            if (resolvedOpType is SliceTypeSymbol)
             {
-                resultType = sliceType;
+                // Preserve named type: slicing `type chain []error` returns `chain`, not `[]error`
+                resultType = operand.Type;
             }
-            else if (operand.Type is ArrayTypeSymbol arrayType)
+            else if (resolvedOpType is ArrayTypeSymbol arrayType)
             {
                 resultType = new SliceTypeSymbol(arrayType.ElementType);
+            }
+            else if (resolvedOpType is PointerTypeSymbol ptrType
+                && ptrType.ElementType.Resolved() is ArrayTypeSymbol ptrArrayType)
+            {
+                // Go allows slicing a pointer to an array
+                resultType = new SliceTypeSymbol(ptrArrayType.ElementType);
             }
             else if (operand.Type.TypeKind == TypeKind.String || operand.Type.TypeKind == TypeKind.UntypedString)
             {
@@ -1230,11 +1436,11 @@ namespace Ngo.Compiler.Semantics
             {
                 char prefix = clean[1];
                 if (prefix == 'x' || prefix == 'X')
-                    return Convert.ToInt64(clean.Substring(2), 16);
+                    return unchecked((long)Convert.ToUInt64(clean.Substring(2), 16));
                 if (prefix == 'b' || prefix == 'B')
-                    return Convert.ToInt64(clean.Substring(2), 2);
+                    return unchecked((long)Convert.ToUInt64(clean.Substring(2), 2));
                 if (prefix == 'o' || prefix == 'O')
-                    return Convert.ToInt64(clean.Substring(2), 8);
+                    return unchecked((long)Convert.ToUInt64(clean.Substring(2), 8));
             }
 
             // Legacy octal: 0777
@@ -1246,9 +1452,11 @@ namespace Ngo.Compiler.Semantics
                     if (clean[i] < '0' || clean[i] > '7') { allOctal = false; break; }
                 }
                 if (allOctal)
-                    return Convert.ToInt64(clean, 8);
+                    return unchecked((long)Convert.ToUInt64(clean, 8));
             }
 
+            if (ulong.TryParse(clean, NumberStyles.Any, CultureInfo.InvariantCulture, out var uval))
+                return unchecked((long)uval);
             return long.Parse(clean, NumberStyles.Any, CultureInfo.InvariantCulture);
         }
     }

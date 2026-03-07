@@ -28,6 +28,7 @@ namespace Ngo.Compiler.Language
         private readonly ErrorCollector _errors = new();
         private int _pos;
         private bool _allowCompositeLit = true;
+        private bool _restrictCompositeLitToTypes;
 
         public IReadOnlyList<CompileError> Errors => _errors.ToReadOnlyList();
 
@@ -252,6 +253,8 @@ namespace Ngo.Compiler.Language
             while (At(SyntaxKind.CommaToken))
             {
                 builder.Add(Advance()); // comma
+                if (At(SyntaxKind.CloseParenToken))
+                    break; // trailing comma
                 builder.Add(ParseParameter());
             }
 
@@ -829,6 +832,23 @@ namespace Ngo.Compiler.Language
                 }
             }
 
+            // C-style for where init is i++ or i--: for i++; cond; post { }
+            if (At(SyntaxKind.PlusPlusToken) || At(SyntaxKind.MinusMinusToken))
+            {
+                var incOp = Advance();
+                var init = new IncDecStatementSyntax(firstExpr, incOp);
+                var semi1 = Expect(SyntaxKind.SemicolonToken);
+                ExpressionSyntax? condition = null;
+                if (!AtSemicolon())
+                    condition = ParseExpressionNoCompositeLit();
+                var semi2 = Expect(SyntaxKind.SemicolonToken);
+                SyntaxNode? post = null;
+                if (!At(SyntaxKind.OpenBraceToken))
+                    post = ParseSimpleStatementNoCompositeLit();
+                var body = ParseBlock();
+                return new ForStatementSyntax(forKeyword, init, semi1, condition, semi2, post, null, body);
+            }
+
             // C-style for with semicolons: for init; cond; post { }
             if (AtSemicolon())
             {
@@ -857,7 +877,24 @@ namespace Ngo.Compiler.Language
             SyntaxToken? assignOp = null)
         {
             var rangeKeyword = Expect(SyntaxKind.RangeKeyword);
-            var expr = ParseExpressionNoCompositeLit();
+            // Allow composite literals after range when the expression starts with
+            // a type constructor (slice/array/map type). Otherwise, '{' would be
+            // ambiguous with the for-block opening brace.
+            ExpressionSyntax expr;
+            if (At(SyntaxKind.OpenBracketToken) || At(SyntaxKind.MapKeyword)
+                || At(SyntaxKind.StructKeyword))
+            {
+                bool saved = _allowCompositeLit;
+                _allowCompositeLit = true;
+                _restrictCompositeLitToTypes = true;
+                expr = ParseExpression();
+                _restrictCompositeLitToTypes = false;
+                _allowCompositeLit = saved;
+            }
+            else
+            {
+                expr = ParseExpressionNoCompositeLit();
+            }
             return new RangeClauseSyntax(vars, assignOp, rangeKeyword, expr);
         }
 
@@ -919,7 +956,36 @@ namespace Ngo.Compiler.Language
 
                 var expr = ParseExpression();
 
-                if (At(SyntaxKind.ColonEqualsToken) || IsAssignmentOperator(Current.Kind) ||
+                if (At(SyntaxKind.CommaToken))
+                {
+                    // Multi-value init: switch a, b := ...; { }
+                    var left = CollectExpressionList(expr);
+                    if (At(SyntaxKind.ColonEqualsToken))
+                    {
+                        var colonEquals = Advance();
+                        var right = ParseExpressionList();
+                        init = new ShortVarDeclarationSyntax(left, colonEquals, right);
+                    }
+                    else if (IsAssignmentOperator(Current.Kind))
+                    {
+                        var op = Advance();
+                        var right = ParseExpressionList();
+                        init = new AssignmentStatementSyntax(left, op, right);
+                    }
+                    else
+                    {
+                        init = new ExpressionStatementSyntax(expr);
+                    }
+
+                    _allowCompositeLit = savedCompositeLit;
+                    initSemicolon = Expect(SyntaxKind.SemicolonToken);
+
+                    if (!At(SyntaxKind.OpenBraceToken))
+                    {
+                        tag = ParseExpressionNoCompositeLit();
+                    }
+                }
+                else if (At(SyntaxKind.ColonEqualsToken) || IsAssignmentOperator(Current.Kind) ||
                     At(SyntaxKind.PlusPlusToken) || At(SyntaxKind.MinusMinusToken))
                 {
                     init = WrapSimpleStatement(expr);
@@ -1258,7 +1324,8 @@ namespace Ngo.Compiler.Language
                         expr = ParseCallExpression(expr);
                         break;
 
-                    case SyntaxKind.OpenBraceToken when _allowCompositeLit:
+                    case SyntaxKind.OpenBraceToken when _allowCompositeLit
+                        && (!_restrictCompositeLitToTypes || IsCompositeLitType(expr)):
                         expr = ParseCompositeLiteral(expr);
                         break;
 
@@ -1266,6 +1333,18 @@ namespace Ngo.Compiler.Language
                         return expr;
                 }
             }
+        }
+
+        private static bool IsCompositeLitType(ExpressionSyntax expr)
+        {
+            return expr is IdentifierNameSyntax
+                || expr is SliceTypeSyntax
+                || expr is ArrayTypeSyntax
+                || expr is MapTypeSyntax
+                || expr is StructTypeSyntax
+                || expr is SelectorExpressionSyntax
+                || expr is IndexExpressionSyntax
+                || expr is TypeArgumentListSyntax;
         }
 
         private ExpressionSyntax ParseOperand()
@@ -1286,7 +1365,11 @@ namespace Ngo.Compiler.Language
                 case SyntaxKind.OpenParenToken:
                 {
                     var open = Advance();
+                    // Composite literals are always allowed inside parentheses
+                    bool savedCompLit = _allowCompositeLit;
+                    _allowCompositeLit = true;
                     var expr = ParseExpression();
+                    _allowCompositeLit = savedCompLit;
                     var close = Expect(SyntaxKind.CloseParenToken);
                     return new ParenthesizedExpressionSyntax(open, expr, close);
                 }
@@ -1389,6 +1472,9 @@ namespace Ngo.Compiler.Language
         private ExpressionSyntax ParseCallExpression(ExpressionSyntax func)
         {
             var open = Advance(); // (
+            // Inside function call parentheses, composite literals are always allowed
+            bool savedCompLit = _allowCompositeLit;
+            _allowCompositeLit = true;
             SeparatedSyntaxList<ExpressionSyntax> args;
             SyntaxToken? ellipsis = null;
 
@@ -1401,8 +1487,12 @@ namespace Ngo.Compiler.Language
                 args = ParseExpressionList();
                 if (At(SyntaxKind.EllipsisToken))
                     ellipsis = Advance();
+                // Allow trailing comma after ... (valid in Go)
+                if (At(SyntaxKind.CommaToken) && Peek(1).Kind == SyntaxKind.CloseParenToken)
+                    Advance();
             }
 
+            _allowCompositeLit = savedCompLit;
             var close = Expect(SyntaxKind.CloseParenToken);
             return new CallExpressionSyntax(func, open, args, ellipsis, close);
         }
@@ -1446,7 +1536,19 @@ namespace Ngo.Compiler.Language
             // Bare composite literal inside another composite literal (e.g. []Point{{1,2}})
             if (At(SyntaxKind.OpenBraceToken))
             {
-                return ParseCompositeLiteral(null);
+                var nested = ParseCompositeLiteral(null);
+                // Composite literal as map key: {k1, k2}: {v1, v2}
+                if (At(SyntaxKind.ColonToken))
+                {
+                    var colon = Advance();
+                    ExpressionSyntax value;
+                    if (At(SyntaxKind.OpenBraceToken))
+                        value = ParseCompositeLiteral(null);
+                    else
+                        value = ParseExpression();
+                    return new KeyValueExpressionSyntax(nested, colon, value);
+                }
+                return nested;
             }
 
             var expr = ParseExpression();
@@ -1486,6 +1588,16 @@ namespace Ngo.Compiler.Language
 
             while (At(SyntaxKind.CommaToken))
             {
+                // Trailing comma before closing token — stop
+                var next = Peek(1).Kind;
+                if (next == SyntaxKind.CloseParenToken
+                    || next == SyntaxKind.CloseBraceToken
+                    || next == SyntaxKind.CloseBracketToken)
+                {
+                    Advance(); // consume trailing comma
+                    break;
+                }
+
                 builder.Add(Advance()); // comma
                 builder.Add(ParseExpression());
             }
@@ -1509,8 +1621,15 @@ namespace Ngo.Compiler.Language
                     {
                         var dot = Advance();
                         var name = Expect(SyntaxKind.IdentifierToken);
-                        return new SelectorExpressionSyntax(ident, dot, name);
+                        var selector = new SelectorExpressionSyntax(ident, dot, name);
+                        // pkg.Type[T, U] — qualified generic instantiation
+                        if (At(SyntaxKind.OpenBracketToken) && LooksLikeTypeArgumentList())
+                            return ParseTypeArgumentList(selector);
+                        return selector;
                     }
+                    // Type[T] or Type[T, U] — generic instantiation
+                    if (At(SyntaxKind.OpenBracketToken) && LooksLikeTypeArgumentList())
+                        return ParseTypeArgumentList(ident);
                     return ident;
                 }
 
@@ -1651,6 +1770,7 @@ namespace Ngo.Compiler.Language
                     Peek(1).Kind == SyntaxKind.OpenBracketToken ||
                     Peek(1).Kind == SyntaxKind.MapKeyword ||
                     Peek(1).Kind == SyntaxKind.ChanKeyword ||
+                    Peek(1).Kind == SyntaxKind.LessThanMinusToken ||
                     Peek(1).Kind == SyntaxKind.FuncKeyword ||
                     Peek(1).Kind == SyntaxKind.InterfaceKeyword ||
                     Peek(1).Kind == SyntaxKind.StructKeyword ||
@@ -1752,13 +1872,11 @@ namespace Ngo.Compiler.Language
                 if (afterIdent.Kind == SyntaxKind.TildeToken)
                     return true;
                 // [T] — single ident followed by close bracket. This is ambiguous.
-                // In declaration context (where we call this), treat as type param only
-                // if what follows the ] looks like a type start (struct, interface, etc.)
-                // rather than a type (which would be array [T]someType).
-                // However, for declarations, [T] is always type param since
-                // array types use literal sizes. We check if T is not a known builtin number.
+                // In Go 1.18+, type params always require a constraint: [T any], [T comparable].
+                // [ident] without a constraint is an array type with constant-length ident.
+                // So [ident] → NOT a type param list.
                 if (afterIdent.Kind == SyntaxKind.CloseBracketToken)
-                    return true;
+                    return false;
             }
 
             // [~...] — tilde can only appear in type param constraints
@@ -1766,6 +1884,55 @@ namespace Ngo.Compiler.Language
                 return true;
 
             return false;
+        }
+
+        private bool LooksLikeTypeArgumentList()
+        {
+            // In a type context (not expression), [T] or [T, U] after an identifier is type args.
+            // Array types use integer literals: [N]T, [...]T.
+            if (!At(SyntaxKind.OpenBracketToken)) return false;
+            var next = Peek(1);
+            // [123] or [...] → array, not type args
+            if (next.Kind == SyntaxKind.IntLiteralToken || next.Kind == SyntaxKind.EllipsisToken)
+                return false;
+            // [] → slice
+            if (next.Kind == SyntaxKind.CloseBracketToken)
+                return false;
+            // [ident...] → type arg
+            if (next.Kind == SyntaxKind.IdentifierToken)
+                return true;
+            // [*ident] → *Type as type arg
+            if (next.Kind == SyntaxKind.StarToken)
+                return true;
+            // [struct{...}], [func(...)], [map[...]...], [chan ...], [interface{...}], [[]T]
+            if (next.Kind == SyntaxKind.StructKeyword || next.Kind == SyntaxKind.FuncKeyword
+                || next.Kind == SyntaxKind.MapKeyword || next.Kind == SyntaxKind.ChanKeyword
+                || next.Kind == SyntaxKind.InterfaceKeyword || next.Kind == SyntaxKind.OpenBracketToken
+                || next.Kind == SyntaxKind.LessThanMinusToken)
+                return true;
+            return false;
+        }
+
+        private ExpressionSyntax ParseTypeArgumentList(ExpressionSyntax baseExpr)
+        {
+            var open = Expect(SyntaxKind.OpenBracketToken);
+            var builder = new List<SyntaxNode>();
+            builder.Add(ParseType());
+            while (At(SyntaxKind.CommaToken))
+            {
+                builder.Add(Advance()); // comma
+                builder.Add(ParseType());
+            }
+            var close = Expect(SyntaxKind.CloseBracketToken);
+
+            if (builder.Count == 1)
+            {
+                // Single type arg: return as IndexExpressionSyntax
+                return new IndexExpressionSyntax(baseExpr, open, (ExpressionSyntax)builder[0], close);
+            }
+
+            var args = new SeparatedSyntaxList<ExpressionSyntax>(builder);
+            return new TypeArgumentListSyntax(baseExpr, open, args, close);
         }
 
         private TypeParameterListSyntax ParseTypeParameterList()

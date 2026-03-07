@@ -98,15 +98,32 @@ namespace Ngo.Compiler.Semantics
                     else if (member is TypeDeclarationSyntax typeSyntax)
                     {
                         typeSyntaxes.Add(typeSyntax);
-                        foreach (var spec in typeSyntax.Specs)
-                        {
-                            RegisterTypeDeclaration(spec);
-                        }
                     }
                     else if (member is ConstDeclarationSyntax constSyntax)
                     {
                         constSyntaxes.Add(constSyntax);
                     }
+                }
+            }
+
+            // Pre-scan constants for simple integer values (needed for array lengths in types)
+            PreScanConstInts(constSyntaxes);
+
+            // Pass 1a: pre-declare all type names as placeholders
+            foreach (var typeSyntax in typeSyntaxes)
+            {
+                foreach (var spec in typeSyntax.Specs)
+                {
+                    PreDeclareType(spec);
+                }
+            }
+
+            // Pass 1b: resolve type underlying types and fill in struct/interface details
+            foreach (var typeSyntax in typeSyntaxes)
+            {
+                foreach (var spec in typeSyntax.Specs)
+                {
+                    RegisterTypeDeclaration(spec);
                 }
             }
 
@@ -132,10 +149,23 @@ namespace Ngo.Compiler.Semantics
                 }
             }
 
+            // Post-process: upgrade named types based on structs to StructTypeSymbol
+            // (must happen after all struct fields are populated)
+            UpgradeStructBasedTypes(typeSyntaxes);
+
             var constants = new List<ConstDeclaration>();
             foreach (var constSyntax in constSyntaxes)
             {
                 constants.AddRange(ResolveConstDeclaration(constSyntax));
+            }
+
+            // Pre-declare package-level variable names so cross-file references resolve
+            foreach (var varSyntax in varSyntaxes)
+            {
+                foreach (var spec in varSyntax.Specs)
+                {
+                    PreDeclareVarSpec(spec);
+                }
             }
 
             var variables = new List<VarDeclaration>();
@@ -248,8 +278,29 @@ namespace Ngo.Compiler.Semantics
                     // Register the package in the current scope
                     if (!_context.Scope.TryDeclare(pkg))
                     {
-                        _context.Errors.ReportError(span, ErrorCode.AlreadyDeclared,
-                            $"'{localName}' is already declared in this scope");
+                        // In multi-file packages, the same package may be imported
+                        // in multiple files — this is valid in Go
+                        var existing = _context.Scope.Lookup(pkg.Name);
+                        if (existing is PackageSymbol existingPkg)
+                        {
+                            // Different packages with same local name (e.g. crypto/rand vs math/rand):
+                            // merge exports so both files' usages resolve
+                            if (existingPkg.ImportPath != pkg.ImportPath)
+                            {
+                                foreach (var export in pkg.Exports)
+                                {
+                                    if (!existingPkg.Exports.ContainsKey(export.Key))
+                                    {
+                                        existingPkg.AddExport(export.Value);
+                                    }
+                                }
+                            }
+                        }
+                        else
+                        {
+                            _context.Errors.ReportError(span, ErrorCode.AlreadyDeclared,
+                                $"'{pkg.Name}' is already declared in this scope");
+                        }
                     }
 
                     imports.Add(new ImportDeclaration(pkg, path, alias, span));
@@ -300,8 +351,9 @@ namespace Ngo.Compiler.Semantics
             }
             else if (!_context.Scope.TryDeclare(symbol))
             {
-                _context.Errors.ReportError(_context.SpanOf(syntax), ErrorCode.AlreadyDeclared,
-                    $"Function '{syntax.Name.Text}' is already declared");
+                // In multi-file packages, build tags may cause multiple files
+                // to define the same function. Since we analyze all files,
+                // silently allow function redeclaration at package scope.
             }
         }
 
@@ -344,7 +396,17 @@ namespace Ngo.Compiler.Semantics
                 _context.Scope.TryDeclare(nr);
             }
 
-            var body = _statementResolver.ResolveBlock(syntax.Body!);
+            // External function declarations (no body) — skip body resolution
+            if (syntax.Body == null)
+            {
+                _context.PopScope();
+                _context.CurrentReturnTypes = Array.Empty<TypeSymbol>();
+                _context.CurrentNamedReturns = Array.Empty<LocalSymbol>();
+                return new FunctionDeclaration(symbol, new BlockStatement(
+                    new List<AstNode>(), _context.SpanOf(syntax)), _context.SpanOf(syntax));
+            }
+
+            var body = _statementResolver.ResolveBlock(syntax.Body);
 
             if (symbol.ReturnTypes.Count > 0 && !FlowAnalyzer.AllPathsReturn(body))
             {
@@ -364,6 +426,13 @@ namespace Ngo.Compiler.Semantics
 
         private void RegisterMethod(MethodDeclarationSyntax syntax)
         {
+            if (syntax.Receiver.Parameters.Count == 0)
+            {
+                _context.Errors.ReportError(_context.SpanOf(syntax), ErrorCode.InvalidMethodReceiver,
+                    "Method receiver must have a parameter");
+                return;
+            }
+
             var receiverParam = syntax.Receiver.Parameters[0];
             var receiverTypeExpr = receiverParam.Type;
 
@@ -372,7 +441,7 @@ namespace Ngo.Compiler.Semantics
                 ? ((PointerTypeSyntax)receiverTypeExpr!).ElementType
                 : receiverTypeExpr;
 
-            var baseType = _typeResolver.ResolveType(baseTypeExpr!);
+            var (baseType, receiverTypeParams) = ResolveReceiverType(baseTypeExpr!);
             if (baseType == null)
             {
                 _context.Errors.ReportError(_context.SpanOf(syntax), ErrorCode.InvalidMethodReceiver,
@@ -380,17 +449,36 @@ namespace Ngo.Compiler.Semantics
                 return;
             }
 
+            // Push generic type params into scope for parameter/return type resolution
+            bool pushedScope = receiverTypeParams != null;
+            if (pushedScope)
+            {
+                _context.PushScope("methodTypeParams");
+                foreach (var tp in receiverTypeParams!)
+                    _context.Scope.TryDeclare(tp);
+            }
+
             var parameters = _typeResolver.ResolveParameterList(syntax.Parameters);
             var returnTypes = _typeResolver.ResolveResultTypes(syntax.Result);
 
+            if (pushedScope)
+                _context.PopScope();
+
+            bool isVariadic = false;
+            if (syntax.Parameters.Parameters.Count > 0)
+            {
+                var lastParam = syntax.Parameters.Parameters[syntax.Parameters.Parameters.Count - 1];
+                isVariadic = lastParam.Ellipsis != null;
+            }
+
             var method = new MethodSymbol(syntax.Name.Text, baseType, isPointerReceiver,
-                parameters, returnTypes);
+                Array.Empty<TypeParameterSymbol>(), parameters, returnTypes, isVariadic);
 
             var existing = baseType.LookupMethod(syntax.Name.Text);
             if (existing != null)
             {
-                _context.Errors.ReportError(_context.SpanOf(syntax), ErrorCode.AlreadyDeclared,
-                    $"Method '{syntax.Name.Text}' is already declared on type '{baseType.Name}'");
+                // Build tags may cause duplicate method declarations across files.
+                // Silently skip the duplicate.
                 return;
             }
 
@@ -399,6 +487,16 @@ namespace Ngo.Compiler.Semantics
 
         private MethodDeclaration ResolveMethodDeclaration(MethodDeclarationSyntax syntax)
         {
+            if (syntax.Receiver.Parameters.Count == 0)
+            {
+                var errorMethod = new MethodSymbol(syntax.Name.Text, TypeSymbol.Error, false,
+                    Array.Empty<ParameterSymbol>(), Array.Empty<TypeSymbol>());
+                var errorReceiver = new ParameterSymbol("_", TypeSymbol.Error, 0);
+                return new MethodDeclaration(errorMethod, errorReceiver,
+                    new BlockStatement(Array.Empty<Statement>(), _context.SpanOf(syntax)),
+                    _context.SpanOf(syntax));
+            }
+
             var receiverParam = syntax.Receiver.Parameters[0];
             var receiverTypeExpr = receiverParam.Type;
 
@@ -407,7 +505,7 @@ namespace Ngo.Compiler.Semantics
                 ? ((PointerTypeSyntax)receiverTypeExpr!).ElementType
                 : receiverTypeExpr;
 
-            var baseType = _typeResolver.ResolveType(baseTypeExpr!);
+            var (baseType, receiverTypeParams) = ResolveReceiverType(baseTypeExpr!);
             if (baseType == null)
             {
                 var errorMethod = new MethodSymbol(syntax.Name.Text, TypeSymbol.Error, false,
@@ -432,6 +530,13 @@ namespace Ngo.Compiler.Semantics
             var previousNamedReturns = _context.CurrentNamedReturns;
             _context.CurrentReturnTypes = method.ReturnTypes;
 
+            // Push generic type parameters into method scope for body resolution
+            if (receiverTypeParams != null)
+            {
+                foreach (var tp in receiverTypeParams)
+                    _context.Scope.TryDeclare(tp);
+            }
+
             var receiverName = GetReceiverName(receiverParam);
             var receiverType = isPointerReceiver ? new PointerTypeSymbol(baseType) : (TypeSymbol)baseType;
             var receiverSymbol = new ParameterSymbol(receiverName, receiverType, 0);
@@ -450,7 +555,17 @@ namespace Ngo.Compiler.Semantics
                 _context.Scope.TryDeclare(nr);
             }
 
-            var body = _statementResolver.ResolveBlock(syntax.Body!);
+            // External method declarations (no body) — skip body resolution
+            if (syntax.Body == null)
+            {
+                _context.PopScope();
+                _context.CurrentReturnTypes = Array.Empty<TypeSymbol>();
+                _context.CurrentNamedReturns = Array.Empty<LocalSymbol>();
+                return new MethodDeclaration(method, receiverSymbol, new BlockStatement(
+                    new List<AstNode>(), _context.SpanOf(syntax)), _context.SpanOf(syntax));
+            }
+
+            var body = _statementResolver.ResolveBlock(syntax.Body);
 
             if (method.ReturnTypes.Count > 0 && !FlowAnalyzer.AllPathsReturn(body))
             {
@@ -511,6 +626,120 @@ namespace Ngo.Compiler.Semantics
             return "_";
         }
 
+        private void PreScanConstInts(List<ConstDeclarationSyntax> constSyntaxes)
+        {
+            foreach (var constDecl in constSyntaxes)
+            {
+                foreach (var spec in constDecl.Specs)
+                {
+                    if (!spec.Values.HasValue) continue;
+                    for (int i = 0; i < spec.Names.Count && i < spec.Values.Value.Count; i++)
+                    {
+                        var name = spec.Names[i].Text;
+                        var valExpr = spec.Values.Value[i];
+                        var constVal = TryEvalConstInt(valExpr);
+                        if (constVal.HasValue)
+                        {
+                            _context.PendingConstInts[name] = constVal.Value;
+                        }
+                    }
+                }
+            }
+        }
+
+        private int? TryEvalConstInt(ExpressionSyntax expr)
+        {
+            if (expr is LiteralExpressionSyntax lit
+                && lit.Token.Kind == SyntaxKind.IntLiteralToken
+                && int.TryParse(lit.Token.Text, out var val))
+            {
+                return val;
+            }
+
+            if (expr is IdentifierNameSyntax id
+                && _context.PendingConstInts.TryGetValue(id.Identifier.Text, out var idVal))
+            {
+                return idVal;
+            }
+
+            if (expr is BinaryExpressionSyntax bin)
+            {
+                var left = TryEvalConstInt(bin.Left);
+                var right = TryEvalConstInt(bin.Right);
+                if (left.HasValue && right.HasValue)
+                {
+                    return bin.OperatorToken.Kind switch
+                    {
+                        SyntaxKind.PlusToken => left.Value + right.Value,
+                        SyntaxKind.MinusToken => left.Value - right.Value,
+                        SyntaxKind.StarToken => left.Value * right.Value,
+                        SyntaxKind.SlashToken when right.Value != 0 => left.Value / right.Value,
+                        SyntaxKind.PercentToken when right.Value != 0 => left.Value % right.Value,
+                        SyntaxKind.LessThanLessThanToken => left.Value << right.Value,
+                        SyntaxKind.GreaterThanGreaterThanToken => left.Value >> right.Value,
+                        SyntaxKind.AmpersandToken => left.Value & right.Value,
+                        SyntaxKind.PipeToken => left.Value | right.Value,
+                        SyntaxKind.CaretToken => left.Value ^ right.Value,
+                        _ => (int?)null,
+                    };
+                }
+            }
+
+            if (expr is UnaryExpressionSyntax unary
+                && unary.OperatorToken.Kind == SyntaxKind.MinusToken)
+            {
+                var inner = TryEvalConstInt(unary.Operand);
+                if (inner.HasValue) return -inner.Value;
+            }
+
+            return null;
+        }
+
+        private void PreDeclareType(TypeSpecSyntax syntax)
+        {
+            var name = syntax.Name.Text;
+
+            // Type alias — handled fully in RegisterTypeDeclaration
+            if (syntax.AssignToken != null)
+                return;
+
+            // Struct and interface types get concrete symbols
+            if (syntax.Type is StructTypeSyntax)
+            {
+                IReadOnlyList<TypeParameterSymbol>? typeParams = null;
+                if (syntax.TypeParameters != null)
+                    typeParams = ResolveTypeParameterList(syntax.TypeParameters);
+
+                var structType = new StructTypeSymbol(name, new List<FieldSymbol>());
+                if (typeParams != null)
+                    structType.SetTypeParameters(typeParams);
+                _context.Scope.TryDeclare(structType);
+            }
+            else if (syntax.Type is InterfaceTypeSyntax)
+            {
+                IReadOnlyList<TypeParameterSymbol>? typeParams = null;
+                if (syntax.TypeParameters != null)
+                    typeParams = ResolveTypeParameterList(syntax.TypeParameters);
+
+                var ifaceType = new InterfaceTypeSymbol(name, new List<MethodSymbol>());
+                if (typeParams != null)
+                    ifaceType.SetTypeParameters(typeParams);
+                _context.Scope.TryDeclare(ifaceType);
+            }
+            else
+            {
+                // Named non-struct type: declare as placeholder
+                // Will be resolved fully in RegisterTypeDeclaration
+                var placeholder = new TypeSymbol(name, TypeKind.Error, null);
+                if (syntax.TypeParameters != null)
+                {
+                    var typeParams = ResolveTypeParameterList(syntax.TypeParameters);
+                    placeholder.SetTypeParameters(typeParams);
+                }
+                _context.Scope.TryDeclare(placeholder);
+            }
+        }
+
         private void RegisterTypeDeclaration(TypeSpecSyntax syntax)
         {
             var name = syntax.Name.Text;
@@ -527,59 +756,73 @@ namespace Ngo.Compiler.Semantics
                 }
 
                 var alias = new TypeSymbol(name, underlying.TypeKind, underlying);
-                if (!_context.Scope.TryDeclare(alias))
-                {
-                    _context.Errors.ReportError(_context.SpanOf(syntax), ErrorCode.AlreadyDeclared,
-                        $"Type '{name}' is already declared");
-                }
+                _context.Scope.TryDeclare(alias);
 
                 return;
             }
 
-            // Resolve type parameters if present
-            IReadOnlyList<TypeParameterSymbol>? typeParams = null;
-            if (syntax.TypeParameters != null)
+            // Struct and interface are already pre-declared in PreDeclareType — skip
+            if (syntax.Type is StructTypeSyntax || syntax.Type is InterfaceTypeSyntax)
             {
-                typeParams = ResolveTypeParameterList(syntax.TypeParameters);
+                return;
             }
 
-            // Named type definition: create the type symbol now, fill in fields/methods in pass 2
-            if (syntax.Type is StructTypeSyntax)
+            // Non-struct type definition (e.g., type MyInt int, type Lexer Tokenizer)
+            // The placeholder was already declared in PreDeclareType — now resolve underlying
+            var existingPlaceholder = _context.Scope.Lookup(name) as TypeSymbol;
+            bool pushedTypeParamScope = false;
+            if (existingPlaceholder != null && existingPlaceholder.IsGeneric)
             {
-                var structType = new StructTypeSymbol(name, new List<FieldSymbol>());
-                if (typeParams != null)
-                    structType.SetTypeParameters(typeParams);
-                if (!_context.Scope.TryDeclare(structType))
-                {
-                    _context.Errors.ReportError(_context.SpanOf(syntax), ErrorCode.AlreadyDeclared,
-                        $"Type '{name}' is already declared");
-                }
+                _context.PushScope("typeParams");
+                foreach (var tp in existingPlaceholder.TypeParameters)
+                    _context.Scope.TryDeclare(tp);
+                pushedTypeParamScope = true;
             }
-            else if (syntax.Type is InterfaceTypeSyntax)
+
+            var resolvedUnderlying = _typeResolver.ResolveType(syntax.Type);
+            if (resolvedUnderlying == null)
             {
-                var ifaceType = new InterfaceTypeSymbol(name, new List<MethodSymbol>());
-                if (typeParams != null)
-                    ifaceType.SetTypeParameters(typeParams);
-                if (!_context.Scope.TryDeclare(ifaceType))
-                {
-                    _context.Errors.ReportError(_context.SpanOf(syntax), ErrorCode.AlreadyDeclared,
-                        $"Type '{name}' is already declared");
-                }
+                resolvedUnderlying = TypeSymbol.Error;
+            }
+
+            if (pushedTypeParamScope)
+                _context.PopScope();
+
+            // Update the placeholder in place so existing references see the change
+            var existing = existingPlaceholder;
+            if (existing != null && existing.TypeKind == TypeKind.Error)
+            {
+                existing.TypeKind = resolvedUnderlying.TypeKind;
+                existing.UnderlyingType = resolvedUnderlying;
             }
             else
             {
-                // Non-struct type definition (e.g., type MyInt int)
-                var underlying = _typeResolver.ResolveType(syntax.Type);
-                if (underlying == null)
-                {
-                    underlying = TypeSymbol.Error;
-                }
+                _context.Scope.Replace(name, new TypeSymbol(name, resolvedUnderlying.TypeKind, resolvedUnderlying));
+            }
+        }
 
-                var namedType = new TypeSymbol(name, underlying.TypeKind, underlying);
-                if (!_context.Scope.TryDeclare(namedType))
+        private void UpgradeStructBasedTypes(List<TypeDeclarationSyntax> typeSyntaxes)
+        {
+            foreach (var typeDecl in typeSyntaxes)
+            {
+                foreach (var spec in typeDecl.Specs)
                 {
-                    _context.Errors.ReportError(_context.SpanOf(syntax), ErrorCode.AlreadyDeclared,
-                        $"Type '{name}' is already declared");
+                    if (spec.AssignToken != null) continue; // Skip aliases
+                    if (spec.Type is StructTypeSyntax || spec.Type is InterfaceTypeSyntax) continue;
+
+                    var name = spec.Name.Text;
+                    var symbol = _context.Scope.Lookup(name) as TypeSymbol;
+                    if (symbol == null || symbol is StructTypeSymbol) continue;
+
+                    // If underlying type is a struct, upgrade to StructTypeSymbol
+                    if (symbol.UnderlyingType is StructTypeSymbol baseStruct && baseStruct.Fields.Count > 0)
+                    {
+                        var newStruct = new StructTypeSymbol(name, baseStruct.Fields, baseStruct);
+                        // Copy methods from the old symbol to the new one
+                        foreach (var m in symbol.Methods)
+                            newStruct.AddMethod(m);
+                        _context.Scope.Replace(name, newStruct);
+                    }
                 }
             }
         }
@@ -624,8 +867,11 @@ namespace Ngo.Compiler.Semantics
                     }
                     else
                     {
-                        // Embedded field: use the type name as the field name
-                        var embeddedName = fieldType.Name;
+                        // Embedded field: use the base type name as the field name
+                        // For *T, the embedded name is T (not *T)
+                        var embeddedName = fieldType is PointerTypeSymbol embPtr
+                            ? embPtr.ElementType.Name
+                            : fieldType.Name;
                         fields.Add(new FieldSymbol(embeddedName, fieldType, ordinal++,
                             isEmbedded: true, tag: tagValue));
                     }
@@ -647,8 +893,16 @@ namespace Ngo.Compiler.Semantics
                     {
                         var parameters = _typeResolver.ResolveParameterList(methodSpec.Parameters);
                         var returnTypes = _typeResolver.ResolveResultTypes(methodSpec.Result);
+
+                        bool isVariadic = false;
+                        if (methodSpec.Parameters.Parameters.Count > 0)
+                        {
+                            var lastParam = methodSpec.Parameters.Parameters[methodSpec.Parameters.Parameters.Count - 1];
+                            isVariadic = lastParam.Ellipsis != null;
+                        }
+
                         var method = new MethodSymbol(methodSpec.Name.Text, ifaceSymbol, false,
-                            parameters, returnTypes);
+                            Array.Empty<TypeParameterSymbol>(), parameters, returnTypes, isVariadic);
                         methods.Add(method);
                     }
                     else if (member is ExpressionSyntax embeddedSyntax)
@@ -661,7 +915,7 @@ namespace Ngo.Compiler.Semantics
                             {
                                 // Re-parent the method to the current interface
                                 var promoted = new MethodSymbol(m.Name, ifaceSymbol, false,
-                                    m.Parameters, m.ReturnTypes);
+                                    Array.Empty<TypeParameterSymbol>(), m.Parameters, m.ReturnTypes, m.IsVariadic);
                                 methods.Add(promoted);
                             }
                         }
@@ -674,10 +928,72 @@ namespace Ngo.Compiler.Semantics
             return new TypeDeclaration(symbol ?? TypeSymbol.Error, _context.SpanOf(syntax));
         }
 
+        private void PreDeclareVarSpec(VarSpecSyntax syntax)
+        {
+            var declaredType = syntax.Type != null ? _typeResolver.ResolveType(syntax.Type) : null;
+            for (int i = 0; i < syntax.Names.Count; i++)
+            {
+                var name = syntax.Names[i].Text;
+                if (name == "_") continue;
+                // Use declared type, or a placeholder that will be updated during full resolution
+                var varType = declaredType ?? TypeSymbol.Error;
+                var symbol = new LocalSymbol(name, varType);
+                _context.Scope.TryDeclare(symbol);
+            }
+        }
+
         private IReadOnlyList<VarDeclaration> ResolveVarSpec(VarSpecSyntax syntax)
         {
             var results = new List<VarDeclaration>();
             var declaredType = syntax.Type != null ? _typeResolver.ResolveType(syntax.Type) : null;
+
+            // Multi-return: var a, b = f() where f returns (T1, T2)
+            if (syntax.Names.Count > 1 && syntax.Values.HasValue && syntax.Values.Value.Count == 1)
+            {
+                var rhs = _expressionResolver.ResolveExpression(syntax.Values.Value[0]);
+                var returnTypes = _context.GetCallReturnTypes(rhs);
+                if (returnTypes != null && returnTypes.Count == syntax.Names.Count)
+                {
+                    var symbols = new LocalSymbol?[syntax.Names.Count];
+                    for (int i = 0; i < syntax.Names.Count; i++)
+                    {
+                        var name = syntax.Names[i].Text;
+                        var varType = declaredType ?? TypeChecker.DefaultType(returnTypes[i]);
+
+                        if (name == "_")
+                        {
+                            symbols[i] = null;
+                            continue;
+                        }
+
+                        LocalSymbol symbol;
+                        if (_context.Scope.Name == "package"
+                            && _context.Scope.Lookup(name) is LocalSymbol existing)
+                        {
+                            existing.Type = varType;
+                            symbol = existing;
+                        }
+                        else
+                        {
+                            symbol = new LocalSymbol(name, varType);
+                            _context.Scope.TryDeclare(symbol);
+                        }
+                        _context.TrackLocal(symbol, _context.SpanOf(syntax));
+                        symbols[i] = symbol;
+                    }
+
+                    // Return as MultiVarDeclaration wrapped in VarDeclarations
+                    // The first gets the rhs, the rest reference the same tuple
+                    for (int i = 0; i < symbols.Length; i++)
+                    {
+                        results.Add(new VarDeclaration(
+                            symbols[i] ?? new LocalSymbol("_", returnTypes[i]),
+                            i == 0 ? rhs : null, _context.SpanOf(syntax)));
+                    }
+
+                    return results;
+                }
+            }
 
             for (int i = 0; i < syntax.Names.Count; i++)
             {
@@ -715,11 +1031,25 @@ namespace Ngo.Compiler.Semantics
                     varType = TypeSymbol.Error;
                 }
 
-                var symbol = new LocalSymbol(name, varType);
-                if (!_context.Scope.TryDeclare(symbol))
+                LocalSymbol symbol;
+                // At package level, update the pre-declared placeholder if it exists
+                if (_context.Scope.Name == "package" && name != "_"
+                    && _context.Scope.Lookup(name) is LocalSymbol existing)
                 {
-                    _context.Errors.ReportError(_context.SpanOf(syntax), ErrorCode.AlreadyDeclared,
-                        $"Variable '{name}' is already declared");
+                    existing.Type = varType;
+                    symbol = existing;
+                }
+                else
+                {
+                    symbol = new LocalSymbol(name, varType);
+                    if (name != "_" && !_context.Scope.TryDeclare(symbol))
+                    {
+                        if (_context.Scope.Name != "package")
+                        {
+                            _context.Errors.ReportError(_context.SpanOf(syntax), ErrorCode.AlreadyDeclared,
+                                $"Variable '{name}' is already declared");
+                        }
+                    }
                 }
                 _context.TrackLocal(symbol, _context.SpanOf(syntax));
 
@@ -764,6 +1094,20 @@ namespace Ngo.Compiler.Semantics
             var previousIota = _context.IotaCounter;
             _context.IotaCounter = 0;
 
+            // Pre-declare all constant names so forward references within the block resolve.
+            // This allows const blocks like: const ( a = b + 1; b = 2 )
+            foreach (var spec in syntax.Specs)
+            {
+                for (int i = 0; i < spec.Names.Count; i++)
+                {
+                    var name = spec.Names[i].Text;
+                    if (name != "_")
+                    {
+                        _context.Scope.TryDeclare(new ConstantSymbol(name, TypeSymbol.Error, null));
+                    }
+                }
+            }
+
             SeparatedSyntaxList<ExpressionSyntax>? prevValues = null;
             ExpressionSyntax? prevType = null;
 
@@ -784,7 +1128,9 @@ namespace Ngo.Compiler.Semantics
             var results = new List<ConstDeclaration>();
 
             var values = spec.Values.HasValue ? spec.Values : prevValues;
-            var typeExpr = spec.Type ?? prevType;
+            // Type only carries forward when values also carry forward (iota continuation).
+            // When a spec provides its own values, only its own explicit type applies.
+            var typeExpr = spec.Values.HasValue ? spec.Type : (spec.Type ?? prevType);
 
             if (spec.Values.HasValue)
             {
@@ -805,15 +1151,30 @@ namespace Ngo.Compiler.Semantics
                 }
 
                 var constType = declaredType
-                    ?? (initializer != null ? TypeChecker.DefaultType(initializer.Type) : BuiltinTypes.Int);
+                    ?? (initializer != null ? initializer.Type : BuiltinTypes.Int);
 
                 object? constValue = _context.TryEvaluateConstant(initializer);
                 var symbol = new ConstantSymbol(name, constType, constValue);
 
-                if (!_context.Scope.TryDeclare(symbol))
+                if (name != "_")
                 {
-                    _context.Errors.ReportError(_context.SpanOf(spec), ErrorCode.AlreadyDeclared,
-                        $"Constant '{name}' is already declared");
+                    // Check if this was pre-declared (forward reference support)
+                    var existing = _context.Scope.Lookup(name);
+                    if (existing is ConstantSymbol existingConst && existingConst.Type == TypeSymbol.Error)
+                    {
+                        // Replace the placeholder with the resolved constant
+                        _context.Scope.Replace(name, symbol);
+                    }
+                    else if (!_context.Scope.TryDeclare(symbol))
+                    {
+                        // At package level, tolerate duplicates (build-tag compatibility).
+                        // Inside function bodies, report the error.
+                        if (_context.Scope.Name != "package")
+                        {
+                            _context.Errors.ReportError(_context.SpanOf(spec), ErrorCode.AlreadyDeclared,
+                                $"Constant '{name}' is already declared");
+                        }
+                    }
                 }
 
                 results.Add(new ConstDeclaration(symbol, initializer, _context.SpanOf(spec)));
@@ -834,6 +1195,32 @@ namespace Ngo.Compiler.Semantics
                 }
             }
             _context.FunctionLocals.Clear();
+        }
+
+        private (TypeSymbol? baseType, IReadOnlyList<TypeParameterSymbol>? typeParams) ResolveReceiverType(
+            SyntaxNode baseTypeExpr)
+        {
+            // Handle generic receiver: func (q *Deque[T]) Method(...)
+            // The receiver type Deque[T] is parsed as IndexExpressionSyntax
+            if (baseTypeExpr is IndexExpressionSyntax indexSyntax &&
+                indexSyntax.Expression is IdentifierNameSyntax baseId)
+            {
+                var baseSym = _context.Scope.Lookup(baseId.Identifier.Text) as TypeSymbol;
+                if (baseSym != null && baseSym.IsGeneric)
+                    return (baseSym, baseSym.TypeParameters);
+            }
+
+            // Handle multi-type-arg generic receiver: func (q *Map[K, V]) Method(...)
+            if (baseTypeExpr is TypeArgumentListSyntax typeArgList &&
+                typeArgList.Expression is IdentifierNameSyntax baseId2)
+            {
+                var baseSym = _context.Scope.Lookup(baseId2.Identifier.Text) as TypeSymbol;
+                if (baseSym != null && baseSym.IsGeneric)
+                    return (baseSym, baseSym.TypeParameters);
+            }
+
+            var resolved = _typeResolver.ResolveType((ExpressionSyntax)baseTypeExpr);
+            return (resolved, null);
         }
 
         private IReadOnlyList<TypeParameterSymbol> ResolveTypeParameterList(

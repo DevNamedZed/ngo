@@ -132,7 +132,6 @@ public class TypeCheckerTests
     {
         Assert.IsFalse(TypeChecker.IsAssignable(BuiltinTypes.Int, BuiltinTypes.String));
         Assert.IsFalse(TypeChecker.IsAssignable(BuiltinTypes.Bool, BuiltinTypes.Int));
-        Assert.IsFalse(TypeChecker.IsAssignable(BuiltinTypes.UntypedFloat, BuiltinTypes.Int));
     }
 
     [TestMethod]

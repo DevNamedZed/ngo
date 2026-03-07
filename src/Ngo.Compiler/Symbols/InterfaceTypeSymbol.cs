@@ -29,16 +29,6 @@ namespace Ngo.Compiler.Symbols
             Methods = methods;
         }
 
-        public IReadOnlyList<TypeParameterSymbol> TypeParameters { get; private set; }
-            = Array.Empty<TypeParameterSymbol>();
-
-        public bool IsGeneric => TypeParameters.Count > 0;
-
-        public void SetTypeParameters(IReadOnlyList<TypeParameterSymbol> typeParameters)
-        {
-            TypeParameters = typeParameters;
-        }
-
         public new IReadOnlyList<MethodSymbol> Methods { get; private set; }
 
         public void SetMethods(IReadOnlyList<MethodSymbol> methods)
@@ -46,7 +36,21 @@ namespace Ngo.Compiler.Symbols
             Methods = methods;
         }
 
-        public new MethodSymbol? LookupMethod(string name)
+        public new void AddMethod(MethodSymbol method)
+        {
+            if (Methods is List<MethodSymbol> list)
+            {
+                list.Add(method);
+            }
+            else
+            {
+                var newList = new List<MethodSymbol>(Methods);
+                newList.Add(method);
+                Methods = newList;
+            }
+        }
+
+        public override MethodSymbol? LookupMethod(string name)
         {
             for (int i = 0; i < Methods.Count; i++)
             {

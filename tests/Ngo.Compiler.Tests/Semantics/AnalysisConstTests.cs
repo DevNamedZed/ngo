@@ -137,10 +137,12 @@ func main() {
     [TestMethod]
     public void Const_duplicate_name_error()
     {
+        // Duplicate const inside function body is an error
         var result = Analyze(@"package main
-const x = 1
-const x = 2
-func main() {}");
+func main() {
+    const x = 1
+    const x = 2
+}");
         Assert.IsTrue(result.HasErrors);
         Assert.IsTrue(result.Errors.Any(e => e.Code == ErrorCode.AlreadyDeclared));
     }

@@ -55,6 +55,41 @@ namespace Ngo.Runtime
             }
             return false;
         }
+
+        public static object? Join(params object?[] errs)
+        {
+            var nonNull = new System.Collections.Generic.List<object>();
+            foreach (var e in errs)
+            {
+                if (e != null) nonNull.Add(e);
+            }
+            if (nonNull.Count == 0) return null;
+            if (nonNull.Count == 1) return nonNull[0];
+            return new JoinedError(nonNull.ToArray());
+        }
+    }
+
+    public sealed class JoinedError
+    {
+        private readonly object[] _errors;
+
+        public JoinedError(object[] errors)
+        {
+            _errors = errors;
+        }
+
+        public object[] Unwrap() => _errors;
+
+        public override string ToString()
+        {
+            var sb = new System.Text.StringBuilder();
+            for (int i = 0; i < _errors.Length; i++)
+            {
+                if (i > 0) sb.Append('\n');
+                sb.Append(_errors[i]);
+            }
+            return sb.ToString();
+        }
     }
 
     public sealed class WrappedError

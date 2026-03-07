@@ -22,7 +22,7 @@ namespace Ngo.Compiler.Ast
 {
     public sealed class LabeledStatement : Statement
     {
-        public LabeledStatement(string label, Statement innerStatement, TextSpan span)
+        public LabeledStatement(string label, AstNode innerStatement, TextSpan span)
             : base(span)
         {
             Label = label;
@@ -30,7 +30,7 @@ namespace Ngo.Compiler.Ast
         }
 
         public string Label { get; }
-        public Statement InnerStatement { get; }
+        public AstNode InnerStatement { get; }
 
         public override NodeType NodeType => NodeType.LabeledStatement;
     }

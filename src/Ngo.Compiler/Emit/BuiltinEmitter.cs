@@ -79,6 +79,30 @@ namespace Ngo.Compiler.Emit
                 return EmitStaticCall(call, typeof(GoBytes), name);
             }
 
+            if (call.Function.PackageName == "errors")
+            {
+                if (name == "Join")
+                {
+                    // Pack variadic error args into object?[]
+                    _ctx.IL.Emit(OpCodes.Ldc_I4, call.Arguments.Count);
+                    _ctx.IL.Emit(OpCodes.Newarr, typeof(object));
+                    for (int i = 0; i < call.Arguments.Count; i++)
+                    {
+                        _ctx.IL.Emit(OpCodes.Dup);
+                        _ctx.IL.Emit(OpCodes.Ldc_I4, i);
+                        _body.EmitExpression(call.Arguments[i]);
+                        var argType = _ctx.Mapper.Map(call.Arguments[i].Type);
+                        if (argType.IsValueType)
+                            _ctx.IL.Emit(OpCodes.Box, argType);
+                        _ctx.IL.Emit(OpCodes.Stelem_Ref);
+                    }
+                    _ctx.IL.Emit(OpCodes.Call,
+                        typeof(GoErrors).GetMethod("Join")!);
+                    return true;
+                }
+                return EmitStaticCall(call, typeof(GoErrors), name);
+            }
+
             if (call.Function.PackageName == "json")
             {
                 return EmitStaticCall(call, typeof(GoJson), name);
@@ -112,6 +136,21 @@ namespace Ngo.Compiler.Emit
             if (call.Function.PackageName == "reflect")
             {
                 return EmitStaticCall(call, typeof(GoReflect), name);
+            }
+
+            if (call.Function.PackageName == "runtime")
+            {
+                return EmitStaticCall(call, typeof(GoRuntime), name);
+            }
+
+            if (call.Function.PackageName == "reflectlite")
+            {
+                return EmitStaticCall(call, typeof(GoReflect), name);
+            }
+
+            if (call.Function.PackageName == "unsafe")
+            {
+                return EmitStaticCall(call, typeof(GoUnsafe), name);
             }
 
             if (call.Function.PackageName == "csv")

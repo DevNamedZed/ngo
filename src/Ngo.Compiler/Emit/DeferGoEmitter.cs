@@ -735,7 +735,10 @@ namespace Ngo.Compiler.Emit
             if (name == "print") methodName = "Print";
 
             EmitLambdaPrintArgs(il, paramTypes);
-            il.Emit(OpCodes.Call, targetType.GetMethod(methodName, new[] { typeof(object[]) })!);
+            var method = targetType.GetMethod(methodName, new[] { typeof(object[]) })!;
+            il.Emit(OpCodes.Call, method);
+            if (method.ReturnType != typeof(void))
+                il.Emit(OpCodes.Pop);
             return true;
         }
 
@@ -758,8 +761,10 @@ namespace Ngo.Compiler.Emit
             if (targetType == null || paramTypes.Length < 1) return false;
 
             EmitLambdaFormatArgs(il, paramTypes);
-            il.Emit(OpCodes.Call,
-                targetType.GetMethod(name, new[] { typeof(string), typeof(object[]) })!);
+            var method = targetType.GetMethod(name, new[] { typeof(string), typeof(object[]) })!;
+            il.Emit(OpCodes.Call, method);
+            if (method.ReturnType != typeof(void))
+                il.Emit(OpCodes.Pop);
             return true;
         }
 
@@ -873,6 +878,8 @@ namespace Ngo.Compiler.Emit
                 "flag" => typeof(GoFlag),
                 "http" => typeof(GoHttp),
                 "reflect" => typeof(GoReflect),
+                "runtime" => typeof(GoRuntime),
+                "reflectlite" => typeof(GoReflect),
                 _ => null,
             };
         }

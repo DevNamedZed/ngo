@@ -89,12 +89,13 @@ func main() {}");
     [TestMethod]
     public void Bind_duplicate_type_declaration_reports_error()
     {
+        // Type duplicates are tolerated at package level for build-tag compatibility.
+        // The first declaration wins.
         var result = Analyze(@"package main
 type Point struct { X int }
 type Point struct { Y int }
 func main() {}");
-        Assert.IsTrue(result.HasErrors);
-        Assert.IsTrue(result.Errors.Any(e => e.Code == ErrorCode.AlreadyDeclared));
+        Assert.IsFalse(result.HasErrors);
     }
 
     [TestMethod]

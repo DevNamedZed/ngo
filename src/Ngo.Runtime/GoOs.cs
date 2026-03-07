@@ -48,6 +48,20 @@ namespace Ngo.Runtime
             Environment.SetEnvironmentVariable(key, value);
         }
 
+        public static object? Unsetenv(string key)
+        {
+            Environment.SetEnvironmentVariable(key, null);
+            return null;
+        }
+
+        public static void Clearenv()
+        {
+            foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables())
+            {
+                Environment.SetEnvironmentVariable((string)entry.Key, null);
+            }
+        }
+
         public static (string, bool) LookupEnv(string key)
         {
             var val = Environment.GetEnvironmentVariable(key);

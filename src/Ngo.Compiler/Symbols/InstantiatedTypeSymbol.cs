@@ -34,6 +34,21 @@ namespace Ngo.Compiler.Symbols
 
         public IReadOnlyList<TypeSymbol> TypeArguments { get; }
 
+        public override MethodSymbol? LookupMethod(string name)
+        {
+            // First check methods directly on this instantiation
+            var direct = base.LookupMethod(name);
+            if (direct != null) return direct;
+
+            // Delegate to the generic base type
+            return GenericType.LookupMethod(name);
+        }
+
+        public override TypeSymbol Resolved()
+        {
+            return GenericType.Resolved();
+        }
+
         private static string BuildName(TypeSymbol genericType, IReadOnlyList<TypeSymbol> typeArguments)
         {
             return genericType.Name + "[" + string.Join(", ", typeArguments.Select(a => a.Name)) + "]";

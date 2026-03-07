@@ -38,6 +38,7 @@ namespace Ngo.Compiler.Semantics
         public List<(LocalSymbol Symbol, TextSpan Span)> FunctionLocals { get; } = new();
         public bool CheckUnused { get; set; }
         public bool SuppressUsageMarking { get; set; }
+        public Dictionary<string, int> PendingConstInts { get; } = new();
 
         public AnalysisContext(Scope universeScope)
         {
@@ -56,7 +57,7 @@ namespace Ngo.Compiler.Semantics
 
         public void TrackLocal(LocalSymbol symbol, TextSpan span)
         {
-            if (symbol.Name != "_")
+            if (symbol.Name != "_" && CheckUnused)
             {
                 FunctionLocals.Add((symbol, span));
             }
@@ -90,7 +91,7 @@ namespace Ngo.Compiler.Semantics
                     var paramTypes = new List<TypeSymbol>();
                     foreach (var p in func.Parameters)
                         paramTypes.Add(p.Type);
-                    return new FunctionTypeSymbol(paramTypes, func.ReturnTypes);
+                    return new FunctionTypeSymbol(paramTypes, func.ReturnTypes, func.IsVariadic);
                 }
                 case ConstantSymbol constant:
                     return constant.Type;
@@ -116,7 +117,7 @@ namespace Ngo.Compiler.Semantics
             }
 
             // Comma-ok patterns: val, ok := m[key] / x.(T) / <-ch
-            if (expr is Ast.IndexExpression idx && idx.Target.Type is Symbols.MapTypeSymbol mapType)
+            if (expr is Ast.IndexExpression idx && idx.Target.Type.Resolved() is Symbols.MapTypeSymbol mapType)
             {
                 idx.IsCommaOk = true;
                 return new[] { mapType.ValueType, Symbols.BuiltinTypes.Bool };

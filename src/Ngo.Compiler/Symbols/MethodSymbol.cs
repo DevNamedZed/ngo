@@ -41,7 +41,8 @@ namespace Ngo.Compiler.Symbols
 
         public MethodSymbol(string name, TypeSymbol receiverType, bool isPointerReceiver,
             IReadOnlyList<TypeParameterSymbol> typeParameters,
-            IReadOnlyList<ParameterSymbol> parameters, IReadOnlyList<TypeSymbol> returnTypes)
+            IReadOnlyList<ParameterSymbol> parameters, IReadOnlyList<TypeSymbol> returnTypes,
+            bool isVariadic = false)
             : base(name, SymbolKind.Method)
         {
             ReceiverType = receiverType;
@@ -49,6 +50,7 @@ namespace Ngo.Compiler.Symbols
             TypeParameters = typeParameters;
             Parameters = parameters;
             ReturnTypes = returnTypes;
+            IsVariadic = isVariadic;
         }
 
         public TypeSymbol ReceiverType { get; }
@@ -60,6 +62,8 @@ namespace Ngo.Compiler.Symbols
         public IReadOnlyList<ParameterSymbol> Parameters { get; }
 
         public IReadOnlyList<TypeSymbol> ReturnTypes { get; }
+
+        public bool IsVariadic { get; }
 
         public TypeSymbol ReturnType =>
             ReturnTypes.Count > 0 ? ReturnTypes[0] : BuiltinTypes.Void;

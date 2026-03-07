@@ -27,6 +27,20 @@ namespace Ngo.Compiler.Semantics
             if (constraint == ConstraintInfo.Any)
                 return true;
 
+            // Type parameter with same or stronger constraint satisfies
+            if (typeArg is TypeParameterSymbol tp)
+            {
+                if (tp.Constraint == constraint)
+                    return true;
+                // comparable satisfies comparable
+                if (constraint.IsComparable && tp.Constraint.IsComparable)
+                    return true;
+                // any constraint is weaker, always satisfied
+                if (tp.Constraint == ConstraintInfo.Any && !constraint.IsComparable
+                    && constraint.Methods.Count == 0 && constraint.TypeElements.Count == 0)
+                    return true;
+            }
+
             if (constraint.IsComparable)
             {
                 if (!IsComparable(typeArg))
@@ -77,6 +91,10 @@ namespace Ngo.Compiler.Semantics
 
         private static bool IsComparable(TypeSymbol type)
         {
+            // A type parameter with a comparable constraint is itself comparable
+            if (type is TypeParameterSymbol tp && tp.Constraint.IsComparable)
+                return true;
+
             switch (type.TypeKind)
             {
                 case TypeKind.Bool:

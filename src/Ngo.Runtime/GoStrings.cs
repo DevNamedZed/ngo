@@ -233,6 +233,22 @@ namespace Ngo.Runtime
                 end--;
             return s.Substring(start, end - start);
         }
+
+        public static string TrimRightFunc(string s, Func<long, bool> f)
+        {
+            int end = s.Length;
+            while (end > 0 && f((long)s[end - 1]))
+                end--;
+            return s.Substring(0, end);
+        }
+
+        public static string TrimLeftFunc(string s, Func<long, bool> f)
+        {
+            int start = 0;
+            while (start < s.Length && f((long)s[start]))
+                start++;
+            return s.Substring(start);
+        }
     }
 
     public sealed class GoReplacer

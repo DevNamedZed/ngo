@@ -18,6 +18,7 @@
 
 using System.Linq;
 using Ngo.Compiler.Ast;
+using Ngo.Compiler.Symbols;
 
 namespace Ngo.Compiler.Semantics
 {
@@ -55,7 +56,9 @@ namespace Ngo.Compiler.Semantics
                         && IsTerminating(block.Statements[block.Statements.Count - 1]);
 
                 case ForStatement forStmt:
-                    return forStmt.Condition == null;
+                    // Infinite loop (no condition) is only terminating if it has
+                    // no break statements that could exit the loop.
+                    return forStmt.Condition == null && !ContainsBreak(forStmt.Body);
 
                 case SwitchStatement switchStmt:
                     if (!switchStmt.Cases.Any(c => c.IsDefault))
@@ -72,11 +75,24 @@ namespace Ngo.Compiler.Semantics
                     return typeSwitchStmt.Cases.All(TypeCaseTerminates);
 
                 case SelectStatement selectStmt:
-                    if (!selectStmt.Cases.Any(c => c.IsDefault))
+                    if (selectStmt.Cases.Count == 0)
                     {
                         return false;
                     }
                     return selectStmt.Cases.All(SelectCaseTerminates);
+
+                case LabeledStatement labeled:
+                    return IsTerminating(labeled.InnerStatement);
+
+                case ExpressionStatement exprStmt:
+                    // panic() is a terminating statement
+                    if (exprStmt.Expression is CallExpression call
+                        && call.Function is FunctionSymbol func
+                        && func.Name == "panic")
+                    {
+                        return true;
+                    }
+                    return false;
 
                 default:
                     return false;
@@ -101,7 +117,14 @@ namespace Ngo.Compiler.Semantics
                 return false;
             }
 
-            return IsTerminating(switchCase.Body[switchCase.Body.Count - 1]);
+            var last = switchCase.Body[switchCase.Body.Count - 1];
+            // break exits the switch — it doesn't terminate the function path
+            if (last is BranchStatement branch && branch.BranchKind == BranchKind.Break)
+            {
+                return false;
+            }
+
+            return IsTerminating(last);
         }
 
         private static bool TypeCaseTerminates(TypeSwitchCase typeCase)
@@ -111,7 +134,13 @@ namespace Ngo.Compiler.Semantics
                 return false;
             }
 
-            return IsTerminating(typeCase.Body[typeCase.Body.Count - 1]);
+            var last = typeCase.Body[typeCase.Body.Count - 1];
+            if (last is BranchStatement branch && branch.BranchKind == BranchKind.Break)
+            {
+                return false;
+            }
+
+            return IsTerminating(last);
         }
 
         private static bool SelectCaseTerminates(SelectCase selectCase)
@@ -121,7 +150,59 @@ namespace Ngo.Compiler.Semantics
                 return false;
             }
 
-            return IsTerminating(selectCase.Body[selectCase.Body.Count - 1]);
+            var last = selectCase.Body[selectCase.Body.Count - 1];
+            // break exits the select — it doesn't terminate the function
+            if (last is BranchStatement branch && branch.BranchKind == BranchKind.Break)
+            {
+                return false;
+            }
+
+            return IsTerminating(last);
+        }
+
+        private static bool ContainsBreak(BlockStatement block)
+        {
+            foreach (var stmt in block.Statements)
+            {
+                if (ContainsBreakInNode(stmt))
+                    return true;
+            }
+            return false;
+        }
+
+        private static bool ContainsBreakInNode(AstNode node)
+        {
+            switch (node)
+            {
+                case BranchStatement branch:
+                    return branch.BranchKind == BranchKind.Break;
+
+                case IfStatement ifStmt:
+                    if (ContainsBreak(ifStmt.Body))
+                        return true;
+                    if (ifStmt.ElseBody is BlockStatement elseBlock && ContainsBreak(elseBlock))
+                        return true;
+                    if (ifStmt.ElseBody is IfStatement elseIf && ContainsBreakInNode(elseIf))
+                        return true;
+                    return false;
+
+                case BlockStatement block:
+                    return ContainsBreak(block);
+
+                case LabeledStatement labeled:
+                    return ContainsBreakInNode(labeled.InnerStatement);
+
+                case SwitchStatement:
+                case ForStatement:
+                case ForRangeStatement:
+                case SelectStatement:
+                case TypeSwitchStatement:
+                    // break inside a nested loop/switch targets that construct, not the outer for
+                    return false;
+
+                default:
+                    return false;
+            }
         }
     }
 }

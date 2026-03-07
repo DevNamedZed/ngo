@@ -34,7 +34,7 @@ namespace Ngo.Compiler.Emit
     {
         private readonly EmitContext _ctx;
         private readonly BuiltinEmitter _builtins;
-        private readonly Dictionary<CallExpression, LocalBuilder> _spreadLocals = new();
+        private readonly Dictionary<Expression, LocalBuilder> _spreadLocals = new();
         internal readonly ClosureEmitter Closures;
         private readonly ForRangeEmitter _ranges;
         private readonly DeferGoEmitter _deferGo;
@@ -1418,7 +1418,17 @@ namespace Ngo.Compiler.Emit
                     EmitSelector((SelectorExpression)expr);
                     break;
                 case NodeType.MethodCallExpression:
-                    EmitMethodCall((MethodCallExpression)expr);
+                    var methodCallExpr = (MethodCallExpression)expr;
+                    EmitMethodCall(methodCallExpr);
+                    if (methodCallExpr.IsSpreadArg)
+                    {
+                        var tupleType = _ctx.Mapper.MapReturnType(methodCallExpr.Method.ReturnTypes);
+                        var tupleLocal = _ctx.IL.DeclareLocal(tupleType);
+                        _ctx.IL.Emit(OpCodes.Stloc, tupleLocal);
+                        _spreadLocals[methodCallExpr] = tupleLocal;
+                        _ctx.IL.Emit(OpCodes.Ldloca, tupleLocal);
+                        _ctx.IL.Emit(OpCodes.Ldfld, tupleType.GetField("Item1")!);
+                    }
                     break;
                 case NodeType.CompositeLiteralExpression:
                     EmitCompositeLiteral((CompositeLiteralExpression)expr);
@@ -1472,6 +1482,7 @@ namespace Ngo.Compiler.Emit
                     _ctx.IL.Emit(OpCodes.Ldc_I8, Convert.ToInt64(lit.Value));
                     break;
                 case TypeKind.Int32:
+                case TypeKind.UntypedRune:
                     _ctx.IL.Emit(OpCodes.Ldc_I4, Convert.ToInt32(lit.Value));
                     break;
                 case TypeKind.Int8:
@@ -1972,7 +1983,7 @@ namespace Ngo.Compiler.Emit
 
             // int/rune/byte → string: create string from character code
             if (targetKind == TypeKind.String
-                && (sourceKind == TypeKind.Int || sourceKind == TypeKind.UntypedInt
+                && (sourceKind == TypeKind.Int || sourceKind == TypeKind.UntypedInt || sourceKind == TypeKind.UntypedRune
                     || sourceKind == TypeKind.Uint8 || sourceKind == TypeKind.Int32))
             {
                 EmitExpression(conv.Operand);
@@ -2687,6 +2698,7 @@ namespace Ngo.Compiler.Emit
                     _ctx.IL.Emit(OpCodes.Ldc_I8, Convert.ToInt64(constant.Value));
                     break;
                 case TypeKind.Int32:
+                case TypeKind.UntypedRune:
                     _ctx.IL.Emit(OpCodes.Ldc_I4, Convert.ToInt32(constant.Value));
                     break;
                 case TypeKind.String:

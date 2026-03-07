@@ -61,6 +61,12 @@ namespace Ngo.Compiler.Emit
                 return genericType.MakeGenericType(typeArgs);
             }
 
+            // Named type with underlying type — map through the underlying type
+            if (symbol.UnderlyingType != null && symbol.GetType() == typeof(TypeSymbol))
+            {
+                return Map(symbol.UnderlyingType);
+            }
+
             switch (symbol.TypeKind)
             {
                 case TypeKind.Bool:
@@ -79,6 +85,8 @@ namespace Ngo.Compiler.Emit
                     return typeof(long);
                 case TypeKind.UntypedInt:
                     return typeof(long);
+                case TypeKind.UntypedRune:
+                    return typeof(int);
 
                 case TypeKind.Uint:
                     return typeof(ulong);
@@ -145,6 +153,14 @@ namespace Ngo.Compiler.Emit
                     if (symbol.Name == "File") return typeof(GoFile);
                     if (symbol.Name == "FileInfo") return typeof(GoFileInfo);
                     if (symbol.Name == "Time") return typeof(GoTimeValue);
+                    if (symbol.Name == "Location") return typeof(object); // time.Location stub
+                    if (symbol.Name == "Timer") return typeof(object); // time.Timer stub
+                    if (symbol.Name == "Ticker") return typeof(object); // time.Ticker stub
+                    if (symbol.Name == "Request") return typeof(object); // http.Request stub
+                    if (symbol.Name == "Server") return typeof(object); // httptest.Server stub
+                    if (symbol.Name == "ResponseRecorder") return typeof(object); // httptest stub
+                    if (symbol.Name == "BuildInfo") return typeof(object); // runtime/debug stub
+                    if (symbol.Name == "URL") return typeof(object); // net/url stub
                     if (symbol.Name == "Regexp") return typeof(GoRegexpObj);
                     if (symbol.Name == "Scanner") return typeof(GoScanner);
                     if (symbol.Name == "Reader")
@@ -168,6 +184,8 @@ namespace Ngo.Compiler.Emit
                     if (symbol.Name == "Type" && IsReflectType(symbol)) return typeof(GoReflectType);
                     if (symbol.Name == "Value" && IsReflectValue(symbol)) return typeof(GoReflectValue);
                     if (symbol.Name == "StructField" && IsReflectStructField(symbol)) return typeof(GoReflectStructField);
+                    if (symbol.Name == "Func" && IsRuntimeFunc(symbol)) return typeof(GoRuntimeFunc);
+                    if (symbol.Name == "Pointer" && symbol is StructTypeSymbol pts && pts.Fields.Count == 0 && pts.Methods.Count == 0) return typeof(long); // unsafe.Pointer
                     // Should have been registered via DeclarationEmitter
                     throw new InvalidOperationException(
                         $"Type '{symbol.Name}' was not registered. User-defined types must be registered before use.");
@@ -261,6 +279,12 @@ namespace Ngo.Compiler.Emit
         {
             if (symbol is not StructTypeSymbol st) return false;
             return st.LookupMethod("Kind") != null && st.LookupMethod("Interface") != null;
+        }
+
+        private static bool IsRuntimeFunc(TypeSymbol symbol)
+        {
+            if (symbol is not StructTypeSymbol st) return false;
+            return st.LookupMethod("Name") != null && st.LookupMethod("FileLine") != null;
         }
 
         private static bool IsReflectStructField(TypeSymbol symbol)

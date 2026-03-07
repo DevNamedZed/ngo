@@ -174,7 +174,7 @@ func main() {
     {
         var result = Analyze(@"package main
 func main() {
-    a := [3]int{1, 2}
+    a := [2]int{1, 2, 3}
 }");
         Assert.IsTrue(result.HasErrors);
         Assert.IsTrue(result.Errors.Any(e => e.Code == ErrorCode.InvalidCompositeLiteral));

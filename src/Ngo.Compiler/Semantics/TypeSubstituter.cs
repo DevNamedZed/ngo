@@ -38,7 +38,8 @@ namespace Ngo.Compiler.Semantics
             {
                 for (int i = 0; i < typeParams.Count; i++)
                 {
-                    if (typeParams[i] == tps)
+                    if (typeParams[i] == tps
+                        || (typeParams[i].Name == tps.Name && typeParams[i].Ordinal == tps.Ordinal))
                     {
                         return typeArgs[i];
                     }

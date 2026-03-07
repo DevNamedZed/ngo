@@ -131,13 +131,14 @@ func main() {
     [TestMethod]
     public void Duplicate_method_error()
     {
+        // Method duplicates are tolerated at package level for build-tag compatibility.
+        // The second declaration is silently ignored.
         var result = Analyze(@"package main
 type T struct {}
 func (t T) Foo() {}
 func (t T) Foo() {}
 func main() {}");
-        Assert.IsTrue(result.HasErrors);
-        Assert.IsTrue(result.Errors.Any(e => e.Code == ErrorCode.AlreadyDeclared));
+        Assert.IsFalse(result.HasErrors);
     }
 
     [TestMethod]

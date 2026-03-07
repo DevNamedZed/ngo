@@ -43,6 +43,7 @@ namespace Ngo.Compiler.Semantics
                     var symbol = _context.Scope.Lookup(pkgIdSyntax.Identifier.Text);
                     if (symbol is PackageSymbol pkg)
                     {
+                        _context.UsedPackages.Add(pkg.Name);
                         var export = pkg.LookupExport(selectorSyntax.Name.Text);
                         if (export is TypeSymbol typeSymbol)
                         {
@@ -51,6 +52,14 @@ namespace Ngo.Compiler.Semantics
 
                         _context.Errors.ReportError(_context.SpanOf(syntax), ErrorCode.UndeclaredName,
                             $"Package '{pkg.Name}' has no exported type '{selectorSyntax.Name.Text}'");
+                        return null;
+                    }
+
+                    // Identifier not found in scope — likely an unresolved package
+                    if (symbol == null)
+                    {
+                        _context.Errors.ReportError(_context.SpanOf(syntax), ErrorCode.UndeclaredName,
+                            $"Undefined name '{pkgIdSyntax.Identifier.Text}'");
                         return null;
                     }
                 }
@@ -106,25 +115,41 @@ namespace Ngo.Compiler.Semantics
             if (syntax is IndexExpressionSyntax indexSyntax)
             {
                 // Check if this is a type instantiation
+                TypeSymbol? baseSym = null;
                 if (indexSyntax.Expression is IdentifierNameSyntax baseIdSyntax)
                 {
-                    var baseSym = _context.Scope.Lookup(baseIdSyntax.Identifier.Text);
-                    if (baseSym is StructTypeSymbol sts && sts.IsGeneric)
-                    {
-                        var argType = ResolveType(indexSyntax.Index);
-                        return new InstantiatedTypeSymbol(sts, new[] { argType ?? TypeSymbol.Error });
-                    }
-                    if (baseSym is InterfaceTypeSymbol its && its.IsGeneric)
-                    {
-                        var argType = ResolveType(indexSyntax.Index);
-                        return new InstantiatedTypeSymbol(its, new[] { argType ?? TypeSymbol.Error });
-                    }
+                    baseSym = _context.Scope.Lookup(baseIdSyntax.Identifier.Text) as TypeSymbol;
+                }
+                else if (indexSyntax.Expression is SelectorExpressionSyntax selSyntax
+                    && selSyntax.Expression is IdentifierNameSyntax pkgId)
+                {
+                    var pkgSym = _context.Scope.Lookup(pkgId.Identifier.Text);
+                    if (pkgSym is PackageSymbol pkg)
+                        baseSym = pkg.LookupExport(selSyntax.Name.Text) as TypeSymbol;
+                }
+                if (baseSym != null && baseSym.IsGeneric)
+                {
+                    var argType = ResolveType(indexSyntax.Index);
+                    return new InstantiatedTypeSymbol(baseSym, new[] { argType ?? TypeSymbol.Error });
                 }
             }
 
             if (syntax is PointerTypeSyntax pointerSyntax)
             {
                 var elementType = ResolveType(pointerSyntax.ElementType);
+                if (elementType == null)
+                {
+                    return null;
+                }
+
+                return new PointerTypeSymbol(elementType);
+            }
+
+            // *T in expression context is parsed as UnaryExpression(Star, T)
+            if (syntax is UnaryExpressionSyntax unarySyntax
+                && unarySyntax.OperatorToken.Kind == SyntaxKind.StarToken)
+            {
+                var elementType = ResolveType(unarySyntax.Operand);
                 if (elementType == null)
                 {
                     return null;
@@ -177,6 +202,29 @@ namespace Ngo.Compiler.Semantics
                     return new ArrayTypeSymbol(elementType, length);
                 }
 
+                // [CONST]T — length is a constant identifier
+                if (arraySyntax.Length is IdentifierNameSyntax constId)
+                {
+                    var sym = _context.Scope.Lookup(constId.Identifier.Text);
+                    if (sym is ConstantSymbol constSym && constSym.Value is long lval)
+                    {
+                        return new ArrayTypeSymbol(elementType, (int)lval);
+                    }
+                    if (sym is ConstantSymbol constSym2 && constSym2.Value is int ival)
+                    {
+                        return new ArrayTypeSymbol(elementType, ival);
+                    }
+                }
+
+                // Try evaluating constant expression (e.g. unicode.MaxASCII + 1)
+                {
+                    var constVal = TryEvalConstantLength(arraySyntax.Length);
+                    if (constVal.HasValue)
+                    {
+                        return new ArrayTypeSymbol(elementType, constVal.Value);
+                    }
+                }
+
                 _context.Errors.ReportError(_context.SpanOf(syntax), ErrorCode.UnsupportedSyntax,
                     "Array length must be a constant integer");
                 return null;
@@ -204,18 +252,38 @@ namespace Ngo.Compiler.Semantics
             if (syntax is FuncTypeSyntax funcSyntax)
             {
                 var paramTypes = new List<TypeSymbol>();
+                bool isVariadic = false;
                 for (int i = 0; i < funcSyntax.Parameters.Parameters.Count; i++)
                 {
                     var param = funcSyntax.Parameters.Parameters[i];
                     if (param.Type != null)
                     {
-                        var resolved = ResolveType(param.Type);
-                        paramTypes.Add(resolved ?? TypeSymbol.Error);
+                        var resolved = ResolveType(param.Type) ?? TypeSymbol.Error;
+                        // Each named parameter gets its own entry (e.g., "prev, curr, next rune" → 3 params)
+                        int count = param.Names.HasValue ? param.Names.Value.Count : 1;
+                        for (int j = 0; j < count; j++)
+                            paramTypes.Add(resolved);
+                    }
+                    if (param.Ellipsis != null)
+                    {
+                        isVariadic = true;
+                        // Wrap variadic param type in slice (func(...T) → last param is []T)
+                        if (paramTypes.Count > 0)
+                        {
+                            var lastIdx = paramTypes.Count - 1;
+                            paramTypes[lastIdx] = new SliceTypeSymbol(paramTypes[lastIdx]);
+                        }
                     }
                 }
 
                 var returnTypes = ResolveResultTypes(funcSyntax.Result);
-                return new FunctionTypeSymbol(paramTypes, returnTypes);
+                return new FunctionTypeSymbol(paramTypes, returnTypes, isVariadic);
+            }
+
+            // Parenthesized type: (T) — unwrap parens
+            if (syntax is ParenthesizedExpressionSyntax parenSyntax)
+            {
+                return ResolveType(parenSyntax.Expression);
             }
 
             _context.Errors.ReportError(_context.SpanOf(syntax), ErrorCode.UnsupportedSyntax,
@@ -349,8 +417,11 @@ namespace Ngo.Compiler.Semantics
                     var param = paramList.Parameters[i];
                     if (param.Type != null)
                     {
-                        var resolved = ResolveType(param.Type);
-                        types.Add(resolved ?? BuiltinTypes.Void);
+                        var resolved = ResolveType(param.Type) ?? BuiltinTypes.Void;
+                        // Named returns may group names: (ok, found bool) → 2 returns of type bool
+                        int count = param.Names.HasValue ? param.Names.Value.Count : 1;
+                        for (int j = 0; j < count; j++)
+                            types.Add(resolved);
                     }
                 }
 
@@ -358,6 +429,81 @@ namespace Ngo.Compiler.Semantics
             }
 
             return Array.Empty<TypeSymbol>();
+        }
+
+        private int? TryEvalConstantLength(ExpressionSyntax expr)
+        {
+            if (expr is LiteralExpressionSyntax lit
+                && lit.Token.Kind == SyntaxKind.IntLiteralToken
+                && int.TryParse(lit.Token.Text, out var litVal))
+            {
+                return litVal;
+            }
+
+            if (expr is IdentifierNameSyntax id)
+            {
+                var sym = _context.Scope.Lookup(id.Identifier.Text);
+                if (sym is ConstantSymbol c)
+                {
+                    return c.Value is long lv ? (int)lv : c.Value is int iv ? iv : null;
+                }
+
+                // Fallback: search pending const syntax for simple integer constants not yet in scope
+                var syntaxVal = TryLookupConstFromSyntax(id.Identifier.Text);
+                if (syntaxVal.HasValue)
+                {
+                    return syntaxVal;
+                }
+            }
+
+            if (expr is SelectorExpressionSyntax sel
+                && sel.Expression is IdentifierNameSyntax pkgId)
+            {
+                var pkgSym = _context.Scope.Lookup(pkgId.Identifier.Text);
+                if (pkgSym is PackageSymbol pkg)
+                {
+                    var member = pkg.LookupExport(sel.Name.Text);
+                    if (member is ConstantSymbol c)
+                    {
+                        return c.Value is long lv ? (int)lv : c.Value is int iv ? iv : null;
+                    }
+                }
+            }
+
+            if (expr is UnaryExpressionSyntax unary
+                && unary.OperatorToken.Kind == SyntaxKind.MinusToken)
+            {
+                var inner = TryEvalConstantLength(unary.Operand);
+                if (inner.HasValue) return -inner.Value;
+            }
+
+            if (expr is BinaryExpressionSyntax bin)
+            {
+                var left = TryEvalConstantLength(bin.Left);
+                var right = TryEvalConstantLength(bin.Right);
+                if (left.HasValue && right.HasValue)
+                {
+                    return bin.OperatorToken.Kind switch
+                    {
+                        SyntaxKind.PlusToken => left.Value + right.Value,
+                        SyntaxKind.MinusToken => left.Value - right.Value,
+                        SyntaxKind.StarToken => left.Value * right.Value,
+                        SyntaxKind.SlashToken when right.Value != 0 => left.Value / right.Value,
+                        _ => (int?)null,
+                    };
+                }
+            }
+
+            return null;
+        }
+
+        private int? TryLookupConstFromSyntax(string name)
+        {
+            if (_context.PendingConstInts.TryGetValue(name, out var val))
+            {
+                return val;
+            }
+            return null;
         }
     }
 }

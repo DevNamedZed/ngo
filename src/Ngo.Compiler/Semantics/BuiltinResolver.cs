@@ -55,13 +55,14 @@ namespace Ngo.Compiler.Semantics
 
             var arg = _resolveExpression(syntax.Arguments[0]);
 
+            var argResolved = ResolveUnderlying(arg.Type);
             if (arg.Type != TypeSymbol.Error
-                && arg.Type is not SliceTypeSymbol
-                && arg.Type is not ArrayTypeSymbol
-                && arg.Type is not MapTypeSymbol
-                && arg.Type is not ChannelTypeSymbol
-                && arg.Type.TypeKind != TypeKind.String
-                && arg.Type.TypeKind != TypeKind.UntypedString)
+                && argResolved is not SliceTypeSymbol
+                && argResolved is not ArrayTypeSymbol
+                && argResolved is not MapTypeSymbol
+                && argResolved is not ChannelTypeSymbol
+                && argResolved.TypeKind != TypeKind.String
+                && argResolved.TypeKind != TypeKind.UntypedString)
             {
                 _context.Errors.ReportError(span, ErrorCode.InvalidOperation,
                     $"Invalid argument type '{arg.Type.Name}' for len");
@@ -83,10 +84,11 @@ namespace Ngo.Compiler.Semantics
 
             var arg = _resolveExpression(syntax.Arguments[0]);
 
+            var capResolved = ResolveUnderlying(arg.Type);
             if (arg.Type != TypeSymbol.Error
-                && arg.Type is not SliceTypeSymbol
-                && arg.Type is not ArrayTypeSymbol
-                && arg.Type is not ChannelTypeSymbol)
+                && capResolved is not SliceTypeSymbol
+                && capResolved is not ArrayTypeSymbol
+                && capResolved is not ChannelTypeSymbol)
             {
                 _context.Errors.ReportError(span, ErrorCode.InvalidOperation,
                     $"Invalid argument type '{arg.Type.Name}' for cap");
@@ -108,7 +110,8 @@ namespace Ngo.Compiler.Semantics
 
             var sliceArg = _resolveExpression(syntax.Arguments[0]);
 
-            if (sliceArg.Type != TypeSymbol.Error && sliceArg.Type is not SliceTypeSymbol)
+            var resolvedSliceType = ResolveUnderlying(sliceArg.Type);
+            if (sliceArg.Type != TypeSymbol.Error && resolvedSliceType is not SliceTypeSymbol)
             {
                 _context.Errors.ReportError(span, ErrorCode.InvalidOperation,
                     $"First argument to append must be a slice, got '{sliceArg.Type.Name}'");
@@ -116,7 +119,7 @@ namespace Ngo.Compiler.Semantics
             }
 
             var args = new List<Expression> { sliceArg };
-            var elemType = sliceArg.Type is SliceTypeSymbol st ? st.ElementType : TypeSymbol.Error;
+            var elemType = resolvedSliceType is SliceTypeSymbol st ? st.ElementType : TypeSymbol.Error;
 
             for (int i = 1; i < syntax.Arguments.Count; i++)
             {
@@ -124,8 +127,20 @@ namespace Ngo.Compiler.Semantics
                 if (!TypeChecker.IsAssignable(elem.Type, elemType) && elem.Type != TypeSymbol.Error
                     && elemType != TypeSymbol.Error)
                 {
-                    _context.Errors.ReportError(_context.SpanOf(syntax.Arguments[i]), ErrorCode.TypeMismatch,
-                        $"Cannot use '{elem.Type.Name}' as element type '{elemType.Name}' in append");
+                    // Allow append(s1, s2...) where s2 is a slice of the same element type (spread)
+                    var resolvedElemType = elem.Type.Resolved();
+                    bool isSpread = (elem.Type is SliceTypeSymbol elemSlice
+                        && TypeChecker.IsAssignable(elemSlice.ElementType, elemType))
+                        || (resolvedElemType is SliceTypeSymbol resolvedElemSlice
+                        && TypeChecker.IsAssignable(resolvedElemSlice.ElementType, elemType));
+                    // Allow append([]byte, string...) — special Go feature
+                    bool isByteStringAppend = elemType == BuiltinTypes.Byte
+                        && (elem.Type.TypeKind == TypeKind.String || elem.Type.TypeKind == TypeKind.UntypedString);
+                    if (!isSpread && !isByteStringAppend)
+                    {
+                        _context.Errors.ReportError(_context.SpanOf(syntax.Arguments[i]), ErrorCode.TypeMismatch,
+                            $"Cannot use '{elem.Type.Name}' as element type '{elemType.Name}' in append");
+                    }
                 }
 
                 args.Add(elem);
@@ -153,8 +168,9 @@ namespace Ngo.Compiler.Semantics
             }
 
             var args = new List<Expression>();
+            var resolved = type.Resolved();
 
-            if (type is SliceTypeSymbol sliceType)
+            if (resolved is SliceTypeSymbol sliceType)
             {
                 if (syntax.Arguments.Count < 2 || syntax.Arguments.Count > 3)
                 {
@@ -172,11 +188,11 @@ namespace Ngo.Compiler.Semantics
                 }
 
                 var makeSymbol = new FunctionSymbol("make",
-                    Array.Empty<ParameterSymbol>(), sliceType);
+                    Array.Empty<ParameterSymbol>(), type);
                 return new CallExpression(makeSymbol, args, span);
             }
 
-            if (type is MapTypeSymbol mapType)
+            if (resolved is MapTypeSymbol mapType)
             {
                 if (syntax.Arguments.Count > 2)
                 {
@@ -192,11 +208,11 @@ namespace Ngo.Compiler.Semantics
                 }
 
                 var makeSymbol = new FunctionSymbol("make",
-                    Array.Empty<ParameterSymbol>(), mapType);
+                    Array.Empty<ParameterSymbol>(), type);
                 return new CallExpression(makeSymbol, args, span);
             }
 
-            if (type is ChannelTypeSymbol chanType)
+            if (resolved is ChannelTypeSymbol chanType)
             {
                 if (syntax.Arguments.Count > 2)
                 {
@@ -212,7 +228,7 @@ namespace Ngo.Compiler.Semantics
                 }
 
                 var makeSymbol = new FunctionSymbol("make",
-                    Array.Empty<ParameterSymbol>(), chanType);
+                    Array.Empty<ParameterSymbol>(), type);
                 return new CallExpression(makeSymbol, args, span);
             }
 
@@ -233,12 +249,12 @@ namespace Ngo.Compiler.Semantics
             var mapArg = _resolveExpression(syntax.Arguments[0]);
             var keyArg = _resolveExpression(syntax.Arguments[1]);
 
-            if (mapArg.Type != TypeSymbol.Error && mapArg.Type is not MapTypeSymbol)
+            if (mapArg.Type != TypeSymbol.Error && mapArg.Type.Resolved() is not MapTypeSymbol)
             {
                 _context.Errors.ReportError(span, ErrorCode.InvalidOperation,
                     $"First argument to delete must be a map, got '{mapArg.Type.Name}'");
             }
-            else if (mapArg.Type is MapTypeSymbol mapType)
+            else if (mapArg.Type.Resolved() is MapTypeSymbol mapType)
             {
                 if (!TypeChecker.IsAssignable(keyArg.Type, mapType.KeyType) && keyArg.Type != TypeSymbol.Error)
                 {
@@ -383,6 +399,7 @@ namespace Ngo.Compiler.Semantics
             // Result type is the type of the first argument (all must be ordered/comparable)
             var resultType = args[0].Type;
             if (resultType.TypeKind == TypeKind.UntypedInt) resultType = BuiltinTypes.Int;
+            if (resultType.TypeKind == TypeKind.UntypedRune) resultType = BuiltinTypes.Rune;
             if (resultType.TypeKind == TypeKind.UntypedFloat) resultType = BuiltinTypes.Float64;
             if (resultType.TypeKind == TypeKind.UntypedString) resultType = BuiltinTypes.String;
 
@@ -408,6 +425,7 @@ namespace Ngo.Compiler.Semantics
 
             var resultType = args[0].Type;
             if (resultType.TypeKind == TypeKind.UntypedInt) resultType = BuiltinTypes.Int;
+            if (resultType.TypeKind == TypeKind.UntypedRune) resultType = BuiltinTypes.Rune;
             if (resultType.TypeKind == TypeKind.UntypedFloat) resultType = BuiltinTypes.Float64;
             if (resultType.TypeKind == TypeKind.UntypedString) resultType = BuiltinTypes.String;
 
@@ -427,9 +445,10 @@ namespace Ngo.Compiler.Semantics
 
             var arg = _resolveExpression(syntax.Arguments[0]);
 
+            var clearResolved = ResolveUnderlying(arg.Type);
             if (arg.Type != TypeSymbol.Error
-                && arg.Type is not MapTypeSymbol
-                && arg.Type is not SliceTypeSymbol)
+                && clearResolved is not MapTypeSymbol
+                && clearResolved is not SliceTypeSymbol)
             {
                 _context.Errors.ReportError(span, ErrorCode.InvalidOperation,
                     $"Invalid argument type '{arg.Type.Name}' for clear");
@@ -438,6 +457,14 @@ namespace Ngo.Compiler.Semantics
             var clearSymbol = new FunctionSymbol("clear",
                 new[] { new ParameterSymbol("m", arg.Type, 0) }, BuiltinTypes.Void);
             return new CallExpression(clearSymbol, new[] { arg }, span);
+        }
+
+        private static TypeSymbol ResolveUnderlying(TypeSymbol type)
+        {
+            var resolved = type.Resolved();
+            if (resolved == type && type.UnderlyingType != null)
+                return type.UnderlyingType;
+            return resolved;
         }
     }
 }

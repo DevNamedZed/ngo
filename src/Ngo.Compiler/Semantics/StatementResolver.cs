@@ -119,6 +119,8 @@ namespace Ngo.Compiler.Semantics
                     return ResolveLabeledStatement((LabeledStatementSyntax)syntax);
                 case SyntaxKind.TypeDeclaration:
                     return ResolveLocalTypeDeclaration((TypeDeclarationSyntax)syntax);
+                case SyntaxKind.EmptyStatement:
+                    return null;
                 default:
                     _context.Errors.ReportError(_context.SpanOf(syntax), ErrorCode.UnsupportedSyntax,
                         $"Statement kind '{syntax.Kind}' is not yet supported");
@@ -138,6 +140,16 @@ namespace Ngo.Compiler.Semantics
             if (values.Count == 0 && _context.CurrentNamedReturns.Count > 0)
             {
                 return new ReturnStatement(values, _context.SpanOf(syntax));
+            }
+
+            // Multi-return spread: return f() where f returns multiple values
+            if (values.Count == 1 && _context.CurrentReturnTypes.Count > 1)
+            {
+                var returnTypes = _context.GetCallReturnTypes(values[0]);
+                if (returnTypes != null && returnTypes.Count == _context.CurrentReturnTypes.Count)
+                {
+                    return new ReturnStatement(values, _context.SpanOf(syntax));
+                }
             }
 
             if (values.Count != _context.CurrentReturnTypes.Count)
@@ -347,6 +359,32 @@ namespace Ngo.Compiler.Semantics
                     }
 
                     return new MultiVarDeclaration(symbols, rhs, _context.SpanOf(syntax));
+                }
+
+                // When RHS is error-typed (unresolved function), declare variables as error type
+                // to prevent cascading "Undefined name" errors
+                if (rhs.Type == TypeSymbol.Error)
+                {
+                    var errorSymbols = new LocalSymbol?[syntax.Left.Count];
+                    for (int i = 0; i < syntax.Left.Count; i++)
+                    {
+                        var nameExpr = syntax.Left[i] as IdentifierNameSyntax;
+                        if (nameExpr == null || nameExpr.Identifier.Text == "_") continue;
+
+                        var existing = _context.Scope.LookupLocal(nameExpr.Identifier.Text);
+                        if (existing is LocalSymbol existingLocal)
+                        {
+                            errorSymbols[i] = existingLocal;
+                        }
+                        else
+                        {
+                            var symbol = new LocalSymbol(nameExpr.Identifier.Text, TypeSymbol.Error);
+                            _context.Scope.TryDeclare(symbol);
+                            _context.TrackLocal(symbol, _context.SpanOf(syntax));
+                            errorSymbols[i] = symbol;
+                        }
+                    }
+                    return new MultiVarDeclaration(errorSymbols, rhs, _context.SpanOf(syntax));
                 }
             }
 
@@ -590,7 +628,9 @@ namespace Ngo.Compiler.Semantics
 
                     if (expr.Type != TypeSymbol.Error && tagType != null && tagType != TypeSymbol.Error)
                     {
-                        if (!TypeChecker.IsAssignable(expr.Type, tagType))
+                        if (!TypeChecker.IsAssignable(expr.Type, tagType)
+                            && !TypeChecker.IsAssignable(tagType, expr.Type)
+                            && TypeChecker.CommonType(expr.Type, tagType) == null)
                         {
                             _context.Errors.ReportError(_context.SpanOf(syntax.Expressions.Value[i]), ErrorCode.TypeMismatch,
                                 $"Cannot compare type '{expr.Type.Name}' with switch tag type '{tagType.Name}'");
@@ -712,7 +752,16 @@ namespace Ngo.Compiler.Semantics
                 caseTypes = new List<TypeSymbol>();
                 for (int i = 0; i < syntax.Types.Value.Count; i++)
                 {
-                    var resolved = _typeResolver.ResolveType(syntax.Types.Value[i]);
+                    var typeExpr = syntax.Types.Value[i];
+                    // case nil: in a type switch — nil matches untyped nil
+                    if (typeExpr is IdentifierNameSyntax nilId
+                        && nilId.Identifier.Text == "nil")
+                    {
+                        caseTypes.Add(BuiltinTypes.UntypedNil);
+                        continue;
+                    }
+
+                    var resolved = _typeResolver.ResolveType(typeExpr);
                     if (resolved != null)
                     {
                         caseTypes.Add(resolved);
@@ -744,7 +793,8 @@ namespace Ngo.Compiler.Semantics
 
                 assignedSymbol = new LocalSymbol(assignedName, varType);
                 _context.Scope.TryDeclare(assignedSymbol);
-                _context.TrackLocal(assignedSymbol, span);
+                // Don't track for unused checking — Go treats type switch variables
+                // as used if any case uses them, not per-case.
             }
 
             var body = new List<AstNode>();
@@ -811,8 +861,8 @@ namespace Ngo.Compiler.Semantics
             var span = _context.SpanOf(syntax);
             var label = syntax.Label.Text;
             var inner = ResolveStatement(syntax.Statement);
-            if (inner is not Statement stmt) return null;
-            return new LabeledStatement(label, stmt, span);
+            if (inner == null) return null;
+            return new LabeledStatement(label, inner, span);
         }
 
         private ForRangeStatement ResolveForRangeStatement(RangeClauseSyntax rangeClause,
@@ -825,17 +875,21 @@ namespace Ngo.Compiler.Semantics
 
             if (iterable.Type != TypeSymbol.Error)
             {
-                if (iterable.Type is SliceTypeSymbol sliceType)
+                var resolved = iterable.Type.Resolved();
+                // Also check underlying type for named types (e.g. type Float64Slice []float64)
+                if (resolved == iterable.Type && resolved.UnderlyingType != null)
+                    resolved = resolved.UnderlyingType;
+                if (resolved is SliceTypeSymbol sliceType)
                 {
                     keyType = BuiltinTypes.Int;
                     valueType = sliceType.ElementType;
                 }
-                else if (iterable.Type is ArrayTypeSymbol arrayType)
+                else if (resolved is ArrayTypeSymbol arrayType)
                 {
                     keyType = BuiltinTypes.Int;
                     valueType = arrayType.ElementType;
                 }
-                else if (iterable.Type is MapTypeSymbol mapType)
+                else if (resolved is MapTypeSymbol mapType)
                 {
                     keyType = mapType.KeyType;
                     valueType = mapType.ValueType;
@@ -952,10 +1006,12 @@ namespace Ngo.Compiler.Semantics
             var span = _context.SpanOf(syntax);
             var cases = new List<SelectCase>();
 
+            _context.SwitchDepth++;
             foreach (var clause in syntax.Clauses)
             {
                 cases.Add(ResolveSelectCase(clause));
             }
+            _context.SwitchDepth--;
 
             return new SelectStatement(cases, span);
         }
@@ -1030,6 +1086,28 @@ namespace Ngo.Compiler.Semantics
                 var body2 = ResolveStatementList(clause.Statements);
                 result = new SelectCase(SelectCaseKind.Receive, channel, null, valueLocal, okLocal, body2, span);
             }
+            else if (commStmt is AssignmentStatementSyntax assignSyntax)
+            {
+                // case err = <-ch: or case v, ok = <-ch:
+                var recvExpr = ExtractReceiveExpression(assignSyntax.Right[0]);
+                if (recvExpr == null)
+                {
+                    _context.Errors.ReportError(span, ErrorCode.InvalidOperation,
+                        "Select case must be a channel receive operation");
+                    var body = ResolveStatementList(clause.Statements);
+                    _context.PopScope();
+                    return new SelectCase(SelectCaseKind.Default, null, null, null, null, body, span);
+                }
+
+                // Resolve the left-hand side targets as assignments
+                foreach (var leftExpr in assignSyntax.Left)
+                {
+                    _expressionResolver.ResolveExpression(leftExpr);
+                }
+
+                var body4 = ResolveStatementList(clause.Statements);
+                result = new SelectCase(SelectCaseKind.Receive, recvExpr.Channel, null, null, null, body4, span);
+            }
             else
             {
                 // Bare receive: case <-ch:
@@ -1055,6 +1133,32 @@ namespace Ngo.Compiler.Semantics
                         {
                             channelExpr = recv.Channel;
                         }
+                    }
+                }
+
+                if (channelExpr == null)
+                {
+                    // Last resort: check the syntax tree for <-expr pattern
+                    // This handles cases where the receive expression resolution
+                    // failed (e.g. type mismatch in channel function call)
+                    ExpressionSyntax? receiveOp = null;
+                    if (commStmt is ExpressionStatementSyntax es2
+                        && es2.Expression is UnaryExpressionSyntax unary
+                        && unary.OperatorToken.Kind == SyntaxKind.LessThanMinusToken)
+                    {
+                        receiveOp = unary.Operand;
+                    }
+                    else if (commStmt is UnaryExpressionSyntax unary2
+                        && unary2.OperatorToken.Kind == SyntaxKind.LessThanMinusToken)
+                    {
+                        receiveOp = unary2.Operand;
+                    }
+
+                    if (receiveOp != null)
+                    {
+                        // It's structurally a receive — resolve the operand as the channel
+                        var resolved = _expressionResolver.ResolveExpression(receiveOp);
+                        channelExpr = resolved;
                     }
                 }
 
@@ -1110,6 +1214,12 @@ namespace Ngo.Compiler.Semantics
 
             if (FlowAnalyzer.IsTerminating(previous[previous.Count - 1]))
             {
+                // Labeled statements are reachable via goto, don't warn
+                if (newStatement is LabeledStatement)
+                {
+                    return false;
+                }
+
                 _context.Errors.ReportWarning(
                     newStatement.Span,
                     ErrorCode.UnreachableCode,

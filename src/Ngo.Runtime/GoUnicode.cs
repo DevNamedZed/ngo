@@ -34,8 +34,22 @@ namespace Ngo.Runtime
         public static bool IsLower(long r) => char.IsLower((char)r);
         public static bool IsPunct(long r) => char.IsPunctuation((char)r);
         public static bool IsControl(long r) => char.IsControl((char)r);
+        public static bool IsNumber(long r) => char.IsNumber((char)r);
+        public static bool IsGraphic(long r) => !char.IsControl((char)r) && !char.IsWhiteSpace((char)r) || char.IsLetterOrDigit((char)r);
+        public static bool IsPrint(long r) => !char.IsControl((char)r);
+        public static bool IsTitle(long r)
+        {
+            var uc = CharUnicodeInfo.GetUnicodeCategory((char)r);
+            return uc == UnicodeCategory.TitlecaseLetter;
+        }
+        public static bool IsSymbol(long r) => char.IsSymbol((char)r);
         public static long ToUpper(long r) => char.ToUpper((char)r);
         public static long ToLower(long r) => char.ToLower((char)r);
+        public static long ToTitle(long r)
+        {
+            // In Unicode, titlecase is mostly the same as uppercase for most characters
+            return char.ToUpper((char)r);
+        }
     }
 
     /// <summary>

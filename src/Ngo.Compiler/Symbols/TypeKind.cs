@@ -40,6 +40,7 @@ namespace Ngo.Compiler.Symbols
         String,
         UntypedBool,
         UntypedInt,
+        UntypedRune,
         UntypedFloat,
         UntypedComplex,
         UntypedString,

@@ -55,6 +55,11 @@ namespace Ngo.Compiler.Semantics
             return _symbols.TryGetValue(name, out var symbol) ? symbol : null;
         }
 
+        public void Replace(string name, Symbol symbol)
+        {
+            _symbols[name] = symbol;
+        }
+
         public IEnumerable<Symbol> DeclaredSymbols => _symbols.Values;
     }
 }

@@ -26,7 +26,7 @@ namespace Ngo.Compiler.Symbols
             Type = type;
         }
 
-        public TypeSymbol Type { get; }
+        public TypeSymbol Type { get; set; }
 
         public bool IsUsed { get; set; }
     }

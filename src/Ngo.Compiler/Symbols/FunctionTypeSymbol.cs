@@ -23,16 +23,20 @@ namespace Ngo.Compiler.Symbols
 {
     public sealed class FunctionTypeSymbol : TypeSymbol
     {
-        public FunctionTypeSymbol(IReadOnlyList<TypeSymbol> parameterTypes, IReadOnlyList<TypeSymbol> returnTypes)
+        public FunctionTypeSymbol(IReadOnlyList<TypeSymbol> parameterTypes, IReadOnlyList<TypeSymbol> returnTypes,
+            bool isVariadic = false)
             : base(BuildName(parameterTypes, returnTypes), TypeKind.Function, null)
         {
             ParameterTypes = parameterTypes;
             ReturnTypes = returnTypes;
+            IsVariadic = isVariadic;
         }
 
         public IReadOnlyList<TypeSymbol> ParameterTypes { get; }
 
         public IReadOnlyList<TypeSymbol> ReturnTypes { get; }
+
+        public bool IsVariadic { get; }
 
         private static string BuildName(IReadOnlyList<TypeSymbol> parameterTypes, IReadOnlyList<TypeSymbol> returnTypes)
         {

@@ -29,14 +29,10 @@ namespace Ngo.Compiler.Symbols
             Fields = fields;
         }
 
-        public IReadOnlyList<TypeParameterSymbol> TypeParameters { get; private set; }
-            = Array.Empty<TypeParameterSymbol>();
-
-        public bool IsGeneric => TypeParameters.Count > 0;
-
-        public void SetTypeParameters(IReadOnlyList<TypeParameterSymbol> typeParameters)
+        public StructTypeSymbol(string name, IReadOnlyList<FieldSymbol> fields, StructTypeSymbol underlying)
+            : base(name, TypeKind.Struct, underlying)
         {
-            TypeParameters = typeParameters;
+            Fields = fields;
         }
 
         public IReadOnlyList<FieldSymbol> Fields { get; private set; }
@@ -66,9 +62,21 @@ namespace Ngo.Compiler.Symbols
             for (int i = 0; i < Fields.Count; i++)
             {
                 if (!Fields[i].IsEmbedded) continue;
-                var method = Fields[i].Type.LookupMethod(name);
+                // Look through pointer types for embedded methods
+                var embeddedType = Fields[i].Type is PointerTypeSymbol ptr
+                    ? ptr.ElementType
+                    : Fields[i].Type;
+                var method = embeddedType.LookupMethod(name);
                 if (method != null)
                     return (Fields[i], method);
+
+                // Recurse into embedded structs for deeper promoted methods
+                if (embeddedType is StructTypeSymbol embeddedStruct)
+                {
+                    var deep = embeddedStruct.LookupPromotedMethod(name);
+                    if (deep != null)
+                        return (Fields[i], deep.Value.method);
+                }
             }
 
             return null;
@@ -83,11 +91,20 @@ namespace Ngo.Compiler.Symbols
             for (int i = 0; i < Fields.Count; i++)
             {
                 if (!Fields[i].IsEmbedded) continue;
-                if (Fields[i].Type is StructTypeSymbol embeddedStruct)
+                var embeddedType = Fields[i].Type;
+                // Unwrap pointer for *T embedded fields
+                if (embeddedType is PointerTypeSymbol ptr)
+                    embeddedType = ptr.ElementType;
+                if (embeddedType is StructTypeSymbol embeddedStruct)
                 {
                     var inner = embeddedStruct.LookupField(name);
                     if (inner != null)
                         return (Fields[i], inner);
+
+                    // Recurse into deeper embedded structs
+                    var deep = embeddedStruct.LookupPromotedField(name);
+                    if (deep != null)
+                        return (Fields[i], deep.Value.promotedField);
                 }
             }
 

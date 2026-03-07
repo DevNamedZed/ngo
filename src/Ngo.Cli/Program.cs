@@ -136,6 +136,8 @@ class Program
             {
                 if (file.EndsWith("_test.go", StringComparison.OrdinalIgnoreCase))
                     continue;
+                if (PackageRegistry.ShouldSkipFile(file))
+                    continue;
                 var source = File.ReadAllText(file);
                 results.Add((SyntaxTree.Parse(source), file));
             }

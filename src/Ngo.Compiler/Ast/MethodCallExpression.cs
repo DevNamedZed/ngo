@@ -39,6 +39,8 @@ namespace Ngo.Compiler.Ast
 
         public IReadOnlyList<Expression> Arguments { get; }
 
+        public bool IsSpreadArg { get; set; }
+
         public override TypeSymbol Type => Method.ReturnType;
 
         public override NodeType NodeType => NodeType.MethodCallExpression;

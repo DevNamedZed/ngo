@@ -64,6 +64,12 @@ namespace Ngo.Runtime
                 return (false, ex.Message);
             }
         }
+
+        // regexp.QuoteMeta(s string) string
+        public static string QuoteMeta(string s)
+        {
+            return Regex.Escape(s);
+        }
     }
 
     /// <summary>

@@ -23,32 +23,44 @@ namespace Ngo.Runtime
 {
     public static class Fmt
     {
-        public static void Println(params object?[] args)
+        public static (long, string) Println(params object?[] args)
         {
+            long n = 0;
             for (int i = 0; i < args.Length; i++)
             {
-                if (i > 0) Console.Write(" ");
-                Console.Write(FormatValue(args[i]));
+                if (i > 0) { Console.Write(" "); n++; }
+                var s = FormatValue(args[i]);
+                Console.Write(s);
+                n += s.Length;
             }
             Console.WriteLine();
+            n++;
+            return (n, "");
         }
 
-        public static void Print(params object?[] args)
+        public static (long, string) Print(params object?[] args)
         {
+            long n = 0;
             for (int i = 0; i < args.Length; i++)
             {
                 // Print uses spaces between non-string operands
                 if (i > 0 && !(args[i - 1] is string) && !(args[i] is string))
                 {
                     Console.Write(" ");
+                    n++;
                 }
-                Console.Write(FormatValue(args[i]));
+                var s = FormatValue(args[i]);
+                Console.Write(s);
+                n += s.Length;
             }
+            return (n, "");
         }
 
-        public static void Printf(string format, params object?[] args)
+        public static (long, string) Printf(string format, params object?[] args)
         {
-            Console.Write(Sprintf(format, args));
+            var s = Sprintf(format, args);
+            Console.Write(s);
+            return (s.Length, "");
         }
 
         public static string Sprintf(string format, params object?[] args)

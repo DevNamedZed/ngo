@@ -28,7 +28,7 @@ namespace Ngo.Compiler.Ast
     /// </summary>
     public sealed class SpreadElement : Expression
     {
-        public SpreadElement(CallExpression source, int index, TypeSymbol type, TextSpan span)
+        public SpreadElement(Expression source, int index, TypeSymbol type, TextSpan span)
             : base(span)
         {
             Source = source;
@@ -36,7 +36,7 @@ namespace Ngo.Compiler.Ast
             ElementType = type;
         }
 
-        public CallExpression Source { get; }
+        public Expression Source { get; }
         public int Index { get; }
         public TypeSymbol ElementType { get; }
 

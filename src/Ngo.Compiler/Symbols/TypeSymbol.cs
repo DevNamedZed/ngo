@@ -34,9 +34,19 @@ namespace Ngo.Compiler.Symbols
             UnderlyingType = underlyingType;
         }
 
-        public TypeKind TypeKind { get; }
+        public TypeKind TypeKind { get; set; }
 
-        public TypeSymbol? UnderlyingType { get; }
+        public TypeSymbol? UnderlyingType { get; set; }
+
+        public IReadOnlyList<TypeParameterSymbol> TypeParameters { get; private set; }
+            = Array.Empty<TypeParameterSymbol>();
+
+        public bool IsGeneric => TypeParameters.Count > 0;
+
+        public void SetTypeParameters(IReadOnlyList<TypeParameterSymbol> typeParameters)
+        {
+            TypeParameters = typeParameters;
+        }
 
         public IReadOnlyList<MethodSymbol> Methods =>
             (IReadOnlyList<MethodSymbol>?)_methods ?? Array.Empty<MethodSymbol>();
@@ -47,7 +57,7 @@ namespace Ngo.Compiler.Symbols
             _methods.Add(method);
         }
 
-        public MethodSymbol? LookupMethod(string name)
+        public virtual MethodSymbol? LookupMethod(string name)
         {
             if (_methods != null)
             {
@@ -59,6 +69,18 @@ namespace Ngo.Compiler.Symbols
             }
 
             return null;
+        }
+
+        /// <summary>
+        /// Returns the underlying concrete type, unwrapping named type definitions.
+        /// For example, if this is "type StackTrace []Frame", returns the SliceTypeSymbol.
+        /// For concrete types (SliceTypeSymbol, StructTypeSymbol, etc.) returns this.
+        /// </summary>
+        public virtual TypeSymbol Resolved()
+        {
+            if (UnderlyingType != null && GetType() == typeof(TypeSymbol))
+                return UnderlyingType;
+            return this;
         }
 
         public override string ToString() => Name;

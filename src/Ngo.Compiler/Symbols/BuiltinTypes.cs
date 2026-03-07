@@ -47,6 +47,7 @@ namespace Ngo.Compiler.Symbols
         // Untyped constants
         public static readonly TypeSymbol UntypedBool = new TypeSymbol("untyped bool", TypeKind.UntypedBool, null);
         public static readonly TypeSymbol UntypedInt = new TypeSymbol("untyped int", TypeKind.UntypedInt, null);
+        public static readonly TypeSymbol UntypedRune = new TypeSymbol("untyped rune", TypeKind.UntypedRune, null);
         public static readonly TypeSymbol UntypedFloat = new TypeSymbol("untyped float", TypeKind.UntypedFloat, null);
         public static readonly TypeSymbol UntypedComplex = new TypeSymbol("untyped complex", TypeKind.UntypedComplex, null);
         public static readonly TypeSymbol UntypedString = new TypeSymbol("untyped string", TypeKind.UntypedString, null);

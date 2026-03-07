@@ -30,6 +30,14 @@ namespace Ngo.Compiler.Symbols
             RuntimeMember = runtimeMember;
         }
 
+        public PackageVarSymbol(string name, TypeSymbol type)
+            : base(name, SymbolKind.PackageVar)
+        {
+            Type = type;
+            RuntimeType = null!;
+            RuntimeMember = null!;
+        }
+
         public TypeSymbol Type { get; }
 
         public Type RuntimeType { get; }

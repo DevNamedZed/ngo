@@ -110,12 +110,25 @@ namespace Ngo.Compiler.Semantics
             }
 
             // Composite type conversion: []byte(s), []int(s), etc.
-            if (syntax.Function is SliceTypeSyntax || syntax.Function is ArrayTypeSyntax)
+            if (syntax.Function is SliceTypeSyntax || syntax.Function is ArrayTypeSyntax
+                || syntax.Function is MapTypeSyntax || syntax.Function is ChannelTypeSyntax
+                || syntax.Function is PointerTypeSyntax || syntax.Function is InterfaceTypeSyntax
+                || syntax.Function is StructTypeSyntax)
             {
                 if (syntax.Arguments.Count == 1)
                 {
                     var targetType = _typeResolver.ResolveType(syntax.Function);
                     return ResolveConversion(syntax.Arguments[0], targetType, span);
+                }
+            }
+
+            // Parenthesized type conversion: (*Type)(value), ([]byte)(value), etc.
+            if (syntax.Function is ParenthesizedExpressionSyntax parenSyntax && syntax.Arguments.Count == 1)
+            {
+                var innerType = _typeResolver.ResolveType(parenSyntax.Expression);
+                if (innerType != null)
+                {
+                    return ResolveConversion(syntax.Arguments[0], innerType, span);
                 }
             }
 
@@ -257,12 +270,23 @@ namespace Ngo.Compiler.Semantics
                         var lastParamType = funcSymbol.Parameters[funcSymbol.Parameters.Count - 1].Type;
                         if (lastParamType is SliceTypeSymbol sliceType)
                         {
-                            for (int i = requiredCount; i < arguments.Count; i++)
+                            // If exactly one variadic arg and it's a slice of the element type,
+                            // treat as spread (Go's f(slice...) syntax)
+                            int varArgCount = arguments.Count - requiredCount;
+                            bool isSpread = varArgCount == 1
+                                && arguments[requiredCount].Type is SliceTypeSymbol argSlice
+                                && TypeChecker.IsAssignable(argSlice.ElementType, sliceType.ElementType);
+
+                            if (!isSpread)
                             {
-                                if (!TypeChecker.IsAssignable(arguments[i].Type, sliceType.ElementType))
+                                for (int i = requiredCount; i < arguments.Count; i++)
                                 {
-                                    _context.Errors.ReportError(span, ErrorCode.TypeMismatch,
-                                        $"Argument {i + 1}: cannot pass '{arguments[i].Type.Name}' as '{sliceType.ElementType.Name}'");
+                                    if (!TypeChecker.IsAssignable(arguments[i].Type, sliceType.ElementType)
+                                        && !TypeChecker.IsAssignable(arguments[i].Type, lastParamType))
+                                    {
+                                        _context.Errors.ReportError(span, ErrorCode.TypeMismatch,
+                                            $"Argument {i + 1}: cannot pass '{arguments[i].Type.Name}' as '{sliceType.ElementType.Name}'");
+                                    }
                                 }
                             }
                         }
@@ -282,11 +306,26 @@ namespace Ngo.Compiler.Semantics
                 return new CallExpression(funcSymbol, arguments, span);
             }
 
-            if (funcExpr.Type is FunctionTypeSymbol funcTypeSymbol)
+            var resolvedCallType = funcExpr.Type is FunctionTypeSymbol ? funcExpr.Type
+                : funcExpr.Type?.UnderlyingType;
+            if (resolvedCallType is FunctionTypeSymbol funcTypeSymbol)
             {
                 var arguments = BindArguments(syntax);
 
-                if (arguments.Count != funcTypeSymbol.ParameterTypes.Count)
+                int requiredParams = funcTypeSymbol.IsVariadic
+                    ? funcTypeSymbol.ParameterTypes.Count - 1
+                    : funcTypeSymbol.ParameterTypes.Count;
+
+                if (funcTypeSymbol.IsVariadic)
+                {
+                    if (arguments.Count < requiredParams)
+                    {
+                        _context.Errors.ReportError(span, ErrorCode.WrongArgumentCount,
+                            $"Function value expects at least {requiredParams} arguments, got {arguments.Count}");
+                        return new ErrorExpression("Wrong argument count", span);
+                    }
+                }
+                else if (arguments.Count != funcTypeSymbol.ParameterTypes.Count)
                 {
                     _context.Errors.ReportError(span, ErrorCode.WrongArgumentCount,
                         $"Function value expects {funcTypeSymbol.ParameterTypes.Count} arguments, got {arguments.Count}");
@@ -295,10 +334,44 @@ namespace Ngo.Compiler.Semantics
 
                 for (int i = 0; i < arguments.Count; i++)
                 {
-                    if (!TypeChecker.IsAssignable(arguments[i].Type, funcTypeSymbol.ParameterTypes[i]))
+                    TypeSymbol expectedType;
+                    if (i < funcTypeSymbol.ParameterTypes.Count)
+                    {
+                        expectedType = funcTypeSymbol.ParameterTypes[i];
+                        // For the variadic param, check against element type if extra args,
+                        // or accept either slice or element type if exactly one arg at variadic position
+                        if (funcTypeSymbol.IsVariadic && i == funcTypeSymbol.ParameterTypes.Count - 1
+                            && expectedType is SliceTypeSymbol variadicSlice)
+                        {
+                            if (syntax.Ellipsis != null)
+                            {
+                                // fn(slice...) — spread: accept the slice type directly
+                            }
+                            else if (arguments.Count > funcTypeSymbol.ParameterTypes.Count)
+                            {
+                                expectedType = variadicSlice.ElementType;
+                            }
+                            else if (!TypeChecker.IsAssignable(arguments[i].Type, expectedType))
+                            {
+                                expectedType = variadicSlice.ElementType;
+                            }
+                        }
+                    }
+                    else if (funcTypeSymbol.IsVariadic
+                        && funcTypeSymbol.ParameterTypes[funcTypeSymbol.ParameterTypes.Count - 1]
+                            is SliceTypeSymbol varSlice)
+                    {
+                        expectedType = varSlice.ElementType;
+                    }
+                    else
+                    {
+                        break;
+                    }
+
+                    if (!TypeChecker.IsAssignable(arguments[i].Type, expectedType))
                     {
                         _context.Errors.ReportError(span, ErrorCode.TypeMismatch,
-                            $"Argument {i + 1}: cannot pass '{arguments[i].Type.Name}' as '{funcTypeSymbol.ParameterTypes[i].Name}'");
+                            $"Argument {i + 1}: cannot pass '{arguments[i].Type.Name}' as '{expectedType.Name}'");
                     }
                 }
 
@@ -308,8 +381,20 @@ namespace Ngo.Compiler.Semantics
                     paramSymbols.Add(new ParameterSymbol("_", funcTypeSymbol.ParameterTypes[i], i));
                 }
 
-                var syntheticFunc = new FunctionSymbol("$$anon", paramSymbols, funcTypeSymbol.ReturnTypes);
+                var syntheticFunc = new FunctionSymbol("$$anon", paramSymbols, funcTypeSymbol.ReturnTypes,
+                    isVariadic: funcTypeSymbol.IsVariadic);
                 return new CallExpression(syntheticFunc, arguments, funcExpr, span);
+            }
+
+            // Type conversion via parenthesized type: ([]error)(nil), (*T)(ptr), etc.
+            if (syntax.Arguments.Count == 1 && funcExpr.Type is TypeSymbol convType
+                && convType != TypeSymbol.Error
+                && (convType is SliceTypeSymbol || convType is ArrayTypeSymbol
+                    || convType is MapTypeSymbol || convType is PointerTypeSymbol
+                    || convType is ChannelTypeSymbol || convType is StructTypeSymbol
+                    || convType is InterfaceTypeSymbol))
+            {
+                return ResolveConversion(syntax.Arguments[0], convType, span);
             }
 
             _context.Errors.ReportError(span, ErrorCode.InvalidOperation,
@@ -368,16 +453,22 @@ namespace Ngo.Compiler.Semantics
 
             if (func.IsVariadic)
             {
-                // For variadic functions, validate the required (non-variadic) parameters
-                if (arguments.Count < func.Parameters.Count)
+                // Determine required count: if last param is a slice, it's the variadic container
+                // (source-analyzed functions include the variadic slice param).
+                // Otherwise, all params are required (registry functions don't include the variadic param).
+                bool lastIsSlice = func.Parameters.Count > 0
+                    && func.Parameters[func.Parameters.Count - 1].Type is SliceTypeSymbol;
+                int requiredCount = lastIsSlice ? func.Parameters.Count - 1 : func.Parameters.Count;
+
+                if (arguments.Count < requiredCount)
                 {
                     _context.Errors.ReportError(span, ErrorCode.WrongArgumentCount,
-                        $"Function '{func.Name}' expects at least {func.Parameters.Count} arguments, got {arguments.Count}");
+                        $"Function '{func.Name}' expects at least {requiredCount} arguments, got {arguments.Count}");
                     return new ErrorExpression("Wrong argument count", span);
                 }
 
-                // Type-check required parameters
-                for (int i = 0; i < func.Parameters.Count; i++)
+                // Type-check required (non-variadic) parameters
+                for (int i = 0; i < requiredCount && i < arguments.Count; i++)
                 {
                     if (!TypeChecker.IsAssignable(arguments[i].Type, func.Parameters[i].Type))
                     {
@@ -386,7 +477,25 @@ namespace Ngo.Compiler.Semantics
                     }
                 }
 
-                // Variadic args are not type-checked (they accept interface{})
+                // Type-check variadic args against element type or slice type
+                if (lastIsSlice && func.Parameters.Count > 0)
+                {
+                    var lastParamType = func.Parameters[func.Parameters.Count - 1].Type;
+                    if (lastParamType is SliceTypeSymbol sliceType)
+                    {
+                        for (int i = requiredCount; i < arguments.Count; i++)
+                        {
+                            if (!TypeChecker.IsAssignable(arguments[i].Type, sliceType.ElementType)
+                                && !TypeChecker.IsAssignable(arguments[i].Type, lastParamType))
+                            {
+                                _context.Errors.ReportError(span, ErrorCode.TypeMismatch,
+                                    $"Argument {i + 1}: cannot pass '{arguments[i].Type.Name}' as '{sliceType.ElementType.Name}'");
+                            }
+                        }
+                    }
+                }
+
+                // Extra variadic args (registry-style) are not type-checked (they accept interface{})
             }
             else
             {
@@ -411,11 +520,50 @@ namespace Ngo.Compiler.Semantics
         {
             var arguments = BindArguments(syntax);
 
-            if (!ValidateArguments(arguments, method.Parameters, $"Method '{methodName}'", span))
+            if (method.IsVariadic)
             {
-                if (arguments.Count != method.Parameters.Count)
+                int requiredCount = method.Parameters.Count - 1;
+                if (arguments.Count < requiredCount)
                 {
+                    _context.Errors.ReportError(span, ErrorCode.WrongArgumentCount,
+                        $"Method '{methodName}' expects at least {requiredCount} arguments, got {arguments.Count}");
                     return new ErrorExpression("Wrong argument count", span);
+                }
+
+                for (int i = 0; i < requiredCount; i++)
+                {
+                    if (!TypeChecker.IsAssignable(arguments[i].Type, method.Parameters[i].Type))
+                    {
+                        _context.Errors.ReportError(span, ErrorCode.TypeMismatch,
+                            $"Argument {i + 1}: cannot pass '{arguments[i].Type.Name}' as '{method.Parameters[i].Type.Name}'");
+                    }
+                }
+
+                if (method.Parameters.Count > 0)
+                {
+                    var lastParamType = method.Parameters[method.Parameters.Count - 1].Type;
+                    if (lastParamType is SliceTypeSymbol sliceType)
+                    {
+                        for (int i = requiredCount; i < arguments.Count; i++)
+                        {
+                            if (!TypeChecker.IsAssignable(arguments[i].Type, sliceType.ElementType)
+                                && !TypeChecker.IsAssignable(arguments[i].Type, lastParamType))
+                            {
+                                _context.Errors.ReportError(span, ErrorCode.TypeMismatch,
+                                    $"Argument {i + 1}: cannot pass '{arguments[i].Type.Name}' as '{sliceType.ElementType.Name}'");
+                            }
+                        }
+                    }
+                }
+            }
+            else
+            {
+                if (!ValidateArguments(arguments, method.Parameters, $"Method '{methodName}'", span))
+                {
+                    if (arguments.Count != method.Parameters.Count)
+                    {
+                        return new ErrorExpression("Wrong argument count", span);
+                    }
                 }
             }
 
@@ -458,19 +606,34 @@ namespace Ngo.Compiler.Semantics
             }
 
             // Multi-return spread: f(g()) where g returns multiple values
-            if (arguments.Count == 1
-                && arguments[0] is CallExpression innerCall
-                && innerCall.Function.ReturnTypes.Count > 1)
+            if (arguments.Count == 1)
             {
-                innerCall.IsSpreadArg = true;
-                var spread = new List<Expression> { innerCall };
-                for (int i = 1; i < innerCall.Function.ReturnTypes.Count; i++)
+                IReadOnlyList<TypeSymbol>? returnTypes = null;
+
+                if (arguments[0] is CallExpression innerCall
+                    && innerCall.Function.ReturnTypes.Count > 1)
                 {
-                    spread.Add(new SpreadElement(innerCall, i,
-                        innerCall.Function.ReturnTypes[i], innerCall.Span));
+                    innerCall.IsSpreadArg = true;
+                    returnTypes = innerCall.Function.ReturnTypes;
+                }
+                else if (arguments[0] is MethodCallExpression innerMethodCall
+                    && innerMethodCall.Method.ReturnTypes.Count > 1)
+                {
+                    innerMethodCall.IsSpreadArg = true;
+                    returnTypes = innerMethodCall.Method.ReturnTypes;
                 }
 
-                return spread;
+                if (returnTypes != null)
+                {
+                    var spread = new List<Expression> { arguments[0] };
+                    for (int i = 1; i < returnTypes.Count; i++)
+                    {
+                        spread.Add(new SpreadElement(arguments[0], i,
+                            returnTypes[i], arguments[0].Span));
+                    }
+
+                    return spread;
+                }
             }
 
             return arguments;
