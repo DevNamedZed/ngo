@@ -31,11 +31,12 @@ public class StdlibExtTests
     private static string Run(string goSource)
     {
         var tree = SyntaxTree.Parse(goSource);
-        var result = SemanticAnalyzer.Analyze(tree);
+        var ctx = new CompilationContext(null);
+        var result = SemanticAnalyzer.Analyze(tree, ctx);
 
         Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
 
-        var assembly = AssemblyEmitter.Emit(result);
+        var assembly = AssemblyEmitter.Emit(result, ctx);
         var entryPoint = AssemblyEmitter.FindEntryPoint(assembly);
         Assert.IsNotNull(entryPoint);
 
@@ -51,7 +52,7 @@ public class StdlibExtTests
             Console.SetOut(oldOut);
         }
 
-        return sw.ToString();
+        return sw.ToString().Replace("\r\n", "\n");
     }
 
     // ================================================================
@@ -990,9 +991,9 @@ func runTest(t *testing.T) {
 }
 func main() {
 }");
-        var result = SemanticAnalyzer.Analyze(tree);
+        var result = SemanticAnalyzer.Analyze(tree, new CompilationContext(null));
         Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
-        var assembly = AssemblyEmitter.Emit(result);
+        var assembly = AssemblyEmitter.Emit(result, new CompilationContext(null));
         Assert.IsNotNull(assembly);
     }
 
@@ -1000,7 +1001,7 @@ func main() {
     public void Testing_T_methods_execute()
     {
         // Test that T methods actually work at runtime
-        var t = new Ngo.Runtime.GoTestingT("TestExample");
+        var t = new Ngo.Runtime.Testing.T("TestExample");
         Assert.AreEqual("TestExample", t.Name());
         Assert.IsFalse(t.Failed());
 
@@ -1015,23 +1016,23 @@ func main() {
     [TestMethod]
     public void Testing_T_Fatal_throws()
     {
-        var t = new Ngo.Runtime.GoTestingT("TestFatal");
-        Assert.ThrowsException<Ngo.Runtime.GoTestFailException>(() => t.Fatal("stop"));
+        var t = new Ngo.Runtime.Testing.T("TestFatal");
+        Assert.ThrowsException<Ngo.Runtime.Testing.TestFailException>(() => t.Fatal("stop"));
         Assert.IsTrue(t.Failed());
     }
 
     [TestMethod]
     public void Testing_T_Skip_throws()
     {
-        var t = new Ngo.Runtime.GoTestingT("TestSkip");
-        Assert.ThrowsException<Ngo.Runtime.GoTestSkipException>(() => t.Skip("not ready"));
+        var t = new Ngo.Runtime.Testing.T("TestSkip");
+        Assert.ThrowsException<Ngo.Runtime.Testing.TestSkipException>(() => t.Skip("not ready"));
         Assert.IsTrue(t.Skipped());
     }
 
     [TestMethod]
     public void Testing_T_Run_subtest()
     {
-        var t = new Ngo.Runtime.GoTestingT("Parent");
+        var t = new Ngo.Runtime.Testing.T("Parent");
         var result = t.Run("child", sub =>
         {
             sub.Log("child ran");
@@ -1043,7 +1044,7 @@ func main() {
     [TestMethod]
     public void Testing_T_Run_failing_subtest()
     {
-        var t = new Ngo.Runtime.GoTestingT("Parent");
+        var t = new Ngo.Runtime.Testing.T("Parent");
         var result = t.Run("failing", sub =>
         {
             sub.Fatal("boom");
@@ -1055,7 +1056,7 @@ func main() {
     [TestMethod]
     public void Testing_T_TempDir()
     {
-        var t = new Ngo.Runtime.GoTestingT("TestTemp");
+        var t = new Ngo.Runtime.Testing.T("TestTemp");
         var dir = t.TempDir();
         Assert.IsTrue(System.IO.Directory.Exists(dir));
         t.RunCleanups();
@@ -1084,7 +1085,7 @@ func main() {
     })
     fmt.Println(count)
 }");
-        var result = SemanticAnalyzer.Analyze(tree);
+        var result = SemanticAnalyzer.Analyze(tree, new CompilationContext(null));
         Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
     }
 
@@ -1176,7 +1177,7 @@ import ""encoding/hex""
 func main() {
     data := []byte(""hello"")
     hash := sha256.Sum256(data)
-    fmt.Println(hex.EncodeToString(hash))
+    fmt.Println(hex.EncodeToString(hash[:]))
 }");
         Assert.AreEqual("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824\n",
             output.Replace("\r\n", "\n"));
@@ -1199,7 +1200,7 @@ func main() {
     _ = name
     fmt.Println(flag.Parsed())
 }");
-        var result = SemanticAnalyzer.Analyze(tree);
+        var result = SemanticAnalyzer.Analyze(tree, new CompilationContext(null));
         Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
     }
 
@@ -1219,7 +1220,7 @@ func main() {
     _, _ = r.Read()
     _ = r
 }");
-        var result = SemanticAnalyzer.Analyze(tree);
+        var result = SemanticAnalyzer.Analyze(tree, new CompilationContext(null));
         Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
     }
 
@@ -1239,7 +1240,7 @@ func main() {
     _ = http.StatusNotFound
     fmt.Println(""http ready"")
 }");
-        var result = SemanticAnalyzer.Analyze(tree);
+        var result = SemanticAnalyzer.Analyze(tree, new CompilationContext(null));
         Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
     }
 
@@ -1257,7 +1258,7 @@ func main() {
     b := make([]byte, 16)
     _, _ = rand.Read(b)
 }");
-        var result = SemanticAnalyzer.Analyze(tree);
+        var result = SemanticAnalyzer.Analyze(tree, new CompilationContext(null));
         Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
     }
 
@@ -1623,13 +1624,13 @@ func main() {
             File.WriteAllText(Path.Combine(projectDir, "main.go"),
                 "package main\n\nimport (\n\t\"fmt\"\n\t\"github.com/fake/util\"\n)\n\nfunc main() {\n\tfmt.Println(localutil.Double(5))\n}\n");
 
-            PackageRegistry.SetProjectRoot(projectDir);
+            var compilation = new CompilationContext(projectDir);
 
             var tree = SyntaxTree.Parse(File.ReadAllText(Path.Combine(projectDir, "main.go")));
-            var result = SemanticAnalyzer.Analyze(tree);
+            var result = SemanticAnalyzer.Analyze(tree, compilation);
             Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
 
-            var assembly = AssemblyEmitter.Emit(result);
+            var assembly = AssemblyEmitter.Emit(result, compilation);
             var entryPoint = AssemblyEmitter.FindEntryPoint(assembly);
             Assert.IsNotNull(entryPoint);
 
@@ -1649,7 +1650,6 @@ func main() {
         }
         finally
         {
-            PackageRegistry.SetProjectRoot(null);
             try { Directory.Delete(projectDir, true); } catch { }
         }
     }
@@ -1698,17 +1698,17 @@ func main() {
             File.WriteAllText(Path.Combine(dir, "go.mod"),
                 "module example.com/myapp\n\nrequire github.com/pkg/errors v0.9.1\n");
 
-            PackageRegistry.SetProjectRoot(dir);
+            var moduleResolver = new GoModuleResolver();
+            moduleResolver.LoadGoMod(dir);
 
-            // Even if analysis fails, verify the module resolver found the right module
-            var match = PackageRegistry.ModuleResolver.FindModule("github.com/pkg/errors");
+            // Verify the module resolver found the right module
+            var match = moduleResolver.FindModule("github.com/pkg/errors");
             Assert.IsNotNull(match);
             Assert.AreEqual("github.com/pkg/errors", match!.Value.module);
             Assert.AreEqual("v0.9.1", match.Value.version);
         }
         finally
         {
-            PackageRegistry.SetProjectRoot(null);
             Directory.Delete(dir, true);
         }
     }
@@ -1737,13 +1737,13 @@ func main() {
             File.WriteAllText(Path.Combine(projectDir, "main.go"),
                 "package main\n\nimport (\n\t\"fmt\"\n\t\"github.com/test/mathutil\"\n)\n\nfunc main() {\n\tfmt.Println(mathutil.Triple(7))\n\tfmt.Println(mathutil.Sum(10, 20))\n}\n");
 
-            PackageRegistry.SetProjectRoot(projectDir);
+            var compilation = new CompilationContext(projectDir);
 
             var tree = SyntaxTree.Parse(File.ReadAllText(Path.Combine(projectDir, "main.go")));
-            var result = SemanticAnalyzer.Analyze(tree);
+            var result = SemanticAnalyzer.Analyze(tree, compilation);
             Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
 
-            var assembly = AssemblyEmitter.Emit(result);
+            var assembly = AssemblyEmitter.Emit(result, compilation);
             var entryPoint = AssemblyEmitter.FindEntryPoint(assembly);
             Assert.IsNotNull(entryPoint);
 
@@ -1763,7 +1763,6 @@ func main() {
         }
         finally
         {
-            PackageRegistry.SetProjectRoot(null);
             try { Directory.Delete(projectDir, true); } catch { }
             try { Directory.Delete(cacheDir, true); } catch { }
         }
@@ -1774,11 +1773,12 @@ func main() {
     private static string RunWithStdin(string stdinContent, string goSource)
     {
         var tree = SyntaxTree.Parse(goSource);
-        var result = SemanticAnalyzer.Analyze(tree);
+        var ctx = new CompilationContext(null);
+        var result = SemanticAnalyzer.Analyze(tree, ctx);
 
         Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
 
-        var assembly = AssemblyEmitter.Emit(result);
+        var assembly = AssemblyEmitter.Emit(result, ctx);
         var entryPoint = AssemblyEmitter.FindEntryPoint(assembly);
         Assert.IsNotNull(entryPoint);
 
@@ -1798,6 +1798,6 @@ func main() {
             Console.SetIn(oldIn);
         }
 
-        return sw.ToString();
+        return sw.ToString().Replace("\r\n", "\n");
     }
 }

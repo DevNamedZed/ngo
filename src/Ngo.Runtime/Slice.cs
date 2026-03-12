@@ -123,6 +123,7 @@ namespace Ngo.Runtime
         /// <summary>2-index reslice: s[low:high]</summary>
         public Slice<T> Reslice(int low, int high)
         {
+            if (high == -1) high = Len; // sentinel: omitted high bound defaults to len
             if (low < 0 || high < low || high > Cap)
                 throw new GoPanicException($"runtime error: slice bounds out of range [{low}:{high}] with capacity {Cap}");
             return new Slice<T>(_array!, _offset + low, high - low, Cap - low);
@@ -195,7 +196,7 @@ namespace Ngo.Runtime
         public static int Copy(Slice<T> dst, Slice<T> src)
         {
             if (dst.IsNil || src.IsNil) return 0;
-            var n = Math.Min(dst.Len, src.Len);
+            var n = global::System.Math.Min(dst.Len, src.Len);
             if (n == 0) return 0;
             Array.Copy(src._array!, src._offset, dst._array!, dst._offset, n);
             return n;

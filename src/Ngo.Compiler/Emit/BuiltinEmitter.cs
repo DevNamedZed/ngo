@@ -22,6 +22,15 @@ using System.Reflection.Emit;
 using Ngo.Compiler.Ast;
 using Ngo.Compiler.Symbols;
 using Ngo.Runtime;
+using Ngo.Runtime.GoRuntimePkg;
+using Ngo.Runtime.Context;
+using Ngo.Runtime.Csv;
+using Ngo.Runtime.Io;
+using Ngo.Runtime.Os;
+using Ngo.Runtime.Reflect;
+using Ngo.Runtime.Strings;
+using GoStrings = Ngo.Runtime.Strings.Package;
+using Ngo.Runtime.Time;
 
 namespace Ngo.Compiler.Emit
 {
@@ -56,7 +65,7 @@ namespace Ngo.Compiler.Emit
 
             if (call.Function.PackageName == "regexp")
             {
-                return EmitStaticCall(call, typeof(GoRegexp), name);
+                return EmitStaticCall(call, typeof(Ngo.Runtime.Regexp.Package), name);
             }
 
             if (call.Function.PackageName == "dotnet")
@@ -71,12 +80,12 @@ namespace Ngo.Compiler.Emit
 
             if (call.Function.PackageName == "unicode")
             {
-                return EmitStaticCall(call, typeof(GoUnicode), name);
+                return EmitStaticCall(call, typeof(Ngo.Runtime.Unicode.Package), name);
             }
 
             if (call.Function.PackageName == "bytes")
             {
-                return EmitStaticCall(call, typeof(GoBytes), name);
+                return EmitStaticCall(call, typeof(Ngo.Runtime.Bytes.Package), name);
             }
 
             if (call.Function.PackageName == "errors")
@@ -97,40 +106,40 @@ namespace Ngo.Compiler.Emit
                         _ctx.IL.Emit(OpCodes.Stelem_Ref);
                     }
                     _ctx.IL.Emit(OpCodes.Call,
-                        typeof(GoErrors).GetMethod("Join")!);
+                        typeof(Ngo.Runtime.Errors.Package).GetMethod("Join")!);
                     return true;
                 }
-                return EmitStaticCall(call, typeof(GoErrors), name);
+                return EmitStaticCall(call, typeof(Ngo.Runtime.Errors.Package), name);
             }
 
             if (call.Function.PackageName == "json")
             {
-                return EmitStaticCall(call, typeof(GoJson), name);
+                return EmitStaticCall(call, typeof(Ngo.Runtime.Json.Package), name);
             }
 
             if (call.Function.PackageName == "hex")
             {
-                return EmitStaticCall(call, typeof(GoHex), name);
+                return EmitStaticCall(call, typeof(Ngo.Runtime.Hex.Package), name);
             }
 
             if (call.Function.PackageName == "sha256")
             {
-                return EmitStaticCall(call, typeof(GoSha256), name);
+                return EmitStaticCall(call, typeof(Ngo.Runtime.Sha256.Package), name);
             }
 
             if (call.Function.PackageName == "crand")
             {
-                return EmitStaticCall(call, typeof(GoCryptoRand), name);
+                return EmitStaticCall(call, typeof(Ngo.Runtime.Crypto.Rand.Package), name);
             }
 
             if (call.Function.PackageName == "flag")
             {
-                return EmitStaticCall(call, typeof(GoFlag), name);
+                return EmitStaticCall(call, typeof(Ngo.Runtime.Flag.Package), name);
             }
 
             if (call.Function.PackageName == "http")
             {
-                return EmitStaticCall(call, typeof(GoHttp), name);
+                return EmitStaticCall(call, typeof(Ngo.Runtime.Http.Package), name);
             }
 
             if (call.Function.PackageName == "reflect")
@@ -150,7 +159,7 @@ namespace Ngo.Compiler.Emit
 
             if (call.Function.PackageName == "unsafe")
             {
-                return EmitStaticCall(call, typeof(GoUnsafe), name);
+                return EmitStaticCall(call, typeof(Ngo.Runtime.Unsafe.Package), name);
             }
 
             if (call.Function.PackageName == "csv")
@@ -160,13 +169,13 @@ namespace Ngo.Compiler.Emit
                     case "NewReader":
                         _body.EmitExpression(call.Arguments[0]);
                         _ctx.IL.Emit(OpCodes.Call,
-                            typeof(GoCsv).GetMethod("NewReader",
+                            typeof(Ngo.Runtime.Csv.Package).GetMethod("NewReader",
                                 new[] { typeof(object) })!);
                         return true;
                     case "NewWriter":
                         _body.EmitExpression(call.Arguments[0]);
                         _ctx.IL.Emit(OpCodes.Call,
-                            typeof(GoCsv).GetMethod("NewWriter",
+                            typeof(Ngo.Runtime.Csv.Package).GetMethod("NewWriter",
                                 new[] { typeof(object) })!);
                         return true;
                 }
@@ -195,12 +204,12 @@ namespace Ngo.Compiler.Emit
 
             if (call.Function.PackageName == "path")
             {
-                return EmitStaticCall(call, typeof(GoPath), name);
+                return EmitStaticCall(call, typeof(Ngo.Runtime.Path.Package), name);
             }
 
             if (call.Function.PackageName == "utf8")
             {
-                return EmitStaticCall(call, typeof(GoUtf8), name);
+                return EmitStaticCall(call, typeof(Ngo.Runtime.Utf8.Package), name);
             }
 
             if (call.Function.PackageName == "filepath")
@@ -221,11 +230,11 @@ namespace Ngo.Compiler.Emit
                             _ctx.IL.Emit(OpCodes.Stelem_Ref);
                         }
                         _ctx.IL.Emit(OpCodes.Call,
-                            typeof(GoFilepath).GetMethod("Join")!);
+                            typeof(Ngo.Runtime.Filepath.Package).GetMethod("Join")!);
                         return true;
                     }
                     default:
-                        return EmitStaticCall(call, typeof(GoFilepath), name);
+                        return EmitStaticCall(call, typeof(Ngo.Runtime.Filepath.Package), name);
                 }
             }
 
@@ -237,19 +246,19 @@ namespace Ngo.Compiler.Emit
                         _body.EmitExpression(call.Arguments[0]);
                         _ctx.IL.Emit(OpCodes.Castclass, typeof(IGoReader));
                         _ctx.IL.Emit(OpCodes.Newobj,
-                            typeof(GoScanner).GetConstructor(new[] { typeof(IGoReader) })!);
+                            typeof(Ngo.Runtime.Bufio.Scanner).GetConstructor(new[] { typeof(IGoReader) })!);
                         return true;
                     case "NewReader":
                         _body.EmitExpression(call.Arguments[0]);
                         _ctx.IL.Emit(OpCodes.Castclass, typeof(IGoReader));
                         _ctx.IL.Emit(OpCodes.Newobj,
-                            typeof(GoBufferedReader).GetConstructor(new[] { typeof(IGoReader) })!);
+                            typeof(Ngo.Runtime.Bufio.Reader).GetConstructor(new[] { typeof(IGoReader) })!);
                         return true;
                     case "NewWriter":
                         _body.EmitExpression(call.Arguments[0]);
                         _ctx.IL.Emit(OpCodes.Castclass, typeof(IGoWriter));
                         _ctx.IL.Emit(OpCodes.Newobj,
-                            typeof(GoBufferedWriter).GetConstructor(new[] { typeof(IGoWriter) })!);
+                            typeof(Ngo.Runtime.Bufio.Writer).GetConstructor(new[] { typeof(IGoWriter) })!);
                         return true;
                 }
             }
@@ -330,14 +339,14 @@ namespace Ngo.Compiler.Emit
                         // First arg is IGoWriter, second is format string, rest are varargs
                         _body.EmitExpression(call.Arguments[0]);
                         _ctx.IL.Emit(OpCodes.Castclass, typeof(IGoWriter));
-                        EmitFmtFormatCallFrom(call, "Fprintf", typeof(Fmt), 1);
+                        EmitFmtFormatCallFrom(call, "Fprintf", typeof(Ngo.Runtime.Fmt.Package), 1);
                         return true;
                     case "Fprintln":
                         _body.EmitExpression(call.Arguments[0]);
                         _ctx.IL.Emit(OpCodes.Castclass, typeof(IGoWriter));
                         EmitFmtWriterPrintArgs(call, 1);
                         _ctx.IL.Emit(OpCodes.Call,
-                            typeof(Fmt).GetMethod("Fprintln",
+                            typeof(Ngo.Runtime.Fmt.Package).GetMethod("Fprintln",
                                 new[] { typeof(IGoWriter), typeof(object[]) })!);
                         return true;
                     case "Fprint":
@@ -345,33 +354,33 @@ namespace Ngo.Compiler.Emit
                         _ctx.IL.Emit(OpCodes.Castclass, typeof(IGoWriter));
                         EmitFmtWriterPrintArgs(call, 1);
                         _ctx.IL.Emit(OpCodes.Call,
-                            typeof(Fmt).GetMethod("Fprint",
+                            typeof(Ngo.Runtime.Fmt.Package).GetMethod("Fprint",
                                 new[] { typeof(IGoWriter), typeof(object[]) })!);
                         return true;
                     case "Scan":
                         EmitFmtWriterPrintArgs(call, 0); // all args as object[]
                         _ctx.IL.Emit(OpCodes.Call,
-                            typeof(Fmt).GetMethod("Scan",
+                            typeof(Ngo.Runtime.Fmt.Package).GetMethod("Scan",
                                 new[] { typeof(object[]) })!);
                         return true;
                     case "Scanf":
                         _body.EmitExpression(call.Arguments[0]); // format
                         EmitFmtWriterPrintArgs(call, 1); // remaining args as object[]
                         _ctx.IL.Emit(OpCodes.Call,
-                            typeof(Fmt).GetMethod("Scanf",
+                            typeof(Ngo.Runtime.Fmt.Package).GetMethod("Scanf",
                                 new[] { typeof(string), typeof(object[]) })!);
                         return true;
                     case "Scanln":
                         EmitFmtWriterPrintArgs(call, 0); // all args as object[]
                         _ctx.IL.Emit(OpCodes.Call,
-                            typeof(Fmt).GetMethod("Scanln",
+                            typeof(Ngo.Runtime.Fmt.Package).GetMethod("Scanln",
                                 new[] { typeof(object[]) })!);
                         return true;
                     case "Sscan":
                         _body.EmitExpression(call.Arguments[0]); // str
                         EmitFmtWriterPrintArgs(call, 1); // remaining args as object[]
                         _ctx.IL.Emit(OpCodes.Call,
-                            typeof(Fmt).GetMethod("Sscan",
+                            typeof(Ngo.Runtime.Fmt.Package).GetMethod("Sscan",
                                 new[] { typeof(string), typeof(object[]) })!);
                         return true;
                     case "Sscanf":
@@ -379,14 +388,14 @@ namespace Ngo.Compiler.Emit
                         _body.EmitExpression(call.Arguments[1]); // format
                         EmitFmtWriterPrintArgs(call, 2); // remaining args as object[]
                         _ctx.IL.Emit(OpCodes.Call,
-                            typeof(Fmt).GetMethod("Sscanf",
+                            typeof(Ngo.Runtime.Fmt.Package).GetMethod("Sscanf",
                                 new[] { typeof(string), typeof(string), typeof(object[]) })!);
                         return true;
                     case "Sscanln":
                         _body.EmitExpression(call.Arguments[0]); // str
                         EmitFmtWriterPrintArgs(call, 1); // remaining args as object[]
                         _ctx.IL.Emit(OpCodes.Call,
-                            typeof(Fmt).GetMethod("Sscanln",
+                            typeof(Ngo.Runtime.Fmt.Package).GetMethod("Sscanln",
                                 new[] { typeof(string), typeof(object[]) })!);
                         return true;
                 }
@@ -398,21 +407,21 @@ namespace Ngo.Compiler.Emit
                 {
                     case "Println":
                         EmitBuiltinPrintArgs(call);
-                        _ctx.IL.Emit(OpCodes.Call, typeof(GoLog).GetMethod("Println")!);
+                        _ctx.IL.Emit(OpCodes.Call, typeof(Ngo.Runtime.Log.Package).GetMethod("Println")!);
                         return true;
                     case "Print":
                         EmitBuiltinPrintArgs(call);
-                        _ctx.IL.Emit(OpCodes.Call, typeof(GoLog).GetMethod("Print")!);
+                        _ctx.IL.Emit(OpCodes.Call, typeof(Ngo.Runtime.Log.Package).GetMethod("Print")!);
                         return true;
                     case "Printf":
-                        EmitFmtFormatCall(call, "Printf", typeof(GoLog));
+                        EmitFmtFormatCall(call, "Printf", typeof(Ngo.Runtime.Log.Package));
                         return true;
                     case "Fatal":
                         EmitBuiltinPrintArgs(call);
-                        _ctx.IL.Emit(OpCodes.Call, typeof(GoLog).GetMethod("Fatal")!);
+                        _ctx.IL.Emit(OpCodes.Call, typeof(Ngo.Runtime.Log.Package).GetMethod("Fatal")!);
                         return true;
                     case "Fatalf":
-                        EmitFmtFormatCall(call, "Fatalf", typeof(GoLog));
+                        EmitFmtFormatCall(call, "Fatalf", typeof(Ngo.Runtime.Log.Package));
                         return true;
                 }
             }
@@ -426,7 +435,7 @@ namespace Ngo.Compiler.Emit
 
                 case "Println":
                     EmitBuiltinPrintArgs(call);
-                    _ctx.IL.Emit(OpCodes.Call, typeof(Fmt).GetMethod("Println")!);
+                    _ctx.IL.Emit(OpCodes.Call, typeof(Ngo.Runtime.Fmt.Package).GetMethod("Println")!);
                     return true;
 
                 case "print":
@@ -436,7 +445,7 @@ namespace Ngo.Compiler.Emit
 
                 case "Print":
                     EmitBuiltinPrintArgs(call);
-                    _ctx.IL.Emit(OpCodes.Call, typeof(Fmt).GetMethod("Print")!);
+                    _ctx.IL.Emit(OpCodes.Call, typeof(Ngo.Runtime.Fmt.Package).GetMethod("Print")!);
                     return true;
 
                 case "Printf":
@@ -453,12 +462,12 @@ namespace Ngo.Compiler.Emit
 
                 case "Sprint":
                     EmitBuiltinPrintArgs(call);
-                    _ctx.IL.Emit(OpCodes.Call, typeof(Fmt).GetMethod("Sprint")!);
+                    _ctx.IL.Emit(OpCodes.Call, typeof(Ngo.Runtime.Fmt.Package).GetMethod("Sprint")!);
                     return true;
 
                 case "Sprintln":
                     EmitBuiltinPrintArgs(call);
-                    _ctx.IL.Emit(OpCodes.Call, typeof(Fmt).GetMethod("Sprintln")!);
+                    _ctx.IL.Emit(OpCodes.Call, typeof(Ngo.Runtime.Fmt.Package).GetMethod("Sprintln")!);
                     return true;
 
                 case "len":
@@ -513,29 +522,29 @@ namespace Ngo.Compiler.Emit
 
                 // --- strconv ---
                 case "Itoa":
-                    return EmitStaticCall(call, typeof(GoStrconv), "Itoa");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Strconv.Package), "Itoa");
                 case "Atoi":
-                    return EmitStaticCall(call, typeof(GoStrconv), "Atoi");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Strconv.Package), "Atoi");
                 case "FormatInt":
-                    return EmitStaticCall(call, typeof(GoStrconv), "FormatInt");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Strconv.Package), "FormatInt");
                 case "FormatBool":
-                    return EmitStaticCall(call, typeof(GoStrconv), "FormatBool");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Strconv.Package), "FormatBool");
                 case "ParseInt":
-                    return EmitStaticCall(call, typeof(GoStrconv), "ParseInt");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Strconv.Package), "ParseInt");
                 case "ParseFloat":
-                    return EmitStaticCall(call, typeof(GoStrconv), "ParseFloat");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Strconv.Package), "ParseFloat");
                 case "FormatFloat":
-                    return EmitStaticCall(call, typeof(GoStrconv), "FormatFloat");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Strconv.Package), "FormatFloat");
                 case "ParseBool":
-                    return EmitStaticCall(call, typeof(GoStrconv), "ParseBool");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Strconv.Package), "ParseBool");
                 case "ParseUint":
-                    return EmitStaticCall(call, typeof(GoStrconv), "ParseUint");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Strconv.Package), "ParseUint");
                 case "FormatUint":
-                    return EmitStaticCall(call, typeof(GoStrconv), "FormatUint");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Strconv.Package), "FormatUint");
                 case "Quote":
-                    return EmitStaticCall(call, typeof(GoStrconv), "Quote");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Strconv.Package), "Quote");
                 case "Unquote":
-                    return EmitStaticCall(call, typeof(GoStrconv), "Unquote");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Strconv.Package), "Unquote");
 
                 // --- strings ---
                 case "Contains":
@@ -618,94 +627,94 @@ namespace Ngo.Compiler.Emit
                         _ctx.IL.Emit(OpCodes.Stelem_Ref);
                     }
                     _ctx.IL.Emit(OpCodes.Newobj,
-                        typeof(GoReplacer).GetConstructor(new[] { typeof(string[]) })!);
+                        typeof(Ngo.Runtime.Strings.Replacer).GetConstructor(new[] { typeof(string[]) })!);
                     return true;
 
                 // --- errors ---
                 case "New":
-                    return EmitStaticCall(call, typeof(GoErrors), "New");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Errors.Package), "New");
                 case "Unwrap":
-                    return EmitStaticCall(call, typeof(GoErrors), "Unwrap");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Errors.Package), "Unwrap");
                 case "Is":
-                    return EmitStaticCall(call, typeof(GoErrors), "Is");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Errors.Package), "Is");
                 case "As":
-                    return EmitStaticCall(call, typeof(GoErrors), "As");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Errors.Package), "As");
 
                 // --- math ---
                 case "Abs":
-                    return EmitStaticCall(call, typeof(GoMath), "Abs");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "Abs");
                 case "Max":
-                    return EmitStaticCall(call, typeof(GoMath), "Max");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "Max");
                 case "Min":
-                    return EmitStaticCall(call, typeof(GoMath), "Min");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "Min");
                 case "Sqrt":
-                    return EmitStaticCall(call, typeof(GoMath), "Sqrt");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "Sqrt");
                 case "Floor":
-                    return EmitStaticCall(call, typeof(GoMath), "Floor");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "Floor");
                 case "Ceil":
-                    return EmitStaticCall(call, typeof(GoMath), "Ceil");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "Ceil");
                 case "Round":
-                    return EmitStaticCall(call, typeof(GoMath), "Round");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "Round");
                 case "Pow":
-                    return EmitStaticCall(call, typeof(GoMath), "Pow");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "Pow");
                 case "Log":
-                    return EmitStaticCall(call, typeof(GoMath), "Log");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "Log");
                 case "Log2":
-                    return EmitStaticCall(call, typeof(GoMath), "Log2");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "Log2");
                 case "Log10":
-                    return EmitStaticCall(call, typeof(GoMath), "Log10");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "Log10");
                 case "Exp":
-                    return EmitStaticCall(call, typeof(GoMath), "Exp");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "Exp");
                 case "Mod":
-                    return EmitStaticCall(call, typeof(GoMath), "Mod");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "Mod");
                 case "Sin":
-                    return EmitStaticCall(call, typeof(GoMath), "Sin");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "Sin");
                 case "Cos":
-                    return EmitStaticCall(call, typeof(GoMath), "Cos");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "Cos");
                 case "Tan":
-                    return EmitStaticCall(call, typeof(GoMath), "Tan");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "Tan");
                 case "Atan":
-                    return EmitStaticCall(call, typeof(GoMath), "Atan");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "Atan");
                 case "Atan2":
-                    return EmitStaticCall(call, typeof(GoMath), "Atan2");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "Atan2");
                 case "Inf":
-                    return EmitStaticCall(call, typeof(GoMath), "Inf");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "Inf");
                 case "IsNaN":
-                    return EmitStaticCall(call, typeof(GoMath), "IsNaN");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "IsNaN");
                 case "IsInf":
-                    return EmitStaticCall(call, typeof(GoMath), "IsInf");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "IsInf");
                 case "NaN":
-                    return EmitStaticCall(call, typeof(GoMath), "NaN");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "NaN");
                 case "Remainder":
-                    return EmitStaticCall(call, typeof(GoMath), "Remainder");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "Remainder");
                 case "Trunc":
-                    return EmitStaticCall(call, typeof(GoMath), "Trunc");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "Trunc");
                 case "Pow10":
-                    return EmitStaticCall(call, typeof(GoMath), "Pow10");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "Pow10");
                 case "Asin":
-                    return EmitStaticCall(call, typeof(GoMath), "Asin");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "Asin");
                 case "Acos":
-                    return EmitStaticCall(call, typeof(GoMath), "Acos");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "Acos");
                 case "Sinh":
-                    return EmitStaticCall(call, typeof(GoMath), "Sinh");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "Sinh");
                 case "Cosh":
-                    return EmitStaticCall(call, typeof(GoMath), "Cosh");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "Cosh");
                 case "Tanh":
-                    return EmitStaticCall(call, typeof(GoMath), "Tanh");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "Tanh");
                 case "Cbrt":
-                    return EmitStaticCall(call, typeof(GoMath), "Cbrt");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "Cbrt");
                 case "Hypot":
-                    return EmitStaticCall(call, typeof(GoMath), "Hypot");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "Hypot");
                 case "Dim":
-                    return EmitStaticCall(call, typeof(GoMath), "Dim");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "Dim");
                 case "Copysign":
-                    return EmitStaticCall(call, typeof(GoMath), "Copysign");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "Copysign");
                 case "Ldexp":
-                    return EmitStaticCall(call, typeof(GoMath), "Ldexp");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "Ldexp");
                 case "Logb":
-                    return EmitStaticCall(call, typeof(GoMath), "Logb");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "Logb");
                 case "Ilogb":
-                    return EmitStaticCall(call, typeof(GoMath), "Ilogb");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Math.Package), "Ilogb");
 
                 // --- os ---
                 case "Exit":
@@ -719,35 +728,35 @@ namespace Ngo.Compiler.Emit
 
                 // --- math/rand ---
                 case "Intn":
-                    return EmitStaticCall(call, typeof(GoRand), "Intn");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Rand.Package), "Intn");
                 case "Float64":
-                    return EmitStaticCall(call, typeof(GoRand), "Float64");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Rand.Package), "Float64");
                 case "Seed":
-                    return EmitStaticCall(call, typeof(GoRand), "Seed");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Rand.Package), "Seed");
 
                 // --- sort ---
                 case "Ints":
-                    return EmitStaticCall(call, typeof(GoSort), "Ints");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Sort.Package), "Ints");
                 case "Strings":
-                    return EmitStaticCall(call, typeof(GoSort), "Strings");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Sort.Package), "Strings");
                 case "Float64s":
-                    return EmitStaticCall(call, typeof(GoSort), "Float64s");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Sort.Package), "Float64s");
                 case "IntsAreSorted":
-                    return EmitStaticCall(call, typeof(GoSort), "IntsAreSorted");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Sort.Package), "IntsAreSorted");
                 case "StringsAreSorted":
-                    return EmitStaticCall(call, typeof(GoSort), "StringsAreSorted");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Sort.Package), "StringsAreSorted");
                 case "Float64sAreSorted":
-                    return EmitStaticCall(call, typeof(GoSort), "Float64sAreSorted");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Sort.Package), "Float64sAreSorted");
                 case "SearchInts":
-                    return EmitStaticCall(call, typeof(GoSort), "SearchInts");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Sort.Package), "SearchInts");
                 case "SearchStrings":
-                    return EmitStaticCall(call, typeof(GoSort), "SearchStrings");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Sort.Package), "SearchStrings");
                 case "Slice":
-                    return EmitStaticCall(call, typeof(GoSort), "Slice");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Sort.Package), "Slice");
                 case "SliceStable":
-                    return EmitStaticCall(call, typeof(GoSort), "SliceStable");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Sort.Package), "SliceStable");
                 case "SliceIsSorted":
-                    return EmitStaticCall(call, typeof(GoSort), "SliceIsSorted");
+                    return EmitStaticCall(call, typeof(Ngo.Runtime.Sort.Package), "SliceIsSorted");
 
                 default:
                     return false;
@@ -829,9 +838,11 @@ namespace Ngo.Compiler.Emit
                 paramTypes[i] = _ctx.Mapper.Map(call.Arguments[i].Type);
             }
 
-            var method = targetType.GetMethod(methodName, paramTypes);
+            MethodInfo? method = null;
+            if (!EmitContext.HasAnyTypeBuilderPublic(paramTypes))
+                method = targetType.GetMethod(methodName, paramTypes);
 
-            // If exact match fails, find by name + param count and emit conversions
+            // If exact match fails (or skipped due to TypeBuilder params), find by name + param count and emit conversions
             if (method == null)
             {
                 var candidates = targetType.GetMethods(BindingFlags.Public | BindingFlags.Static);
@@ -893,8 +904,8 @@ namespace Ngo.Compiler.Emit
             {
                 var sliceClrType = _ctx.Mapper.Map(argType);
                 _body.EmitExpressionAddress(arg, sliceClrType);
-                var lenProp = sliceClrType.GetProperty("Len")!;
-                _ctx.IL.Emit(OpCodes.Call, lenProp.GetGetMethod()!);
+                var lenGetter = EmitContext.GetPropertyGetterSafe(sliceClrType, "Len");
+                _ctx.IL.Emit(OpCodes.Call, lenGetter);
                 _ctx.IL.Emit(OpCodes.Conv_I8);
                 return true;
             }
@@ -903,8 +914,8 @@ namespace Ngo.Compiler.Emit
             {
                 _body.EmitExpression(arg);
                 var mapClrType = _ctx.Mapper.Map(argType);
-                var lenProp = mapClrType.GetProperty("Len")!;
-                _ctx.IL.Emit(OpCodes.Call, lenProp.GetGetMethod()!);
+                var lenGetter = EmitContext.GetPropertyGetterSafe(mapClrType, "Len");
+                _ctx.IL.Emit(OpCodes.Call, lenGetter);
                 _ctx.IL.Emit(OpCodes.Conv_I8);
                 return true;
             }
@@ -928,8 +939,8 @@ namespace Ngo.Compiler.Emit
             {
                 var sliceClrType = _ctx.Mapper.Map(arg.Type);
                 _body.EmitExpressionAddress(arg, sliceClrType);
-                var capProp = sliceClrType.GetProperty("Cap")!;
-                _ctx.IL.Emit(OpCodes.Call, capProp.GetGetMethod()!);
+                var capGetter = EmitContext.GetPropertyGetterSafe(sliceClrType, "Cap");
+                _ctx.IL.Emit(OpCodes.Call, capGetter);
                 _ctx.IL.Emit(OpCodes.Conv_I8);
                 return true;
             }
@@ -938,8 +949,8 @@ namespace Ngo.Compiler.Emit
             {
                 _body.EmitExpression(arg);
                 var chanClrType = _ctx.Mapper.Map(arg.Type);
-                var capProp = chanClrType.GetProperty("Capacity")!;
-                _ctx.IL.Emit(OpCodes.Call, capProp.GetGetMethod()!);
+                var capGetter = EmitContext.GetPropertyGetterSafe(chanClrType, "Capacity");
+                _ctx.IL.Emit(OpCodes.Call, capGetter);
                 _ctx.IL.Emit(OpCodes.Conv_I8);
                 return true;
             }
@@ -971,8 +982,8 @@ namespace Ngo.Compiler.Emit
             }
 
             // Call Slice<T>.Append(slice, T[])
-            var appendMethod = typeof(Slice<>).MakeGenericType(elemClrType)
-                .GetMethod("Append", new[] { sliceClrType, elemClrType.MakeArrayType() })!;
+            var appendSliceType = typeof(Slice<>).MakeGenericType(elemClrType);
+            var appendMethod = EmitContext.GetMethodSafe(appendSliceType, "Append", new[] { sliceClrType, elemClrType.MakeArrayType() });
             _ctx.IL.Emit(OpCodes.Call, appendMethod);
             return true;
         }
@@ -1003,7 +1014,7 @@ namespace Ngo.Compiler.Emit
                     _ctx.IL.Emit(OpCodes.Ldc_I4_M1);
                 }
 
-                var makeMethod = sliceClrType.GetMethod("Make", new[] { typeof(int), typeof(int) })!;
+                var makeMethod = EmitContext.GetMethodSafe(sliceClrType, "Make", new[] { typeof(int), typeof(int) });
                 _ctx.IL.Emit(OpCodes.Call, makeMethod);
                 return true;
             }
@@ -1011,7 +1022,7 @@ namespace Ngo.Compiler.Emit
             if (returnType is MapTypeSymbol mapType)
             {
                 var mapClrType = _ctx.Mapper.Map(mapType);
-                var ctor = mapClrType.GetConstructor(Type.EmptyTypes)!;
+                var ctor = EmitContext.GetConstructorSafe(mapClrType, Type.EmptyTypes);
                 _ctx.IL.Emit(OpCodes.Newobj, ctor);
                 return true;
             }
@@ -1025,13 +1036,13 @@ namespace Ngo.Compiler.Emit
                     // make(chan T, n) — buffered with capacity
                     _body.EmitExpression(call.Arguments[0]);
                     _ctx.IL.Emit(OpCodes.Conv_I4);
-                    var ctor = chanClrType.GetConstructor(new[] { typeof(int) })!;
+                    var ctor = EmitContext.GetConstructorSafe(chanClrType, new[] { typeof(int) });
                     _ctx.IL.Emit(OpCodes.Newobj, ctor);
                 }
                 else
                 {
                     // make(chan T) — unbuffered
-                    var ctor = chanClrType.GetConstructor(Type.EmptyTypes)!;
+                    var ctor = EmitContext.GetConstructorSafe(chanClrType, Type.EmptyTypes);
                     _ctx.IL.Emit(OpCodes.Newobj, ctor);
                 }
 
@@ -1046,7 +1057,7 @@ namespace Ngo.Compiler.Emit
             _body.EmitExpression(call.Arguments[0]);
             _body.EmitExpression(call.Arguments[1]);
             var mapClrType = _ctx.Mapper.Map(call.Arguments[0].Type);
-            var deleteMethod = mapClrType.GetMethod("Delete")!;
+            var deleteMethod = EmitContext.GetMethodSafe(mapClrType, "Delete");
             _ctx.IL.Emit(OpCodes.Call, deleteMethod);
             return true;
         }
@@ -1060,8 +1071,8 @@ namespace Ngo.Compiler.Emit
             _body.EmitExpression(call.Arguments[0]);
             _body.EmitExpression(call.Arguments[1]);
 
-            var copyMethod = typeof(Slice<>).MakeGenericType(elemClrType)
-                .GetMethod("Copy", new[] { sliceClrType, sliceClrType })!;
+            var copySliceType = typeof(Slice<>).MakeGenericType(elemClrType);
+            var copyMethod = EmitContext.GetMethodSafe(copySliceType, "Copy", new[] { sliceClrType, sliceClrType });
             _ctx.IL.Emit(OpCodes.Call, copyMethod);
             _ctx.IL.Emit(OpCodes.Conv_I8);
             return true;
@@ -1071,22 +1082,33 @@ namespace Ngo.Compiler.Emit
         {
             _body.EmitExpression(call.Arguments[0]);
             var chanClrType = _ctx.Mapper.Map(call.Arguments[0].Type);
-            var closeMethod = chanClrType.GetMethod("Close")!;
+            var closeMethod = EmitContext.GetMethodSafe(chanClrType, "Close");
             _ctx.IL.Emit(OpCodes.Call, closeMethod);
             return true;
         }
 
         private bool EmitBuiltinNew(CallExpression call)
         {
-            // new(T) returns *T → Ptr<T>
-            var innerType = _ctx.Mapper.Map(call.Type);
-            // call.Type is PointerTypeSymbol, inner is the pointed-to type
+            // new(T) returns *T → Ptr<T> for value types, or new T() for reference types
             if (call.Type is PointerTypeSymbol ptrType)
             {
                 var elemClrType = _ctx.Mapper.Map(ptrType.ElementType);
-                var ptrClrType = typeof(Ptr<>).MakeGenericType(elemClrType);
-                var ctor = ptrClrType.GetConstructor(Type.EmptyTypes)!;
-                _ctx.IL.Emit(OpCodes.Newobj, ctor);
+
+                // Reference types don't need Ptr<T> wrapper — just construct directly
+                if (!elemClrType.IsValueType && elemClrType is not TypeBuilder && elemClrType is not GenericTypeParameterBuilder)
+                {
+                    var ctor = elemClrType.GetConstructor(Type.EmptyTypes);
+                    if (ctor != null)
+                        _ctx.IL.Emit(OpCodes.Newobj, ctor);
+                    else
+                        _ctx.IL.Emit(OpCodes.Ldnull); // no parameterless ctor — null ref
+                }
+                else
+                {
+                    var ptrClrType = typeof(Ptr<>).MakeGenericType(elemClrType);
+                    var ctor = EmitContext.GetConstructorSafe(ptrClrType, Type.EmptyTypes);
+                    _ctx.IL.Emit(OpCodes.Newobj, ctor);
+                }
             }
             return true;
         }
@@ -1195,7 +1217,7 @@ namespace Ngo.Compiler.Emit
             {
                 _body.EmitExpression(arg);
                 var mapClrType = _ctx.Mapper.Map(arg.Type);
-                var clearMethod = mapClrType.GetMethod("Clear");
+                var clearMethod = EmitContext.GetMethodSafe(mapClrType, "Clear");
                 if (clearMethod != null)
                 {
                     _ctx.IL.Emit(OpCodes.Call, clearMethod);
@@ -1224,14 +1246,14 @@ namespace Ngo.Compiler.Emit
                 _ctx.IL.MarkLabel(loopStart);
                 _ctx.IL.Emit(OpCodes.Ldloc, indexLocal);
                 _ctx.IL.Emit(OpCodes.Ldloca, sliceLocal);
-                _ctx.IL.Emit(OpCodes.Call, sliceClrType.GetProperty("Len")!.GetGetMethod()!);
+                _ctx.IL.Emit(OpCodes.Call, EmitContext.GetPropertyGetterSafe(sliceClrType, "Len"));
                 _ctx.IL.Emit(OpCodes.Bge, loopEnd);
 
                 // s[i] = default — indexer returns ref T, so use initobj
                 _ctx.IL.Emit(OpCodes.Ldloca, sliceLocal);
                 _ctx.IL.Emit(OpCodes.Ldloc, indexLocal);
                 _ctx.IL.Emit(OpCodes.Conv_I8);
-                var indexerGetter = sliceClrType.GetProperty("Item")!.GetGetMethod()!;
+                var indexerGetter = EmitContext.GetPropertyGetterSafe(sliceClrType, "Item");
                 _ctx.IL.Emit(OpCodes.Call, indexerGetter);
                 _ctx.IL.Emit(OpCodes.Initobj, elemClrType);
 
@@ -1267,7 +1289,7 @@ namespace Ngo.Compiler.Emit
         private void EmitFmtFormatCall(CallExpression call, string methodName,
             Type? targetType = null)
         {
-            targetType ??= typeof(Fmt);
+            targetType ??= typeof(Ngo.Runtime.Fmt.Package);
 
             // First arg is the format string
             if (call.Arguments.Count > 0)

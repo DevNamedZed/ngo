@@ -23,15 +23,16 @@ namespace Ngo.Compiler.Semantics
 {
     public sealed class SemanticAnalyzer
     {
-        public static AnalysisResult Analyze(SyntaxTree tree, bool checkUnused = false)
+        public static AnalysisResult Analyze(SyntaxTree tree, CompilationContext compilationContext, bool checkUnused = false)
         {
-            return Analyze(new[] { tree }, checkUnused);
+            return Analyze(new[] { tree }, compilationContext, checkUnused);
         }
 
-        public static AnalysisResult Analyze(IReadOnlyList<SyntaxTree> trees, bool checkUnused = false)
+        public static AnalysisResult Analyze(IReadOnlyList<SyntaxTree> trees, CompilationContext compilationContext, bool checkUnused = false)
         {
+
             var universe = AnalysisContext.CreateUniverseScope();
-            var context = new AnalysisContext(universe);
+            var context = new AnalysisContext(universe, compilationContext);
             context.CheckUnused = checkUnused;
 
             var typeResolver = new TypeResolver(context);

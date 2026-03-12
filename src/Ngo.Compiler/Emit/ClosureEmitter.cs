@@ -22,6 +22,7 @@ using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
 using Ngo.Compiler.Ast;
+using Ngo.Compiler.Emit.Builder;
 using Ngo.Compiler.Symbols;
 using Ngo.Runtime;
 
@@ -82,7 +83,7 @@ namespace Ngo.Compiler.Emit
             var savedReturnTypes = _body.CurrentReturnTypes;
 
             // Emit the lambda body
-            _ctx.IL = lambdaMethod.GetILGenerator();
+            _ctx.IL = lambdaMethod.GetILWriter();
             _ctx.Locals.Clear();
             _ctx.Parameters.Clear();
             _ctx.CapturedSymbols.Clear();
@@ -135,8 +136,8 @@ namespace Ngo.Compiler.Emit
             // Create delegate from the static method
             var delegateType = _ctx.Mapper.Map(funcLit.FunctionType);
             _ctx.IL.Emit(OpCodes.Ldnull);
-            _ctx.IL.Emit(OpCodes.Ldftn, lambdaMethod);
-            var delegateCtor = delegateType.GetConstructor(new[] { typeof(object), typeof(IntPtr) })!;
+            _ctx.IL.Emit(OpCodes.Ldftn, lambdaMethod.AsMethodInfo());
+            var delegateCtor = EmitContext.GetConstructorSafe(delegateType, new[] { typeof(object), typeof(IntPtr) });
             _ctx.IL.Emit(OpCodes.Newobj, delegateCtor);
         }
 
@@ -149,7 +150,7 @@ namespace Ngo.Compiler.Emit
                 TypeAttributes.Public | TypeAttributes.Sealed);
 
             // Fields for captured variables — use Box<T> for shared mutation
-            var captureFields = new Dictionary<Symbol, FieldBuilder>();
+            var captureFields = new Dictionary<Symbol, IFieldBuilder>();
             foreach (var sym in captures)
             {
                 TypeSymbol symType;
@@ -187,7 +188,7 @@ namespace Ngo.Compiler.Emit
             var savedReturnTypes = _body.CurrentReturnTypes;
 
             // Emit the invoke method body
-            _ctx.IL = invokeMethod.GetILGenerator();
+            _ctx.IL = invokeMethod.GetILWriter();
             _ctx.Locals.Clear();
             _ctx.Parameters.Clear();
             _ctx.CapturedSymbols.Clear();
@@ -200,11 +201,11 @@ namespace Ngo.Compiler.Emit
             // Load captured Box<T> references from closure fields into locals
             foreach (var (sym, field) in captureFields)
             {
-                var local = _ctx.IL.DeclareLocal(field.FieldType); // Box<T>
+                var local = _ctx.IL.DeclareLocal(field.AsFieldInfo().FieldType); // Box<T>
                 _ctx.Locals[sym] = local;
                 _ctx.CapturedSymbols.Add(sym); // Enable .Value access in EmitLoad/EmitStore
                 _ctx.IL.Emit(OpCodes.Ldarg_0);
-                _ctx.IL.Emit(OpCodes.Ldfld, field);
+                _ctx.IL.Emit(OpCodes.Ldfld, field.AsFieldInfo());
                 _ctx.IL.Emit(OpCodes.Stloc, local);
             }
 
@@ -268,7 +269,7 @@ namespace Ngo.Compiler.Emit
             var runtimeMethod = closureType.GetMethod("Invoke")!;
             _ctx.IL.Emit(OpCodes.Ldloc, closureLocal);
             _ctx.IL.Emit(OpCodes.Ldftn, runtimeMethod);
-            var delegateCtor = delegateType.GetConstructor(new[] { typeof(object), typeof(IntPtr) })!;
+            var delegateCtor = EmitContext.GetConstructorSafe(delegateType, new[] { typeof(object), typeof(IntPtr) });
             _ctx.IL.Emit(OpCodes.Newobj, delegateCtor);
         }
 
@@ -308,12 +309,12 @@ namespace Ngo.Compiler.Emit
                 paramTypes);
 
             // Emit Invoke body: load receiver from field, load params, call target method
-            var invokeIL = invokeMethod.GetILGenerator();
+            var invokeIL = invokeMethod.GetILWriter();
             invokeIL.Emit(OpCodes.Ldarg_0);
-            invokeIL.Emit(OpCodes.Ldfld, receiverField);
+            invokeIL.Emit(OpCodes.Ldfld, receiverField.AsFieldInfo());
             for (int i = 0; i < paramTypes.Length; i++)
                 invokeIL.Emit(OpCodes.Ldarg, i + 1);
-            invokeIL.Emit(OpCodes.Call, targetMethod);
+            invokeIL.Emit(OpCodes.Call, targetMethod.AsMethodInfo());
             invokeIL.Emit(OpCodes.Ret);
 
             var closureType = closureBuilder.CreateType()!;
@@ -334,18 +335,18 @@ namespace Ngo.Compiler.Emit
             var runtimeMethod = closureType.GetMethod("Invoke")!;
             _ctx.IL.Emit(OpCodes.Ldloc, closureLocal);
             _ctx.IL.Emit(OpCodes.Ldftn, runtimeMethod);
-            var delegateCtor = delegateType.GetConstructor(new[] { typeof(object), typeof(IntPtr) })!;
+            var delegateCtor = EmitContext.GetConstructorSafe(delegateType, new[] { typeof(object), typeof(IntPtr) });
             _ctx.IL.Emit(OpCodes.Newobj, delegateCtor);
         }
 
-        private void EmitMethodExpression(MethodValueExpression mv, MethodBuilder targetMethod)
+        private void EmitMethodExpression(MethodValueExpression mv, IMethodBuilder targetMethod)
         {
             // Method expression: Type.Method → static wrapper func(receiver, args...) returns
             // The target method IS already static (receiver as first param), so we can use it directly.
             var delegateType = _ctx.Mapper.Map(mv.FunctionType);
             _ctx.IL.Emit(OpCodes.Ldnull);
-            _ctx.IL.Emit(OpCodes.Ldftn, targetMethod);
-            var delegateCtor = delegateType.GetConstructor(new[] { typeof(object), typeof(IntPtr) })!;
+            _ctx.IL.Emit(OpCodes.Ldftn, targetMethod.AsMethodInfo());
+            var delegateCtor = EmitContext.GetConstructorSafe(delegateType, new[] { typeof(object), typeof(IntPtr) });
             _ctx.IL.Emit(OpCodes.Newobj, delegateCtor);
         }
 

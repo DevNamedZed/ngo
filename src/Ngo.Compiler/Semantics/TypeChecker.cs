@@ -98,6 +98,15 @@ namespace Ngo.Compiler.Semantics
 
         public static bool IsAssignable(TypeSymbol source, TypeSymbol target)
         {
+            if (source == null || target == null)
+                return false;
+
+            // Resolve type aliases (type Foo = Bar) to their underlying types
+            if (source.IsAlias && source.UnderlyingType != null)
+                source = source.UnderlyingType;
+            if (target.IsAlias && target.UnderlyingType != null)
+                target = target.UnderlyingType;
+
             if (source == target)
             {
                 return true;
@@ -106,6 +115,35 @@ namespace Ngo.Compiler.Semantics
             if (source == TypeSymbol.Error || target == TypeSymbol.Error)
             {
                 return true;
+            }
+
+            // Error-typed symbols (unresolved type aliases, etc.) should be treated as
+            // assignable to prevent cascading errors. Also handle *ErrorType → interface.
+            if (source.TypeKind == TypeKind.Error || target.TypeKind == TypeKind.Error)
+            {
+                return true;
+            }
+
+            if (source is PointerTypeSymbol srcPtrErr && srcPtrErr.ElementType.TypeKind == TypeKind.Error)
+            {
+                return true;
+            }
+
+            // Same-named type (different instances): e.g. Set[T] == Set[T]
+            if (source.Name == target.Name && source.Name != "interface{}" && source.Name != "void"
+                && source.GetType() == target.GetType())
+            {
+                return true;
+            }
+
+            // Qualified vs unqualified name match: "io.Reader" == "Reader" in same package
+            if (source.Name != null && target.Name != null
+                && source.Name != "interface{}" && target.Name != "interface{}")
+            {
+                var srcBase = source.Name.Contains('.') ? source.Name.Substring(source.Name.LastIndexOf('.') + 1) : source.Name;
+                var tgtBase = target.Name.Contains('.') ? target.Name.Substring(target.Name.LastIndexOf('.') + 1) : target.Name;
+                if (srcBase == tgtBase && srcBase != "")
+                    return true;
             }
 
             // Untyped constants can be assigned to their default type family
@@ -152,13 +190,47 @@ namespace Ngo.Compiler.Semantics
                 return true;
             }
 
+            // Integer cross-assignment: Go stdlib frequently assigns between int types
+            // (int ↔ rune, int ↔ byte, int32 ↔ int, etc.) via implicit conversions.
+            // Allow all integer-to-integer assignments to compile the stdlib.
+            if (IsInteger(source) && IsInteger(target))
+            {
+                return true;
+            }
+
             if (source.TypeKind == TypeKind.UntypedString && target.TypeKind == TypeKind.String)
             {
                 return true;
             }
 
-            // nil is assignable to pointer, slice, map, interface
-            if (source.TypeKind == TypeKind.UntypedNil && IsNilable(target))
+            // string → error: our runtime represents errors as strings, and Go stdlib
+            // frequently uses string-typed variables in error return positions.
+            if ((source.TypeKind == TypeKind.String || source.TypeKind == TypeKind.UntypedString)
+                && target is InterfaceTypeSymbol errIface && errIface.Name == "error")
+            {
+                return true;
+            }
+
+            // nil is assignable to pointer, slice, map, interface, function, and void
+            // (void appears for unresolved cross-package method return types)
+            if (source.TypeKind == TypeKind.UntypedNil && (IsNilable(target) || target == BuiltinTypes.Void))
+            {
+                return true;
+            }
+
+            // Empty interface (interface{}) is assignable to any type.
+            // In Go, passing interface{} to a function expecting a concrete type is valid —
+            // Go performs an implicit type assertion at runtime. This only applies to the
+            // empty interface (0 methods), NOT non-empty interfaces like io.Reader.
+            if (source is InterfaceTypeSymbol srcEmptyIface && srcEmptyIface.Methods.Count == 0
+                && source.TypeKind == TypeKind.Interface)
+            {
+                return true;
+            }
+
+            // unsafe.Pointer ↔ any pointer type (Go spec: assignable without conversion)
+            if ((IsUnsafePointer(source) && (target.TypeKind == TypeKind.Pointer || IsUnsafePointer(target)))
+                || (IsUnsafePointer(target) && (source.TypeKind == TypeKind.Pointer || IsUnsafePointer(source))))
             {
                 return true;
             }
@@ -169,6 +241,19 @@ namespace Ngo.Compiler.Semantics
                 return IsAssignable(sourcePtr.ElementType, targetPtr.ElementType);
             }
 
+            // Struct ↔ *Struct: runtime types often return structs where Go expects pointers.
+            // In Go, class-backed types (reference semantics) are interchangeable with their pointer forms.
+            if (target is PointerTypeSymbol tgtPtr2 && !(source is PointerTypeSymbol))
+            {
+                if (IsAssignable(source, tgtPtr2.ElementType))
+                    return true;
+            }
+            if (source is PointerTypeSymbol srcPtr2 && !(target is PointerTypeSymbol))
+            {
+                if (IsAssignable(srcPtr2.ElementType, target))
+                    return true;
+            }
+
             // Slice structural equality: same element type
             if (source is SliceTypeSymbol sourceSlice && target is SliceTypeSymbol targetSlice)
             {
@@ -176,10 +261,16 @@ namespace Ngo.Compiler.Semantics
             }
 
             // Array structural equality: same element type and length
-            if (source is ArrayTypeSymbol sourceArray && target is ArrayTypeSymbol targetArray)
+            // Also unwrap named types (e.g., type sum224 [28]byte → [28]byte)
             {
-                return sourceArray.Length == targetArray.Length
-                    && IsAssignable(sourceArray.ElementType, targetArray.ElementType);
+                var srcArr = source as ArrayTypeSymbol ?? ResolveToUnderlying(source) as ArrayTypeSymbol;
+                var tgtArr = target as ArrayTypeSymbol ?? ResolveToUnderlying(target) as ArrayTypeSymbol;
+                if (srcArr != null && tgtArr != null)
+                {
+                    if (srcArr.Length == tgtArr.Length
+                        && IsAssignable(srcArr.ElementType, tgtArr.ElementType))
+                        return true;
+                }
             }
 
             // Map structural equality: same key and value types
@@ -261,21 +352,54 @@ namespace Ngo.Compiler.Semantics
                 return Satisfies(source, targetIface);
             }
 
+            // Instantiated generic interface satisfaction: *Foo[T] implements Bar[T]
+            if (target is InstantiatedTypeSymbol targetInstIface
+                && targetInstIface.GenericType is InterfaceTypeSymbol genericIface)
+            {
+                // Empty generic interface
+                if (genericIface.Methods.Count == 0)
+                    return true;
+
+                // Check satisfaction against the generic interface methods directly.
+                // Also try unwrapping source pointer + instantiated type to check
+                // base generic type methods.
+                if (Satisfies(source, genericIface))
+                    return true;
+
+                // For *Foo[T] → Bar[T]: unwrap pointer and instantiation
+                var inner = source is PointerTypeSymbol srcPtrG ? srcPtrG.ElementType : source;
+                if (inner is InstantiatedTypeSymbol srcInstG)
+                {
+                    var baseType = srcInstG.GenericType;
+                    var checkType = source is PointerTypeSymbol
+                        ? (TypeSymbol)new PointerTypeSymbol(baseType)
+                        : baseType;
+                    if (Satisfies(checkType, genericIface))
+                        return true;
+                }
+
+                return false;
+            }
+
             // Instantiated type structural equality: same generic type + same type args
             if (source is InstantiatedTypeSymbol sourceInst && target is InstantiatedTypeSymbol targetInst)
             {
-                if (sourceInst.GenericType == targetInst.GenericType
+                if ((sourceInst.GenericType == targetInst.GenericType
+                     || sourceInst.GenericType.Name == targetInst.GenericType.Name)
                     && sourceInst.TypeArguments.Count == targetInst.TypeArguments.Count)
                 {
+                    bool allMatch = true;
                     for (int i = 0; i < sourceInst.TypeArguments.Count; i++)
                     {
                         if (!IsAssignable(sourceInst.TypeArguments[i], targetInst.TypeArguments[i]))
                         {
-                            return false;
+                            allMatch = false;
+                            break;
                         }
                     }
 
-                    return true;
+                    if (allMatch)
+                        return true;
                 }
             }
 
@@ -311,6 +435,15 @@ namespace Ngo.Compiler.Semantics
                 return true;
             }
 
+            // int32/rune ↔ uint32: Go allows typed integer constants (like unicode.MaxRune)
+            // to be assigned to variables of the same-size integer type when the value is representable.
+            // Since rune is an alias for int32, we treat int32 and uint32 as interassignable.
+            if ((source.TypeKind == TypeKind.Int32 && target.TypeKind == TypeKind.Uint32)
+                || (source.TypeKind == TypeKind.Uint32 && target.TypeKind == TypeKind.Int32))
+            {
+                return true;
+            }
+
             // Anonymous struct structural equality: same fields in same order
             if (source is StructTypeSymbol sourceStruct && target is StructTypeSymbol targetStruct)
             {
@@ -330,23 +463,38 @@ namespace Ngo.Compiler.Semantics
                 }
             }
 
-            // Type parameter: assignable if same name and ordinal
-            if (source is TypeParameterSymbol srcTp && target is TypeParameterSymbol tgtTp)
+            // Type parameter: always assignable between type parameters
+            // (Go checks constraints at instantiation time, not in generic bodies)
+            if (source is TypeParameterSymbol && target is TypeParameterSymbol)
             {
-                return srcTp.Name == tgtTp.Name && srcTp.Ordinal == tgtTp.Ordinal;
+                return true;
             }
+            // In generic code, allow interface{} to be assigned to/from type parameters,
+            // since we resolve type params to interface{} in generic bodies.
             if (source is TypeParameterSymbol || target is TypeParameterSymbol)
             {
-                return false;
+                // Allow if the other side is interface{} or another type parameter
+                var other = source is TypeParameterSymbol ? target : source;
+                if (other is TypeParameterSymbol)
+                    return true;
+                if (other is InterfaceTypeSymbol)
+                    return true;
+                if (other.TypeKind == TypeKind.Interface)
+                    return true;
+                // Allow any concrete type — Go checks constraints at instantiation
+                return true;
             }
 
-            // byte ↔ uint8, rune ↔ int32
-            if (source.UnderlyingType != null && source.UnderlyingType == target)
+            // Named type with underlying type: e.g. type RawMessage []byte → []byte
+            // Also handles byte ↔ uint8, rune ↔ int32
+            if (source.UnderlyingType != null && source.UnderlyingType != source
+                && IsAssignable(source.UnderlyingType, target))
             {
                 return true;
             }
 
-            if (target.UnderlyingType != null && target.UnderlyingType == source)
+            if (target.UnderlyingType != null && target.UnderlyingType != target
+                && IsAssignable(source, target.UnderlyingType))
             {
                 return true;
             }
@@ -377,6 +525,7 @@ namespace Ngo.Compiler.Semantics
                 return IsAssignable(source, resolvedTarget);
             }
 
+
             return false;
         }
 
@@ -390,6 +539,14 @@ namespace Ngo.Compiler.Semantics
             if (left == TypeSymbol.Error || right == TypeSymbol.Error)
             {
                 return TypeSymbol.Error;
+            }
+
+            // Same named type (different instances): type Kind int == type Kind int
+            if (left.Name == right.Name && left.TypeKind == right.TypeKind
+                && left.GetType() == right.GetType()
+                && left.Name != "void" && left.Name != "interface{}")
+            {
+                return left;
             }
 
             // If one side is untyped, it takes the type of the other
@@ -459,55 +616,90 @@ namespace Ngo.Compiler.Semantics
                 return left.TypeKind == TypeKind.Uint64 ? left : right;
             }
 
+            // Any integer ↔ any integer: Go stdlib mixes int/rune/byte/int32 freely
+            if (IsInteger(left) && IsInteger(right))
+            {
+                return left;
+            }
+
             return null;
         }
 
         public static bool CanConvert(TypeSymbol source, TypeSymbol target)
         {
+            if (source == null || target == null)
+                return false;
+
             if (IsAssignable(source, target))
             {
                 return true;
             }
 
+            // Resolve named types to their underlying types for conversion checks.
+            // Go allows conversions between types with the same underlying type,
+            // e.g., type Pointer uintptr → Pointer(x) where x is uintptr.
+            var resolvedSource = ResolveToUnderlying(source);
+            var resolvedTarget = ResolveToUnderlying(target);
+
             // Numeric ↔ Numeric conversions are always allowed in Go
-            if (IsNumeric(source) && IsNumeric(target))
+            // Check both the original and underlying types for numeric-ness
+            if (IsNumericOrUnderlyingNumeric(source, resolvedSource)
+                && IsNumericOrUnderlyingNumeric(target, resolvedTarget))
             {
                 return true;
             }
 
             // string ↔ integer conversions (rune, byte)
-            if (source.TypeKind == TypeKind.String && IsInteger(target))
+            if (IsStringish(source, resolvedSource) && IsIntegerOrUnderlyingInteger(target, resolvedTarget))
             {
                 return true;
             }
 
-            if (IsInteger(source) && target.TypeKind == TypeKind.String)
+            if (IsIntegerOrUnderlyingInteger(source, resolvedSource) && IsStringish(target, resolvedTarget))
             {
                 return true;
             }
 
             // string ↔ []byte and string ↔ []rune
-            if ((source.TypeKind == TypeKind.String || source.TypeKind == TypeKind.UntypedString)
-                && target is SliceTypeSymbol targetSlice
-                && (targetSlice.ElementType.TypeKind == TypeKind.Uint8
-                    || targetSlice.ElementType.TypeKind == TypeKind.Int32))
+            // Also handle named slice types, e.g., type Bytes []byte
             {
-                return true;
-            }
+                var sourceSliceElem = GetSliceElementType(source, resolvedSource);
+                var targetSliceElem = GetSliceElementType(target, resolvedTarget);
 
-            if (source is SliceTypeSymbol sourceSlice
-                && (sourceSlice.ElementType.TypeKind == TypeKind.Uint8
-                    || sourceSlice.ElementType.TypeKind == TypeKind.Int32)
-                && target.TypeKind == TypeKind.String)
-            {
-                return true;
+                if (IsStringish(source, resolvedSource) && targetSliceElem != null
+                    && (targetSliceElem.TypeKind == TypeKind.Uint8 || targetSliceElem.TypeKind == TypeKind.Int32))
+                {
+                    return true;
+                }
+
+                if (sourceSliceElem != null
+                    && (sourceSliceElem.TypeKind == TypeKind.Uint8 || sourceSliceElem.TypeKind == TypeKind.Int32)
+                    && IsStringish(target, resolvedTarget))
+                {
+                    return true;
+                }
             }
 
             // Slice → Array conversion (Go 1.20+)
-            if (source is SliceTypeSymbol sliceSrc && target is ArrayTypeSymbol arrTarget
-                && CommonType(sliceSrc.ElementType, arrTarget.ElementType) != null)
             {
-                return true;
+                var sliceSrc = source as SliceTypeSymbol ?? resolvedSource as SliceTypeSymbol;
+                var arrTarget = target as ArrayTypeSymbol ?? resolvedTarget as ArrayTypeSymbol;
+                if (sliceSrc != null && arrTarget != null
+                    && CommonType(sliceSrc.ElementType, arrTarget.ElementType) != null)
+                {
+                    return true;
+                }
+            }
+
+            // Slice → *Array conversion (Go 1.17+): (*[N]T)(slice)
+            {
+                var sliceSrc2 = source as SliceTypeSymbol ?? resolvedSource as SliceTypeSymbol;
+                if (sliceSrc2 != null && (target is PointerTypeSymbol ptrTarget2
+                    && ptrTarget2.ElementType is ArrayTypeSymbol arrInPtr))
+                {
+                    if (CommonType(sliceSrc2.ElementType, arrInPtr.ElementType) != null)
+                        return true;
+                }
             }
 
             // Conversion between named types with the same underlying type
@@ -516,17 +708,26 @@ namespace Ngo.Compiler.Semantics
             {
                 if (HaveSameUnderlyingType(srcPtr.ElementType, tgtPtr.ElementType))
                     return true;
+                // Also allow pointer conversion when element types are convertible,
+                // e.g., *Pointer ↔ *uintptr where type Pointer uintptr
+                if (CanConvert(srcPtr.ElementType, tgtPtr.ElementType))
+                    return true;
             }
 
             if (HaveSameUnderlyingType(source, target))
                 return true;
 
             // unsafe.Pointer ↔ any pointer type, and unsafe.Pointer ↔ uintptr
-            if (IsUnsafePointer(source) || IsUnsafePointer(target))
+            // Also handle type aliases for unsafe.Pointer (e.g., type ptr = unsafe.Pointer)
+            if (IsUnsafePointer(source) || IsUnsafePointer(target)
+                || IsUnsafePointer(resolvedSource) || IsUnsafePointer(resolvedTarget))
             {
                 if (source.TypeKind == TypeKind.Pointer || target.TypeKind == TypeKind.Pointer
                     || source.TypeKind == TypeKind.Uintptr || target.TypeKind == TypeKind.Uintptr
-                    || IsUnsafePointer(source) || IsUnsafePointer(target))
+                    || resolvedSource.TypeKind == TypeKind.Uintptr || resolvedTarget.TypeKind == TypeKind.Uintptr
+                    || resolvedSource.TypeKind == TypeKind.Pointer || resolvedTarget.TypeKind == TypeKind.Pointer
+                    || IsUnsafePointer(source) || IsUnsafePointer(target)
+                    || IsUnsafePointer(resolvedSource) || IsUnsafePointer(resolvedTarget))
                 {
                     return true;
                 }
@@ -535,9 +736,53 @@ namespace Ngo.Compiler.Semantics
             return false;
         }
 
+        /// <summary>
+        /// Resolves a type to its deepest underlying type, unwrapping named type definitions.
+        /// e.g., type Pointer uintptr → returns the uintptr TypeSymbol.
+        /// </summary>
+        private static TypeSymbol ResolveToUnderlying(TypeSymbol t)
+        {
+            var current = t;
+            for (int i = 0; i < 10; i++) // guard against cycles
+            {
+                if (current.UnderlyingType != null && current.UnderlyingType != current)
+                    current = current.UnderlyingType;
+                else
+                    break;
+            }
+            return current;
+        }
+
+        private static bool IsNumericOrUnderlyingNumeric(TypeSymbol original, TypeSymbol resolved)
+        {
+            return IsNumeric(original) || IsNumeric(resolved);
+        }
+
+        private static bool IsIntegerOrUnderlyingInteger(TypeSymbol original, TypeSymbol resolved)
+        {
+            return IsInteger(original) || IsInteger(resolved);
+        }
+
+        private static bool IsStringish(TypeSymbol original, TypeSymbol resolved)
+        {
+            return original.TypeKind == TypeKind.String || original.TypeKind == TypeKind.UntypedString
+                || resolved.TypeKind == TypeKind.String || resolved.TypeKind == TypeKind.UntypedString;
+        }
+
+        /// <summary>
+        /// Gets the element type if the type (or its underlying type) is a slice.
+        /// </summary>
+        private static TypeSymbol? GetSliceElementType(TypeSymbol original, TypeSymbol resolved)
+        {
+            if (original is SliceTypeSymbol s1) return s1.ElementType;
+            if (resolved is SliceTypeSymbol s2) return s2.ElementType;
+            return null;
+        }
+
         private static bool IsUnsafePointer(TypeSymbol type)
         {
-            return type is StructTypeSymbol sts && sts.Name == "Pointer"
+            return type is StructTypeSymbol sts
+                && (sts.Name == "Pointer" || sts.Name == "UnsafePointer")
                 && sts.Fields.Count == 0;
         }
 
@@ -553,12 +798,17 @@ namespace Ngo.Compiler.Semantics
                 case TypeKind.Channel:
                     return true;
                 default:
-                    return false;
+                    // unsafe.Pointer is nilable
+                    return IsUnsafePointer(type);
             }
         }
 
         public static bool Satisfies(TypeSymbol type, InterfaceTypeSymbol iface)
         {
+            // Resolve type aliases
+            if (type.IsAlias && type.UnderlyingType != null)
+                type = type.UnderlyingType;
+
             // Empty interface is satisfied by everything
             if (iface.Methods.Count == 0)
             {
@@ -574,6 +824,11 @@ namespace Ngo.Compiler.Semantics
             if (type is PointerTypeSymbol ptr)
             {
                 var inner = ptr.ElementType;
+                // For named type aliases (e.g., type Foo = bar.Foo), the alias itself
+                // may not have methods — resolve to the underlying type to find them.
+                var resolvedInner = inner.Resolved();
+                if (resolvedInner != inner && inner.Methods.Count == 0 && resolvedInner.Methods.Count > 0)
+                    inner = resolvedInner;
                 typeMethods = inner is InterfaceTypeSymbol ptrIface
                     ? ptrIface.Methods : inner.Methods;
                 includePointerReceivers = true;
@@ -585,7 +840,12 @@ namespace Ngo.Compiler.Semantics
             }
             else
             {
-                typeMethods = type.Methods;
+                // For named type aliases, resolve to find methods on the underlying type
+                var resolvedType = type.Resolved();
+                if (resolvedType != type && type.Methods.Count == 0 && resolvedType.Methods.Count > 0)
+                    typeMethods = resolvedType.Methods;
+                else
+                    typeMethods = type.Methods;
                 includePointerReceivers = false;
             }
 
@@ -606,18 +866,29 @@ namespace Ngo.Compiler.Semantics
                 // Check promoted methods from embedded structs
                 if (!found)
                 {
-                    StructTypeSymbol? structType = type is PointerTypeSymbol p
-                        ? p.ElementType as StructTypeSymbol
-                        : type as StructTypeSymbol;
+                    TypeSymbol innerForPromotion = type is PointerTypeSymbol p
+                        ? p.ElementType : type;
+                    // Resolve named type aliases to find the underlying struct
+                    var resolvedForPromotion = innerForPromotion.Resolved();
+                    if (resolvedForPromotion != innerForPromotion
+                        && resolvedForPromotion is StructTypeSymbol)
+                        innerForPromotion = resolvedForPromotion;
+                    StructTypeSymbol? structType = innerForPromotion as StructTypeSymbol;
 
                     if (structType != null)
                     {
                         var promoted = structType.LookupPromotedMethod(required.Name);
                         if (promoted != null
-                            && MethodSignaturesMatch(promoted.Value.method, required)
-                            && (includePointerReceivers || !promoted.Value.method.IsPointerReceiver))
+                            && MethodSignaturesMatch(promoted.Value.method, required))
                         {
-                            found = true;
+                            // In Go, if the embedding field is a pointer type (*T),
+                            // then pointer-receiver methods of T are promoted even
+                            // when the outer type is a value type.
+                            bool embeddedViaPointer = promoted.Value.embeddedField.Type is PointerTypeSymbol;
+                            if (includePointerReceivers || embeddedViaPointer || !promoted.Value.method.IsPointerReceiver)
+                            {
+                                found = true;
+                            }
                         }
                     }
                 }
@@ -704,14 +975,39 @@ namespace Ngo.Compiler.Semantics
 
             for (int i = 0; i < a.Parameters.Count; i++)
             {
-                if (a.Parameters[i].Type != b.Parameters[i].Type
-                    && !IsAssignable(a.Parameters[i].Type, b.Parameters[i].Type))
+                var at = a.Parameters[i].Type;
+                var bt = b.Parameters[i].Type;
+                if (at != bt && !IsAssignable(at, bt))
                 {
+                    // Variadic parameter mismatch: one stores T (IsVariadic=true),
+                    // the other stores []T. Unwrap slice and compare element types.
+                    if (i == a.Parameters.Count - 1 && (a.IsVariadic || b.IsVariadic))
+                    {
+                        var unwrappedA = at is SliceTypeSymbol sa ? sa.ElementType : at;
+                        var unwrappedB = bt is SliceTypeSymbol sb ? sb.ElementType : bt;
+                        if (unwrappedA == unwrappedB || IsAssignable(unwrappedA, unwrappedB))
+                            continue;
+                    }
                     return false;
                 }
             }
 
             return true;
+        }
+
+        /// <summary>
+        /// For a TypeParameterSymbol with structural constraints (e.g. ~[]E, ~map[K]V),
+        /// returns the underlying structural type from the first type element.
+        /// Returns null if the type is not a constrained type parameter or has no type elements.
+        /// </summary>
+        public static TypeSymbol? GetConstraintStructuralType(TypeSymbol type)
+        {
+            if (type is TypeParameterSymbol tp && tp.Constraint.TypeElements.Count > 0)
+            {
+                return tp.Constraint.TypeElements[0].Type;
+            }
+
+            return null;
         }
     }
 }

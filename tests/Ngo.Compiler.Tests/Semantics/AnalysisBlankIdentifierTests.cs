@@ -31,7 +31,7 @@ public class AnalysisBlankIdentifierTests
     private static AnalysisResult Analyze(string source)
     {
         var tree = SyntaxTree.Parse(source);
-        return SemanticAnalyzer.Analyze(tree);
+        return SemanticAnalyzer.Analyze(tree, new CompilationContext(null));
     }
 
     [TestMethod]

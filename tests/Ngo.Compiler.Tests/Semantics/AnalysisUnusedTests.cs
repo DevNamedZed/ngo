@@ -29,7 +29,7 @@ public class AnalysisUnusedTests
     private static AnalysisResult Analyze(string source)
     {
         var tree = SyntaxTree.Parse(source);
-        return SemanticAnalyzer.Analyze(tree, checkUnused: true);
+        return SemanticAnalyzer.Analyze(tree, new CompilationContext(null), checkUnused: true);
     }
 
     [TestMethod]

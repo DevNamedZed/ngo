@@ -1,0 +1,509 @@
+// -----------------------------------------------------------------------
+// <copyright file="GoReflectValue.cs" company="Ziad">
+//  Copyright 2016 Ziad
+//
+//  Licensed under the Apache License, Version 2.0 (the "License");
+//  you may not use this file except in compliance with the License.
+//  You may obtain a copy of the License at
+//
+//  http://www.apache.org/licenses/LICENSE-2.0
+//
+//  Unless required by applicable law or agreed to in writing, software
+//  distributed under the License is distributed on an "AS IS" BASIS,
+//  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+//  See the License for the specific language governing permissions and
+//  limitations under the License.
+// </copyright>
+// -----------------------------------------------------------------------
+
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Reflection;
+using Ngo.Runtime.Discovery;
+
+namespace Ngo.Runtime.Reflect
+{
+    /// <summary>
+    /// Go reflect.Value — wraps a .NET object with type information.
+    /// </summary>
+    [GoType("struct", Name = "Value", Package = "reflect")]
+    public sealed class GoReflectValue
+    {
+        private object? _value;
+        private readonly GoReflectType _type;
+        private readonly bool _canSet;
+
+        internal GoReflectValue(object? value, GoReflectType type, bool canSet = false)
+        {
+            _value = value;
+            _type = type;
+            _canSet = canSet;
+        }
+
+        // Zero value
+        internal static readonly GoReflectValue InvalidValue = new(null, new GoReflectType(typeof(void), "invalid"), false);
+
+        public long Kind() => _type.Kind();
+
+        public GoReflectType Type() => _type;
+
+        public bool IsValid() => _value != null || _type.Kind() != GoReflectKinds.Invalid;
+
+        public bool IsNil()
+        {
+            return _value == null;
+        }
+
+        public bool IsZero()
+        {
+            if (_value == null) return true;
+            var k = Kind();
+            if (k == GoReflectKinds.Bool) return !(bool)_value;
+            if (k == GoReflectKinds.Int || k == GoReflectKinds.Int64) return (long)_value == 0;
+            if (k == GoReflectKinds.Int32) return (int)_value == 0;
+            if (k == GoReflectKinds.Float64) return (double)_value == 0.0;
+            if (k == GoReflectKinds.Float32) return (float)_value == 0.0f;
+            if (k == GoReflectKinds.String) return (string)_value == "";
+            return false;
+        }
+
+        public object? Interface() => _value;
+
+        public long Int()
+        {
+            if (_value is long l) return l;
+            if (_value is int i) return i;
+            if (_value is short s) return s;
+            if (_value is sbyte sb) return sb;
+            return System.Convert.ToInt64(_value);
+        }
+
+        public double Float()
+        {
+            if (_value is double d) return d;
+            if (_value is float f) return f;
+            return System.Convert.ToDouble(_value);
+        }
+
+        public bool Bool()
+        {
+            if (_value is bool b) return b;
+            throw new GoPanicException("reflect: call of Value.Bool on " + GoReflectKinds.KindToString(Kind()) + " Value");
+        }
+
+        public string String()
+        {
+            if (_value is string s) return s;
+            if (Kind() == GoReflectKinds.Invalid) return "<invalid reflect.Value>";
+            return "<" + _type.String() + " Value>";
+        }
+
+        public long Len()
+        {
+            if (_value is string s) return s.Length;
+            if (_value is ICollection c) return c.Count;
+            // Try Slice<T>.Len property
+            var lenProp = _value?.GetType().GetProperty("Len");
+            if (lenProp != null) return System.Convert.ToInt64(lenProp.GetValue(_value));
+            throw new GoPanicException("reflect: call of Value.Len on " + GoReflectKinds.KindToString(Kind()) + " Value");
+        }
+
+        public GoReflectValue Index(long i)
+        {
+            // Slice<T> — use indexer
+            if (_value != null)
+            {
+                var indexer = _value.GetType().GetProperty("Item");
+                if (indexer != null)
+                {
+                    var elem = indexer.GetValue(_value, new object[] { (int)i });
+                    return new GoReflectValue(elem, new GoReflectType(elem?.GetType() ?? typeof(object)));
+                }
+            }
+            throw new GoPanicException("reflect: call of Value.Index on " + GoReflectKinds.KindToString(Kind()) + " Value");
+        }
+
+        public Slice<GoReflectValue> MapKeys()
+        {
+            if (Kind() != GoReflectKinds.Map || _value == null)
+                throw new GoPanicException("reflect: call of Value.MapKeys on " + GoReflectKinds.KindToString(Kind()) + " Value");
+            // Map<K,V> — use Keys() or iterate
+            var keysMethod = _value.GetType().GetMethod("Keys");
+            if (keysMethod != null)
+            {
+                var keys = (IEnumerable)keysMethod.Invoke(_value, null)!;
+                var result = new List<GoReflectValue>();
+                foreach (var k in keys)
+                    result.Add(new GoReflectValue(k, new GoReflectType(k?.GetType() ?? typeof(object))));
+                return new Slice<GoReflectValue>(result.ToArray());
+            }
+            return new Slice<GoReflectValue>();
+        }
+
+        public GoReflectValue MapIndex(GoReflectValue key)
+        {
+            if (_value == null)
+                return InvalidValue;
+            // Map<K,V> — use Get method
+            var getMethod = _value.GetType().GetMethod("Get");
+            if (getMethod != null)
+            {
+                var val = getMethod.Invoke(_value, new[] { key._value });
+                if (val == null) return InvalidValue;
+                return new GoReflectValue(val, new GoReflectType(val.GetType()));
+            }
+            return InvalidValue;
+        }
+
+        public long NumField()
+        {
+            return _type.NumField();
+        }
+
+        public GoReflectValue Field(long i)
+        {
+            if (Kind() != GoReflectKinds.Struct || _value == null)
+                throw new GoPanicException("reflect: call of Value.Field on " + GoReflectKinds.KindToString(Kind()) + " Value");
+            var fields = _value.GetType().GetFields(BindingFlags.Public | BindingFlags.Instance);
+            if (i < 0 || i >= fields.Length)
+                throw new GoPanicException("reflect: Field index out of range");
+            var f = fields[(int)i];
+            var val = f.GetValue(_value);
+            return new GoReflectValue(val, new GoReflectType(f.FieldType), _canSet);
+        }
+
+        public GoReflectValue FieldByName(string name)
+        {
+            if (Kind() != GoReflectKinds.Struct || _value == null)
+                throw new GoPanicException("reflect: call of Value.FieldByName on " + GoReflectKinds.KindToString(Kind()) + " Value");
+            var f = _value.GetType().GetField(name, BindingFlags.Public | BindingFlags.Instance);
+            if (f == null) return InvalidValue;
+            var val = f.GetValue(_value);
+            return new GoReflectValue(val, new GoReflectType(f.FieldType), _canSet);
+        }
+
+        public GoReflectValue MethodByName(string name)
+        {
+            if (_value == null) return InvalidValue;
+            var m = _value.GetType().GetMethod(name, BindingFlags.Public | BindingFlags.Instance);
+            if (m == null) return InvalidValue;
+            // Return a Value wrapping the method as a delegate-like
+            return new GoReflectValue(m, new GoReflectType(typeof(Delegate), "func"), false);
+        }
+
+        public Slice<GoReflectValue> Call(Slice<GoReflectValue> args)
+        {
+            if (_value is MethodInfo m)
+            {
+                // We need the target — this is only for method values
+                throw new GoPanicException("reflect: call of Value.Call requires method value");
+            }
+            if (_value is Delegate d)
+            {
+                var parameters = new object?[args.Len];
+                for (int i = 0; i < args.Len; i++)
+                    parameters[i] = args[i].Interface();
+                var result = d.DynamicInvoke(parameters);
+                if (result == null)
+                    return new Slice<GoReflectValue>();
+                return new Slice<GoReflectValue>(new[] { GoReflect.ValueOf(result) });
+            }
+            throw new GoPanicException("reflect: call of Value.Call on " + GoReflectKinds.KindToString(Kind()) + " Value");
+        }
+
+        public GoReflectValue Elem()
+        {
+            var k = Kind();
+            if (k == GoReflectKinds.Pointer)
+            {
+                if (_value == null) throw new GoPanicException("reflect: call of Value.Elem on nil Ptr Value");
+                // Ptr<T> — get Value
+                var valProp = _value.GetType().GetProperty("Value");
+                if (valProp != null)
+                {
+                    var inner = valProp.GetValue(_value);
+                    return new GoReflectValue(inner, new GoReflectType(inner?.GetType() ?? typeof(object)), true);
+                }
+                return new GoReflectValue(_value, new GoReflectType(_value.GetType()), true);
+            }
+            if (k == GoReflectKinds.Interface)
+            {
+                if (_value == null) return InvalidValue;
+                return new GoReflectValue(_value, new GoReflectType(_value.GetType()), false);
+            }
+            throw new GoPanicException("reflect: call of Value.Elem on " + GoReflectKinds.KindToString(k) + " Value");
+        }
+
+        public bool CanSet() => _canSet;
+        public bool CanInterface() => true;
+
+        public void Set(GoReflectValue x)
+        {
+            if (!_canSet)
+                throw new GoPanicException("reflect: call of Value.Set on unaddressable Value");
+            _value = x._value;
+        }
+
+        public void SetInt(long x)
+        {
+            if (!_canSet)
+                throw new GoPanicException("reflect: call of Value.SetInt on unaddressable Value");
+            _value = x;
+        }
+
+        public void SetFloat(double x)
+        {
+            if (!_canSet)
+                throw new GoPanicException("reflect: call of Value.SetFloat on unaddressable Value");
+            _value = x;
+        }
+
+        public void SetString(string x)
+        {
+            if (!_canSet)
+                throw new GoPanicException("reflect: call of Value.SetString on unaddressable Value");
+            _value = x;
+        }
+
+        public void SetBool(bool x)
+        {
+            if (!_canSet)
+                throw new GoPanicException("reflect: call of Value.SetBool on unaddressable Value");
+            _value = x;
+        }
+
+        [GoMethod]
+        public void SetUint(long x)
+        {
+            if (!_canSet)
+                throw new GoPanicException("reflect: call of Value.SetUint on unaddressable Value");
+            _value = x;
+        }
+
+        [GoMethod]
+        public void SetComplex(object x)
+        {
+            if (!_canSet)
+                throw new GoPanicException("reflect: call of Value.SetComplex on unaddressable Value");
+            _value = x;
+        }
+
+        [GoMethod]
+        public void SetMapIndex(GoReflectValue key, GoReflectValue val)
+        {
+            if (_value == null)
+                throw new GoPanicException("reflect: call of Value.SetMapIndex on nil Value");
+            var setMethod = _value.GetType().GetMethod("Set");
+            if (setMethod != null)
+            {
+                setMethod.Invoke(_value, new[] { key._value, val._value });
+            }
+        }
+
+        [GoMethod]
+        public void SetZero()
+        {
+            if (!_canSet)
+                throw new GoPanicException("reflect: call of Value.SetZero on unaddressable Value");
+            var k = Kind();
+            if (k == GoReflectKinds.Bool) _value = false;
+            else if (k == GoReflectKinds.Int || k == GoReflectKinds.Int64) _value = 0L;
+            else if (k == GoReflectKinds.Float64) _value = 0.0;
+            else if (k == GoReflectKinds.String) _value = "";
+            else _value = null;
+        }
+
+        [GoMethod]
+        public long Uint()
+        {
+            if (_value is long l) return l;
+            if (_value is ulong ul) return (long)ul;
+            if (_value is uint ui) return (long)ui;
+            if (_value is ushort us) return (long)us;
+            if (_value is byte b) return (long)b;
+            return System.Convert.ToInt64(_value);
+        }
+
+        [GoMethod]
+        public long Pointer()
+        {
+            return 0; // stub
+        }
+
+        [GoMethod]
+        public long UnsafePointer()
+        {
+            return 0; // stub
+        }
+
+        [GoMethod]
+        public GoReflectValue Addr()
+        {
+            return new GoReflectValue(_value, new GoReflectType(typeof(Ptr<>), "*" + _type.String()), false);
+        }
+
+        [GoMethod]
+        public long Cap()
+        {
+            if (_value != null)
+            {
+                var capProp = _value.GetType().GetProperty("Cap");
+                if (capProp != null) return System.Convert.ToInt64(capProp.GetValue(_value));
+            }
+            throw new GoPanicException("reflect: call of Value.Cap on " + GoReflectKinds.KindToString(Kind()) + " Value");
+        }
+
+        [GoMethod]
+        public GoReflectValue Slice(long i, long j)
+        {
+            return this; // stub
+        }
+
+        [GoMethod]
+        public GoReflectValue Slice3(long i, long j, long k)
+        {
+            return this; // stub
+        }
+
+        [GoMethod]
+        public (GoReflectValue, bool) Recv()
+        {
+            return (GoReflectValue.InvalidValue, false); // stub
+        }
+
+        [GoMethod]
+        public void Send(GoReflectValue x) { } // stub
+
+        [GoMethod]
+        public long NumMethod()
+        {
+            return _type.NumMethod();
+        }
+
+        [GoMethod]
+        public GoReflectValue Convert(GoReflectType t)
+        {
+            return new GoReflectValue(_value, t, _canSet);
+        }
+
+        [GoMethod]
+        public bool CanAddr() => _canSet;
+
+        [GoMethod]
+        public bool CanConvert(GoReflectType t) => true; // stub
+
+        [GoMethod]
+        public bool OverflowInt(long x) => false;
+
+        [GoMethod]
+        public bool OverflowUint(long x) => false;
+
+        [GoMethod]
+        public bool OverflowFloat(double x) => false;
+
+        [GoMethod]
+        public bool OverflowComplex(object x) => false;
+
+        [GoMethod]
+        [return: GoReturn("complex128")]
+        public long Complex() => 0; // stub — complex numbers
+
+        [GoMethod]
+        public void SetLen(long n) { } // stub
+
+        [GoMethod]
+        public void SetCap(long n) { } // stub
+
+        [GoMethod]
+        public Slice<byte> Bytes()
+        {
+            if (_value is Slice<byte> sb) return sb;
+            if (_value is byte[] ba) return new Slice<byte>(ba);
+            throw new GoPanicException("reflect: call of Value.Bytes on " + GoReflectKinds.KindToString(Kind()) + " Value");
+        }
+
+        [GoMethod]
+        public void SetBytes(Slice<byte> x)
+        {
+            _value = x;
+        }
+
+        [GoMethod]
+        public GoReflectValue FieldByIndex(Slice<long> index)
+        {
+            var v = this;
+            for (int i = 0; i < index.Len; i++)
+                v = v.Field(index[i]);
+            return v;
+        }
+
+        [GoMethod]
+        public (GoReflectValue, object?) FieldByIndexErr(Slice<long> index)
+        {
+            try
+            {
+                return (FieldByIndex(index), null);
+            }
+            catch (Exception ex)
+            {
+                return (GoReflectValue.InvalidValue, ex.Message);
+            }
+        }
+
+        [GoMethod]
+        public (GoReflectValue, bool) FieldByNameFunc(Func<string, bool> match)
+        {
+            return (GoReflectValue.InvalidValue, false);
+        }
+
+        [GoMethod]
+        public GoReflectValue Method(long i)
+        {
+            return GoReflectValue.InvalidValue; // stub
+        }
+
+        [GoMethod]
+        public GoReflectMapIter MapRange()
+        {
+            return new GoReflectMapIter();
+        }
+
+        [GoMethod]
+        public void Grow(long n) { } // stub — pre-allocates slice capacity
+
+        [GoMethod]
+        public bool CanFloat() => Kind() == GoReflectKinds.Float32 || Kind() == GoReflectKinds.Float64;
+        [GoMethod]
+        public bool CanInt() => Kind() >= GoReflectKinds.Int && Kind() <= GoReflectKinds.Int64;
+        [GoMethod]
+        public bool CanUint() => Kind() >= GoReflectKinds.Uint && Kind() <= GoReflectKinds.Uint64;
+        [GoMethod]
+        public bool CanComplex() => Kind() == GoReflectKinds.Complex64 || Kind() == GoReflectKinds.Complex128;
+
+        [GoMethod]
+        public long UnsafeAddr()
+        {
+            return 0; // stub — no real pointer support in .NET
+        }
+
+        [GoMethod]
+        public Slice<GoReflectValue> CallSlice(Slice<GoReflectValue> args)
+        {
+            // stub — like Call but last arg is a slice
+            return Call(args);
+        }
+
+        [GoMethod]
+        public GoReflectValue Resolve()
+        {
+            return this; // stub
+        }
+
+        public override string ToString()
+        {
+            if (_value == null) return "<nil>";
+            return _value.ToString() ?? "";
+        }
+    }
+}

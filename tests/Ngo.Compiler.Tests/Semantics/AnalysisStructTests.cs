@@ -31,7 +31,7 @@ public class AnalysisStructTests
     private static AnalysisResult Analyze(string source)
     {
         var tree = SyntaxTree.Parse(source);
-        return SemanticAnalyzer.Analyze(tree);
+        return SemanticAnalyzer.Analyze(tree, new CompilationContext(null));
     }
 
     [TestMethod]
@@ -392,5 +392,43 @@ type Point struct {
         Assert.IsFalse(result.HasErrors);
         var fn = result.Root.Functions[0];
         Assert.IsInstanceOfType<StructTypeSymbol>(fn.Symbol.ReturnType);
+    }
+
+    [TestMethod]
+    public void Positional_composite_literal_with_multiname_fields()
+    {
+        var result = Analyze(@"package main
+type Point struct {
+    X, Y int
+}
+type Rectangle struct {
+    Min, Max Point
+}
+func main() {
+    r := Rectangle{Point{1, 2}, Point{3, 4}}
+    _ = r
+}");
+        Assert.IsFalse(result.HasErrors, string.Join("; ", result.Errors.Select(e => e.Message)));
+    }
+
+    [TestMethod]
+    public void Positional_composite_literal_multifile()
+    {
+        var tree1 = SyntaxTree.Parse(@"package image
+type Point struct {
+    X, Y int
+}
+type Rectangle struct {
+    Min, Max Point
+}
+func Rect(x0, y0, x1, y1 int) Rectangle {
+    return Rectangle{Point{x0, y0}, Point{x1, y1}}
+}
+");
+        var tree2 = SyntaxTree.Parse(@"package image
+func Bounds() Rectangle { return Rectangle{Point{0, 0}, Point{100, 100}} }
+");
+        var result = SemanticAnalyzer.Analyze(new[] { tree1, tree2 }, new CompilationContext(null));
+        Assert.IsFalse(result.HasErrors, string.Join("; ", result.Errors.Select(e => e.Message)));
     }
 }

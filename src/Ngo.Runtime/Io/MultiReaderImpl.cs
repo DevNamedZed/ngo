@@ -1,0 +1,45 @@
+// -----------------------------------------------------------------------
+// <copyright file="MultiReaderImpl.cs" company="Ziad">
+//  Copyright 2016 Ziad
+//
+//  Licensed under the Apache License, Version 2.0 (the "License");
+//  you may not use this file except in compliance with the License.
+//  You may obtain a copy of the License at
+//
+//  http://www.apache.org/licenses/LICENSE-2.0
+//
+//  Unless required by applicable law or agreed to in writing, software
+//  distributed under the License is distributed on an "AS IS" BASIS,
+//  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+//  See the License for the specific language governing permissions and
+//  limitations under the License.
+// </copyright>
+// -----------------------------------------------------------------------
+
+namespace Ngo.Runtime.Io
+{
+    /// <summary>A Reader that concatenates multiple readers (io.MultiReader).</summary>
+    public sealed class MultiReaderImpl : IGoReader
+    {
+        private readonly IGoReader[] _readers;
+        private int _current;
+
+        public MultiReaderImpl(IGoReader[] readers)
+        {
+            _readers = readers;
+            _current = 0;
+        }
+
+        public (int, string) Read(Slice<byte> p)
+        {
+            while (_current < _readers.Length)
+            {
+                var (n, err) = _readers[_current].Read(p);
+                if (n > 0 || err != GoIo.EOF)
+                    return (n, err);
+                _current++;
+            }
+            return (0, GoIo.EOF);
+        }
+    }
+}

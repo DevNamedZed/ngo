@@ -32,9 +32,10 @@ public class LibraryEmitTests
     private static Assembly EmitLibrary(string goSource, EmitOptions? options = null)
     {
         var tree = SyntaxTree.Parse(goSource);
-        var result = SemanticAnalyzer.Analyze(tree);
+        var ctx = new CompilationContext(null);
+        var result = SemanticAnalyzer.Analyze(tree, ctx);
         Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
-        return AssemblyEmitter.Emit(result, "TestLib", options);
+        return AssemblyEmitter.Emit(result, ctx, "TestLib", options);
     }
 
     [TestMethod]

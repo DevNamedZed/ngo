@@ -39,7 +39,7 @@ namespace Ngo.Runtime
         {
             if (s == null) return 0;
             if (System.Text.Ascii.IsValid(s)) return s.Length;
-            return Encoding.UTF8.GetByteCount(s);
+            return global::System.Text.Encoding.UTF8.GetByteCount(s);
         }
 
         /// <summary>Go s[i] — returns the i-th UTF-8 byte.</summary>
@@ -80,9 +80,9 @@ namespace Ngo.Runtime
                 return new Slice<byte>(bytes);
             }
 
-            var byteCount = Encoding.UTF8.GetByteCount(s);
+            var byteCount = global::System.Text.Encoding.UTF8.GetByteCount(s);
             var arr = new byte[byteCount];
-            Encoding.UTF8.TryGetBytes(s.AsSpan(), arr, out _);
+            global::System.Text.Encoding.UTF8.TryGetBytes(s.AsSpan(), arr, out _);
             return new Slice<byte>(arr);
         }
 
@@ -90,7 +90,7 @@ namespace Ngo.Runtime
         public static string FromBytes(Slice<byte> bytes)
         {
             if (bytes.IsNil) return "";
-            return Encoding.UTF8.GetString(bytes.AsReadOnlySpan());
+            return global::System.Text.Encoding.UTF8.GetString(bytes.AsReadOnlySpan());
         }
 
         /// <summary>Convert string to []rune (Unicode code points).</summary>
@@ -168,7 +168,7 @@ namespace Ngo.Runtime
                 return s.Substring(low, high - low);
             }
 
-            var byteCount = Encoding.UTF8.GetByteCount(s);
+            var byteCount = global::System.Text.Encoding.UTF8.GetByteCount(s);
             if (low < 0 || high < low || high > byteCount)
                 throw new GoPanicException($"runtime error: slice bounds out of range [{low}:{high}] with length {byteCount}");
 
@@ -179,8 +179,8 @@ namespace Ngo.Runtime
                     ? stackalloc byte[byteCount]
                     : (rented = ArrayPool<byte>.Shared.Rent(byteCount)).AsSpan(0, byteCount);
 
-                Encoding.UTF8.GetBytes(s.AsSpan(), buffer);
-                return Encoding.UTF8.GetString(buffer.Slice(low, high - low));
+                global::System.Text.Encoding.UTF8.GetBytes(s.AsSpan(), buffer);
+                return global::System.Text.Encoding.UTF8.GetString(buffer.Slice(low, high - low));
             }
             finally
             {

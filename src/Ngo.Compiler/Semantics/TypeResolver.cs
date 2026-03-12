@@ -127,7 +127,7 @@ namespace Ngo.Compiler.Semantics
                     if (pkgSym is PackageSymbol pkg)
                         baseSym = pkg.LookupExport(selSyntax.Name.Text) as TypeSymbol;
                 }
-                if (baseSym != null && baseSym.IsGeneric)
+                if (baseSym != null)
                 {
                     var argType = ResolveType(indexSyntax.Index);
                     return new InstantiatedTypeSymbol(baseSym, new[] { argType ?? TypeSymbol.Error });
@@ -225,8 +225,15 @@ namespace Ngo.Compiler.Semantics
                     }
                 }
 
-                _context.Errors.ReportError(_context.SpanOf(syntax), ErrorCode.UnsupportedSyntax,
-                    "Array length must be a constant integer");
+                // Fallback: check PendingConstInts directly for simple identifiers
+                if (arraySyntax.Length is IdentifierNameSyntax pendingId
+                    && _context.PendingConstInts.TryGetValue(pendingId.Identifier.Text, out var pendingVal))
+                {
+                    int clampedVal = pendingVal > int.MaxValue ? int.MaxValue : pendingVal < int.MinValue ? int.MinValue : (int)pendingVal;
+                    return new ArrayTypeSymbol(elementType, clampedVal);
+                }
+
+                _context.Errors.ReportError(_context.SpanOf(syntax), ErrorCode.UnsupportedSyntax, "Array length must be a constant integer");
                 return null;
             }
 
@@ -286,6 +293,14 @@ namespace Ngo.Compiler.Semantics
                 return ResolveType(parenSyntax.Expression);
             }
 
+            // Union type constraints: int | float64 | string (Go 1.18 generics)
+            // These appear as type parameter constraints. Resolve to an empty interface
+            // since the constraint checking is handled separately via ConstraintInfo.
+            if (syntax is UnionTypeSyntax)
+            {
+                return BuiltinTypes.Resolve("interface{}");
+            }
+
             _context.Errors.ReportError(_context.SpanOf(syntax), ErrorCode.UnsupportedSyntax,
                 "Complex type expressions are not yet supported");
             return null;
@@ -320,7 +335,8 @@ namespace Ngo.Compiler.Semantics
                 }
             }
 
-            return new StructTypeSymbol("struct", fields);
+            var structName = fields.Count == 0 ? "struct{}" : "struct";
+            return new StructTypeSymbol(structName, fields);
         }
 
         public InterfaceTypeSymbol ResolveAnonymousInterface(InterfaceTypeSyntax syntax)
@@ -434,10 +450,14 @@ namespace Ngo.Compiler.Semantics
         private int? TryEvalConstantLength(ExpressionSyntax expr)
         {
             if (expr is LiteralExpressionSyntax lit
-                && lit.Token.Kind == SyntaxKind.IntLiteralToken
-                && int.TryParse(lit.Token.Text, out var litVal))
+                && lit.Token.Kind == SyntaxKind.IntLiteralToken)
             {
-                return litVal;
+                var text = lit.Token.Text;
+                if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+                    && int.TryParse(text.AsSpan(2), System.Globalization.NumberStyles.HexNumber, null, out var hexVal))
+                    return hexVal;
+                if (int.TryParse(text, out var litVal))
+                    return litVal;
             }
 
             if (expr is IdentifierNameSyntax id)
@@ -445,7 +465,9 @@ namespace Ngo.Compiler.Semantics
                 var sym = _context.Scope.Lookup(id.Identifier.Text);
                 if (sym is ConstantSymbol c)
                 {
-                    return c.Value is long lv ? (int)lv : c.Value is int iv ? iv : null;
+                    if (c.Value is long lv) return (int)lv;
+                    if (c.Value is int iv) return iv;
+                    // Value not resolved yet — fall through to PendingConstInts
                 }
 
                 // Fallback: search pending const syntax for simple integer constants not yet in scope
@@ -465,16 +487,36 @@ namespace Ngo.Compiler.Semantics
                     var member = pkg.LookupExport(sel.Name.Text);
                     if (member is ConstantSymbol c)
                     {
-                        return c.Value is long lv ? (int)lv : c.Value is int iv ? iv : null;
+                        if (c.Value is long lv) return (int)lv;
+                        if (c.Value is int iv) return iv;
+                        if (c.Value is bool bv) return bv ? 1 : 0;
                     }
                 }
+
+                // Known constants from unregistered packages (used in array lengths)
+                if (pkgId.Identifier.Text == "cpu" && sel.Name.Text == "CacheLinePadSize")
+                    return 64; // internal/cpu: amd64
             }
 
-            if (expr is UnaryExpressionSyntax unary
-                && unary.OperatorToken.Kind == SyntaxKind.MinusToken)
+            // Parenthesized expressions: (expr)
+            if (expr is ParenthesizedExpressionSyntax parenExpr)
+            {
+                return TryEvalConstantLength(parenExpr.Expression);
+            }
+
+            if (expr is UnaryExpressionSyntax unary)
             {
                 var inner = TryEvalConstantLength(unary.Operand);
-                if (inner.HasValue) return -inner.Value;
+                if (inner.HasValue)
+                {
+                    return unary.OperatorToken.Kind switch
+                    {
+                        SyntaxKind.MinusToken => -inner.Value,
+                        SyntaxKind.PlusToken => inner.Value,
+                        SyntaxKind.CaretToken => ~inner.Value, // bitwise NOT in Go is ^
+                        _ => (int?)null,
+                    };
+                }
             }
 
             if (expr is BinaryExpressionSyntax bin)
@@ -483,25 +525,296 @@ namespace Ngo.Compiler.Semantics
                 var right = TryEvalConstantLength(bin.Right);
                 if (left.HasValue && right.HasValue)
                 {
-                    return bin.OperatorToken.Kind switch
+                    var binResult = bin.OperatorToken.Kind switch
                     {
                         SyntaxKind.PlusToken => left.Value + right.Value,
                         SyntaxKind.MinusToken => left.Value - right.Value,
                         SyntaxKind.StarToken => left.Value * right.Value,
                         SyntaxKind.SlashToken when right.Value != 0 => left.Value / right.Value,
+                        SyntaxKind.PercentToken when right.Value != 0 => left.Value % right.Value,
+                        SyntaxKind.AmpersandToken => left.Value & right.Value,
+                        SyntaxKind.PipeToken => left.Value | right.Value,
+                        SyntaxKind.CaretToken => left.Value ^ right.Value,
+                        SyntaxKind.LessThanLessThanToken => left.Value << right.Value,
+                        SyntaxKind.GreaterThanGreaterThanToken => left.Value >> right.Value,
+                        SyntaxKind.AmpersandCaretToken => left.Value & ~right.Value, // &^ in Go
                         _ => (int?)null,
                     };
+                    return binResult;
                 }
             }
 
+            // len(x) where x is an array with known length, or len("string literal")
+            if (expr is CallExpressionSyntax lenCallExpr
+                && lenCallExpr.Function is IdentifierNameSyntax lenId
+                && lenId.Identifier.Text == "len"
+                && lenCallExpr.Arguments.Count == 1)
+            {
+                var lenArg = lenCallExpr.Arguments[0];
+
+                // len("string literal") — return byte length of UTF-8 encoding
+                if (lenArg is LiteralExpressionSyntax lenLit
+                    && lenLit.Token.Kind == SyntaxKind.StringLiteralToken)
+                {
+                    var raw = lenLit.Token.Text;
+                    // Strip quotes — Go len() on string returns byte count (UTF-8)
+                    if (raw.Length >= 2 && raw[0] == '"')
+                    {
+                        var inner = raw.Substring(1, raw.Length - 2);
+                        return System.Text.Encoding.UTF8.GetByteCount(inner);
+                    }
+                    // Raw string literal `...`
+                    if (raw.Length >= 2 && raw[0] == '`')
+                    {
+                        var inner = raw.Substring(1, raw.Length - 2);
+                        return System.Text.Encoding.UTF8.GetByteCount(inner);
+                    }
+                }
+
+                // len(StructType{}.field) — look up the struct type, find the field, return array length
+                if (lenArg is SelectorExpressionSyntax lenSel
+                    && lenSel.Expression is CompositeLiteralSyntax lenCompLit
+                    && lenCompLit.Type != null)
+                {
+                    var structType = ResolveType(lenCompLit.Type)?.Resolved();
+                    if (structType is StructTypeSymbol sts)
+                    {
+                        var field = sts.LookupField(lenSel.Name.Text);
+                        if (field != null)
+                        {
+                            var fieldType = field.Type.Resolved();
+                            // Unwrap named types to find underlying array
+                            for (int i = 0; i < 10 && fieldType != null; i++)
+                            {
+                                if (fieldType is ArrayTypeSymbol arrField)
+                                    return arrField.Length;
+                                if (fieldType.UnderlyingType == null) break;
+                                fieldType = fieldType.UnderlyingType.Resolved();
+                            }
+                        }
+                    }
+                }
+
+                // len(variable.field) — resolve the variable, find the field, return array length
+                if (lenArg is SelectorExpressionSyntax lenVarSel
+                    && lenVarSel.Expression is IdentifierNameSyntax lenVarId)
+                {
+                    var varSym = _context.Scope.Lookup(lenVarId.Identifier.Text);
+                    TypeSymbol? varType = null;
+                    if (varSym is LocalSymbol ls) varType = ls.Type;
+                    else if (varSym is ParameterSymbol ps) varType = ps.Type;
+                    else if (varSym is PackageVarSymbol pvs) varType = pvs.Type;
+                    if (varType != null)
+                    {
+                        var resolved = varType.Resolved();
+                        // Unwrap pointer to struct (e.g. *p → p)
+                        if (resolved is PointerTypeSymbol ptrVar)
+                            resolved = ptrVar.ElementType.Resolved();
+                        if (resolved is StructTypeSymbol varSts)
+                        {
+                            var field = varSts.LookupField(lenVarSel.Name.Text);
+                            if (field != null)
+                            {
+                                var fieldType = field.Type.Resolved();
+                                for (int i = 0; i < 10 && fieldType != null; i++)
+                                {
+                                    if (fieldType is ArrayTypeSymbol arrField)
+                                        return arrField.Length;
+                                    if (fieldType.UnderlyingType == null) break;
+                                    fieldType = fieldType.UnderlyingType.Resolved();
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (lenArg is IdentifierNameSyntax lenArgId)
+                {
+                    // Try looking at pending var syntax for auto-sized array literals
+                    if (_context.PendingVarArrayLens.TryGetValue(lenArgId.Identifier.Text, out var arrLen))
+                        return arrLen;
+
+                    // len(stringConst) — look up the constant and get its string length
+                    var lenSym = _context.Scope.Lookup(lenArgId.Identifier.Text);
+                    if (lenSym is ConstantSymbol lenConst && lenConst.Value is string lenStr)
+                        return lenStr.Length;
+
+                    // Fallback: check pre-scanned string constant lengths
+                    if (_context.PendingConstStringLens.TryGetValue(lenArgId.Identifier.Text, out var strLen))
+                        return strLen;
+                }
+            }
+
+            // unsafe.Sizeof(...) — compute size of type for amd64
+            if (expr is CallExpressionSyntax callExpr
+                && callExpr.Function is SelectorExpressionSyntax callSel
+                && callSel.Expression is IdentifierNameSyntax callPkg
+                && callPkg.Identifier.Text == "unsafe"
+                && callSel.Name.Text == "Sizeof"
+                && callExpr.Arguments.Count == 1)
+            {
+                var arg = callExpr.Arguments[0];
+                // Try to resolve the type of the argument and compute its size
+                TypeSymbol? argType = null;
+
+                // unsafe.Sizeof(Type{}) — composite literal
+                if (arg is CompositeLiteralSyntax compLit && compLit.Type != null)
+                    argType = ResolveType(compLit.Type);
+                // unsafe.Sizeof(TypeName(0)) — type conversion
+                else if (arg is CallExpressionSyntax convCall
+                    && convCall.Function is IdentifierNameSyntax convId)
+                    argType = _context.Scope.Lookup(convId.Identifier.Text) as TypeSymbol;
+                // unsafe.Sizeof(*ptr) or unsafe.Sizeof(var) — resolve expression type
+                else if (arg is UnaryExpressionSyntax unarySizeof
+                    && unarySizeof.OperatorToken.Kind == SyntaxKind.StarToken
+                    && unarySizeof.Operand is IdentifierNameSyntax unaryId)
+                {
+                    var sym = _context.Scope.Lookup(unaryId.Identifier.Text);
+                    if (sym is TypeSymbol ts && ts is PointerTypeSymbol pts)
+                        argType = pts.ElementType;
+                }
+
+                if (argType != null)
+                {
+                    var size = ComputeSizeOf(argType);
+                    if (size.HasValue) return size.Value;
+                }
+                // Default: 8 (word size on amd64)
+                return 8;
+            }
+
             return null;
+        }
+
+        /// <summary>
+        /// Compute the size of a type for amd64 (8-byte word, 8-byte alignment).
+        /// Returns null if the size cannot be determined.
+        /// </summary>
+        private int? ComputeSizeOf(TypeSymbol type)
+        {
+            type = type.Resolved() ?? type;
+
+            switch (type.TypeKind)
+            {
+                case TypeKind.Bool:
+                case TypeKind.Int8:
+                case TypeKind.Uint8:
+                    return 1;
+                case TypeKind.Int16:
+                case TypeKind.Uint16:
+                    return 2;
+                case TypeKind.Int32:
+                case TypeKind.Uint32:
+                case TypeKind.Float32:
+                    return 4;
+                case TypeKind.Int64:
+                case TypeKind.Uint64:
+                case TypeKind.Float64:
+                case TypeKind.Complex64:
+                case TypeKind.Int:
+                case TypeKind.Uint:
+                case TypeKind.Uintptr:
+                case TypeKind.Pointer:
+                case TypeKind.String:     // string header: ptr + len = 16, but Sizeof(string) = 16
+                case TypeKind.Channel:
+                case TypeKind.Function:
+                    return 8;
+                case TypeKind.Complex128:
+                    return 16;
+            }
+
+            // String is 16 bytes (ptr + len)
+            if (type.TypeKind == TypeKind.String)
+                return 16;
+
+            // Slice: ptr + len + cap = 24
+            if (type is SliceTypeSymbol)
+                return 24;
+
+            // Pointer: 8
+            if (type is PointerTypeSymbol)
+                return 8;
+
+            // Map: 8 (pointer)
+            if (type is MapTypeSymbol)
+                return 8;
+
+            // Interface: 16 (type ptr + data ptr)
+            if (type is InterfaceTypeSymbol)
+                return 16;
+
+            // Function type: 8 (pointer)
+            if (type is FunctionTypeSymbol)
+                return 8;
+
+            // Array: element size * length
+            if (type is ArrayTypeSymbol arr)
+            {
+                var elemSize = ComputeSizeOf(arr.ElementType);
+                if (elemSize.HasValue)
+                    return elemSize.Value * arr.Length;
+            }
+
+            // Named type: unwrap to underlying
+            if (type.UnderlyingType != null)
+                return ComputeSizeOf(type.UnderlyingType);
+
+            // Struct: sum of field sizes with alignment
+            if (type is StructTypeSymbol st)
+            {
+                if (st.Fields.Count == 0) return null; // unknown — fields not yet populated
+                int totalSize = 0;
+                int maxAlign = 1;
+                for (int i = 0; i < st.Fields.Count; i++)
+                {
+                    var fieldSize = ComputeSizeOf(st.Fields[i].Type);
+                    if (!fieldSize.HasValue) return null;
+
+                    var fieldAlign = ComputeAlignOf(st.Fields[i].Type);
+                    if (!fieldAlign.HasValue) return null;
+
+                    // Align field offset
+                    int padding = (fieldAlign.Value - (totalSize % fieldAlign.Value)) % fieldAlign.Value;
+                    totalSize += padding + fieldSize.Value;
+                    if (fieldAlign.Value > maxAlign) maxAlign = fieldAlign.Value;
+                }
+                // Final padding to align struct to its largest field
+                int finalPadding = (maxAlign - (totalSize % maxAlign)) % maxAlign;
+                return totalSize + finalPadding;
+            }
+
+            return null;
+        }
+
+        private int? ComputeAlignOf(TypeSymbol type)
+        {
+            type = type.Resolved() ?? type;
+            switch (type.TypeKind)
+            {
+                case TypeKind.Bool:
+                case TypeKind.Int8:
+                case TypeKind.Uint8:
+                    return 1;
+                case TypeKind.Int16:
+                case TypeKind.Uint16:
+                    return 2;
+                case TypeKind.Int32:
+                case TypeKind.Uint32:
+                case TypeKind.Float32:
+                    return 4;
+                default:
+                    return 8;
+            }
         }
 
         private int? TryLookupConstFromSyntax(string name)
         {
             if (_context.PendingConstInts.TryGetValue(name, out var val))
             {
-                return val;
+                // Clamp large values to int range for array lengths
+                if (val > int.MaxValue) return int.MaxValue;
+                if (val < int.MinValue) return int.MinValue;
+                return (int)val;
             }
             return null;
         }

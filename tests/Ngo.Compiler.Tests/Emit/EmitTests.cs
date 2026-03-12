@@ -31,11 +31,12 @@ public class EmitTests
     private static string Run(string goSource)
     {
         var tree = SyntaxTree.Parse(goSource);
-        var result = SemanticAnalyzer.Analyze(tree);
+        var ctx = new CompilationContext(null);
+        var result = SemanticAnalyzer.Analyze(tree, ctx);
 
         Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
 
-        var assembly = AssemblyEmitter.Emit(result);
+        var assembly = AssemblyEmitter.Emit(result, ctx);
         var entryPoint = AssemblyEmitter.FindEntryPoint(assembly);
         Assert.IsNotNull(entryPoint);
 
@@ -51,17 +52,18 @@ public class EmitTests
             Console.SetOut(oldOut);
         }
 
-        return sw.ToString();
+        return sw.ToString().Replace("\r\n", "\n");
     }
 
     private static (string stdout, string stderr) RunWithStderr(string goSource)
     {
         var tree = SyntaxTree.Parse(goSource);
-        var result = SemanticAnalyzer.Analyze(tree);
+        var ctx = new CompilationContext(null);
+        var result = SemanticAnalyzer.Analyze(tree, ctx);
 
         Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
 
-        var assembly = AssemblyEmitter.Emit(result);
+        var assembly = AssemblyEmitter.Emit(result, ctx);
         var entryPoint = AssemblyEmitter.FindEntryPoint(assembly);
         Assert.IsNotNull(entryPoint);
 
@@ -81,7 +83,7 @@ public class EmitTests
             Console.SetError(oldErr);
         }
 
-        return (swOut.ToString(), swErr.ToString());
+        return (swOut.ToString().Replace("\r\n", "\n"), swErr.ToString().Replace("\r\n", "\n"));
     }
 
     [TestMethod]
@@ -3372,13 +3374,15 @@ import (
 )
 
 func main() {
-    fmt.Println(strconv.ParseBool(""true""))
-    fmt.Println(strconv.ParseBool(""false""))
-    fmt.Println(strconv.ParseBool(""1""))
+    v1, _ := strconv.ParseBool(""true"")
+    v2, _ := strconv.ParseBool(""false"")
+    v3, _ := strconv.ParseBool(""1"")
+    fmt.Println(v1)
+    fmt.Println(v2)
+    fmt.Println(v3)
 }
 ");
-        var normalized = output.Replace("\r\n", "\n");
-        Assert.AreEqual("true\nfalse\ntrue\n", normalized);
+        Assert.AreEqual("true\nfalse\ntrue\n", output);
     }
 
     // --- fmt.Fprintf / Fprintln / Fprint ---
@@ -6175,7 +6179,8 @@ func main() {
 }
 ";
         var tree = SyntaxTree.Parse(source);
-        var result = SemanticAnalyzer.Analyze(tree);
+        var ctx = new CompilationContext(null);
+        var result = SemanticAnalyzer.Analyze(tree, ctx);
         Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
 
         var tempDir = Path.Combine(Path.GetTempPath(), "ngo_ilverify_test_" + Guid.NewGuid().ToString("N"));
@@ -6183,7 +6188,7 @@ func main() {
         try
         {
             var outputPath = Path.Combine(tempDir, "test.dll");
-            AssemblyEmitter.EmitToFile(result, outputPath);
+            AssemblyEmitter.EmitToFile(result, ctx, outputPath);
 
             // Copy Ngo.Runtime.dll alongside the output
             var runtimePath = typeof(Ngo.Runtime.BuiltIn).Assembly.Location;
@@ -6194,7 +6199,8 @@ func main() {
         }
         finally
         {
-            Directory.Delete(tempDir, recursive: true);
+            try { Directory.Delete(tempDir, recursive: true); }
+            catch (IOException) { /* file may be locked by other tests */ }
         }
     }
 

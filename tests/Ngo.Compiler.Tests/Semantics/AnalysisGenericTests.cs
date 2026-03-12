@@ -31,7 +31,7 @@ public class AnalysisGenericTests
     private static AnalysisResult Analyze(string source)
     {
         var tree = SyntaxTree.Parse(source);
-        return SemanticAnalyzer.Analyze(tree);
+        return SemanticAnalyzer.Analyze(tree, new CompilationContext(null));
     }
 
     // ================================================================
@@ -231,5 +231,86 @@ func main() {
         Assert.IsTrue(result.HasErrors);
         Assert.IsTrue(result.Errors.Any(e => e.Message.Contains("infer")),
             "Expected error about cannot infer type arguments");
+    }
+
+    [TestMethod]
+    public void Unary_negate_on_type_parameter_is_allowed()
+    {
+        var result = Analyze(@"package main
+
+func Negate[T ~int | ~int64](x T) T {
+    return -x
+}
+
+func main() {
+    _ = Negate(42)
+}");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
+    }
+
+    [TestMethod]
+    public void Unary_bitwise_not_on_type_parameter_is_allowed()
+    {
+        var result = Analyze(@"package main
+
+func Invert[T ~int | ~uint](x T) T {
+    return ^x
+}
+
+func main() {
+    _ = Invert(42)
+}");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
+    }
+
+    [TestMethod]
+    public void Unary_logical_not_on_type_parameter_is_allowed()
+    {
+        var result = Analyze(@"package main
+
+func Not[T ~bool](x T) T {
+    y := !x
+    return y
+}
+
+func main() {
+    _ = Not(true)
+}");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
+    }
+
+    [TestMethod]
+    public void Generic_type_inference_with_named_slice_type()
+    {
+        var result = Analyze(@"package main
+
+type Ints []int
+
+func First[T any](s []T) T {
+    return s[0]
+}
+
+func main() {
+    var x Ints = Ints{1, 2, 3}
+    _ = First(x)
+}");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
+    }
+
+    [TestMethod]
+    public void Type_parameter_in_if_condition()
+    {
+        var result = Analyze(@"package main
+
+func Check[T ~bool](x T) {
+    if x {
+        return
+    }
+}
+
+func main() {
+    Check(true)
+}");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
     }
 }

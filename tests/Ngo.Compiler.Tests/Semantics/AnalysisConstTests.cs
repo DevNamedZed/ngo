@@ -31,7 +31,7 @@ public class AnalysisConstTests
     private static AnalysisResult Analyze(string source)
     {
         var tree = SyntaxTree.Parse(source);
-        return SemanticAnalyzer.Analyze(tree);
+        return SemanticAnalyzer.Analyze(tree, new CompilationContext(null));
     }
 
     [TestMethod]
@@ -168,7 +168,8 @@ func main() {
     _ = x
 }");
         Assert.IsTrue(result.HasErrors);
-        Assert.IsTrue(result.Errors.Any(e => e.Code == ErrorCode.InvalidOperation));
+        // 'iota' outside const falls through to scope lookup → UndeclaredName
+        Assert.IsTrue(result.Errors.Any(e => e.Code == ErrorCode.UndeclaredName));
     }
 
     [TestMethod]

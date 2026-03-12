@@ -84,6 +84,19 @@ namespace Ngo.Compiler.Semantics
                     return ResolveConversion(syntax.Arguments[0], userType, span);
                 }
 
+                // Check if a local variable/parameter/function shadows a builtin.
+                // In Go, any identifier can shadow a builtin (close, panic, new, etc.).
+                if (name is "clear" or "min" or "max" or "close" or "panic"
+                    or "recover" or "new" or "copy" or "delete" or "len" or "cap"
+                    or "append" or "make" or "print" or "println"
+                    or "complex" or "real" or "imag")
+                {
+                    var scopeSym = _context.Scope.Lookup(name);
+                    if (scopeSym is FunctionSymbol || scopeSym is LocalSymbol
+                        || scopeSym is ParameterSymbol)
+                        goto resolveAsFunction;
+                }
+
                 // Builtin functions
                 switch (name)
                 {
@@ -107,6 +120,8 @@ namespace Ngo.Compiler.Semantics
                     case "copy":
                         return ResolveSimpleBuiltin(name, syntax, span);
                 }
+
+                resolveAsFunction:;
             }
 
             // Composite type conversion: []byte(s), []int(s), etc.
@@ -123,13 +138,18 @@ namespace Ngo.Compiler.Semantics
             }
 
             // Parenthesized type conversion: (*Type)(value), ([]byte)(value), etc.
+            // Or parenthesized dereference call: (*ptr)(args)
             if (syntax.Function is ParenthesizedExpressionSyntax parenSyntax && syntax.Arguments.Count == 1)
             {
+                // Speculatively try type resolution — roll back errors if it fails
+                var errorsBefore = _context.Errors.Count;
                 var innerType = _typeResolver.ResolveType(parenSyntax.Expression);
                 if (innerType != null)
                 {
                     return ResolveConversion(syntax.Arguments[0], innerType, span);
                 }
+                // Not a type — roll back errors and fall through to resolve as expression call
+                _context.Errors.TruncateTo(errorsBefore);
             }
 
             // Method or package function call: x.Foo(args) or pkg.Func(args)
@@ -145,12 +165,31 @@ namespace Ngo.Compiler.Semantics
                     var export = pkg.LookupExport(methodName);
                     if (export is FunctionSymbol pkgFunc)
                     {
+                        // unsafe.Slice/SliceData/String are polymorphic — infer types from args
+                        if (pkg.ImportPath == "unsafe" && (methodName is "Slice" or "SliceData" or "String"))
+                        {
+                            var result = ResolveUnsafePolymorphic(methodName, pkgFunc, syntax, span);
+                            if (result != null) return result;
+                        }
+
                         return ResolvePackageFunctionCall(pkgFunc, syntax, span);
                     }
 
                     if (export is TypeSymbol exportType && syntax.Arguments.Count == 1)
                     {
                         return ResolveConversion(syntax.Arguments[0], exportType, span);
+                    }
+
+                    // Package variable with function type: bufio.ScanLines(data, atEOF)
+                    if (export is PackageVarSymbol pkgVar && pkgVar.Type is FunctionTypeSymbol pkgFuncType)
+                    {
+                        var arguments = BindArguments(syntax);
+                        var paramSymbols = new List<ParameterSymbol>();
+                        for (int i = 0; i < pkgFuncType.ParameterTypes.Count; i++)
+                            paramSymbols.Add(new ParameterSymbol("_", pkgFuncType.ParameterTypes[i], i));
+                        var syntheticFunc = new FunctionSymbol(methodName, paramSymbols, pkgFuncType.ReturnTypes,
+                            isVariadic: pkgFuncType.IsVariadic, packageName: pkg.Name);
+                        return new CallExpression(syntheticFunc, arguments, span);
                     }
 
                     _context.Errors.ReportError(span, ErrorCode.UndeclaredName,
@@ -172,6 +211,15 @@ namespace Ngo.Compiler.Semantics
 
                     var method = lookupType.LookupMethod(methodName);
 
+                    // Extract type param substitution for instantiated generic types
+                    IReadOnlyList<TypeParameterSymbol>? methodInstTypeParams = null;
+                    IReadOnlyList<TypeSymbol>? methodInstTypeArgs = null;
+                    if (lookupType is InstantiatedTypeSymbol methodInst)
+                    {
+                        methodInstTypeParams = methodInst.GenericType.TypeParameters;
+                        methodInstTypeArgs = methodInst.TypeArguments;
+                    }
+
                     // Check for interface method calls (InterfaceTypeSymbol hides
                     // the base LookupMethod with 'new', so we must cast explicitly)
                     if (method == null && lookupType is InterfaceTypeSymbol ifaceType)
@@ -179,25 +227,52 @@ namespace Ngo.Compiler.Semantics
                         method = ifaceType.LookupMethod(methodName);
                     }
 
-                    // Check promoted methods from embedded structs
-                    if (method == null && lookupType is StructTypeSymbol structForMethod)
+                    // Check on resolved type for instantiated generics
+                    var resolvedLookup = lookupType.Resolved();
+                    if (method == null && resolvedLookup is InterfaceTypeSymbol resolvedIface)
                     {
-                        foreach (var f in structForMethod.Fields)
+                        method = resolvedIface.LookupMethod(methodName);
+                    }
+
+                    // Check promoted methods from embedded structs
+                    if (method == null)
+                    {
+                        var structForMethod = resolvedLookup as StructTypeSymbol
+                            ?? lookupType as StructTypeSymbol;
+                        if (structForMethod != null)
                         {
-                            if (!f.IsEmbedded) continue;
-                            var promoted = f.Type.LookupMethod(methodName);
-                            if (promoted != null)
+                            foreach (var f in structForMethod.Fields)
                             {
-                                method = promoted;
-                                // Rewrite target to access embedded field first
-                                target = new SelectorExpression(target, f, f.Type, target.Span);
-                                break;
+                                if (!f.IsEmbedded) continue;
+                                var promoted = f.Type.LookupMethod(methodName);
+                                if (promoted != null)
+                                {
+                                    method = promoted;
+                                    // Rewrite target to access embedded field first
+                                    var embType = methodInstTypeParams != null
+                                        ? TypeSubstituter.Substitute(f.Type, methodInstTypeParams, methodInstTypeArgs!)
+                                        : f.Type;
+                                    target = new SelectorExpression(target, f, embType, target.Span);
+                                    break;
+                                }
                             }
                         }
                     }
 
                     if (method != null)
                     {
+                        // Substitute type parameters for instantiated generic types
+                        if (methodInstTypeParams != null)
+                        {
+                            var substParams = TypeSubstituter.SubstituteParams(
+                                method.Parameters, methodInstTypeParams, methodInstTypeArgs!);
+                            var substReturnTypes = TypeSubstituter.SubstituteTypes(
+                                method.ReturnTypes, methodInstTypeParams, methodInstTypeArgs!);
+                            method = new MethodSymbol(method.Name, method.ReceiverType,
+                                method.IsPointerReceiver, method.TypeParameters,
+                                substParams, substReturnTypes, method.IsVariadic);
+                        }
+
                         // Adjust target to match receiver type
                         if (method.IsPointerReceiver)
                         {
@@ -307,7 +382,10 @@ namespace Ngo.Compiler.Semantics
             }
 
             var resolvedCallType = funcExpr.Type is FunctionTypeSymbol ? funcExpr.Type
-                : funcExpr.Type?.UnderlyingType;
+                : funcExpr.Type?.UnderlyingType is FunctionTypeSymbol ? funcExpr.Type?.UnderlyingType
+                : funcExpr.Type?.Resolved() is FunctionTypeSymbol ? funcExpr.Type?.Resolved()
+                : funcExpr.Type?.Resolved()?.UnderlyingType is FunctionTypeSymbol ? funcExpr.Type?.Resolved()?.UnderlyingType
+                : funcExpr.Type?.Resolved();
             if (resolvedCallType is FunctionTypeSymbol funcTypeSymbol)
             {
                 var arguments = BindArguments(syntax);
@@ -397,6 +475,22 @@ namespace Ngo.Compiler.Semantics
                 return ResolveConversion(syntax.Arguments[0], convType, span);
             }
 
+            // interface{}/any values are dynamically typed and may hold callable values at runtime
+            if (funcExpr.Type is InterfaceTypeSymbol ifaceCall && ifaceCall.Methods.Count == 0
+                || funcExpr.Type?.Resolved() is InterfaceTypeSymbol ifaceCall2 && ifaceCall2.Methods.Count == 0)
+            {
+                var arguments = BindArguments(syntax);
+                var paramSymbols = new List<ParameterSymbol>();
+                for (int i = 0; i < arguments.Count; i++)
+                {
+                    paramSymbols.Add(new ParameterSymbol("_", arguments[i].Type ?? BuiltinTypes.EmptyInterface, i));
+                }
+
+                var syntheticFunc = new FunctionSymbol("$$dynamic_call", paramSymbols,
+                    new List<TypeSymbol> { BuiltinTypes.EmptyInterface });
+                return new CallExpression(syntheticFunc, arguments, funcExpr, span);
+            }
+
             _context.Errors.ReportError(span, ErrorCode.InvalidOperation,
                 "Expression is not callable");
             return new ErrorExpression("Not callable", span);
@@ -406,6 +500,11 @@ namespace Ngo.Compiler.Semantics
         {
             var operand = _resolveExpression(syntax);
 
+            if (operand.Type == null || targetType == null)
+            {
+                return new ErrorExpression("Invalid conversion", span);
+            }
+
             if (!TypeChecker.CanConvert(operand.Type, targetType))
             {
                 _context.Errors.ReportError(span, ErrorCode.InvalidConversion,
@@ -414,6 +513,61 @@ namespace Ngo.Compiler.Semantics
             }
 
             return new ConversionExpression(operand, targetType, span);
+        }
+
+        private Expression? ResolveUnsafePolymorphic(
+            string name, FunctionSymbol funcSymbol, CallExpressionSyntax syntax, TextSpan span)
+        {
+            var arguments = BindArguments(syntax);
+
+            if (name == "Slice" && arguments.Count == 2)
+            {
+                // unsafe.Slice(ptr *T, len IntegerType) []T
+                var ptrType = arguments[0].Type;
+                TypeSymbol elemType;
+                if (ptrType is PointerTypeSymbol ptr)
+                    elemType = ptr.ElementType;
+                else
+                    elemType = BuiltinTypes.Byte; // fallback
+
+                var returnType = new SliceTypeSymbol(elemType);
+                return new CallExpression(funcSymbol, arguments, span)
+                {
+                    SubstitutedReturnType = returnType,
+                    SubstitutedReturnTypes = new TypeSymbol[] { returnType }
+                };
+            }
+
+            if (name == "SliceData" && arguments.Count == 1)
+            {
+                // unsafe.SliceData(s []T) *T
+                var sliceType = arguments[0].Type;
+                TypeSymbol elemType;
+                if (sliceType is SliceTypeSymbol slice)
+                    elemType = slice.ElementType;
+                else
+                    elemType = BuiltinTypes.Byte; // fallback
+
+                var returnType = new PointerTypeSymbol(elemType);
+                return new CallExpression(funcSymbol, arguments, span)
+                {
+                    SubstitutedReturnType = returnType,
+                    SubstitutedReturnTypes = new TypeSymbol[] { returnType }
+                };
+            }
+
+            if (name == "String" && arguments.Count == 2)
+            {
+                // unsafe.String(ptr *byte, len IntegerType) string — already correct, just accept any int
+                var returnType = BuiltinTypes.String;
+                return new CallExpression(funcSymbol, arguments, span)
+                {
+                    SubstitutedReturnType = returnType,
+                    SubstitutedReturnTypes = new TypeSymbol[] { returnType }
+                };
+            }
+
+            return null;
         }
 
         private Expression ResolveSimpleBuiltin(string name, CallExpressionSyntax syntax, TextSpan span)
@@ -453,12 +607,9 @@ namespace Ngo.Compiler.Semantics
 
             if (func.IsVariadic)
             {
-                // Determine required count: if last param is a slice, it's the variadic container
-                // (source-analyzed functions include the variadic slice param).
-                // Otherwise, all params are required (registry functions don't include the variadic param).
-                bool lastIsSlice = func.Parameters.Count > 0
-                    && func.Parameters[func.Parameters.Count - 1].Type is SliceTypeSymbol;
-                int requiredCount = lastIsSlice ? func.Parameters.Count - 1 : func.Parameters.Count;
+                // Variadic: last parameter is the variadic container (slice or GoParam-typed).
+                // Required count is always params - 1 since we're inside IsVariadic.
+                int requiredCount = func.Parameters.Count - 1;
 
                 if (arguments.Count < requiredCount)
                 {
@@ -478,7 +629,7 @@ namespace Ngo.Compiler.Semantics
                 }
 
                 // Type-check variadic args against element type or slice type
-                if (lastIsSlice && func.Parameters.Count > 0)
+                if (func.Parameters.Count > 0 && func.Parameters[func.Parameters.Count - 1].Type is SliceTypeSymbol)
                 {
                     var lastParamType = func.Parameters[func.Parameters.Count - 1].Type;
                     if (lastParamType is SliceTypeSymbol sliceType)
@@ -697,6 +848,28 @@ namespace Ngo.Compiler.Semantics
                 }
             }
 
+            // Check if the base expression is a qualified generic function: pkg.Func[Type](args)
+            if (indexSyntax.Expression is SelectorExpressionSyntax selectorSyntax
+                && selectorSyntax.Expression is IdentifierNameSyntax pkgIdSyntax)
+            {
+                var pkgSymbol = _context.Scope.Lookup(pkgIdSyntax.Identifier.Text);
+                if (pkgSymbol is PackageSymbol pkg)
+                {
+                    _context.UsedPackages.Add(pkg.Name);
+                    var export = pkg.LookupExport(selectorSyntax.Name.Text);
+                    if (export is FunctionSymbol funcSymbol && funcSymbol.IsGeneric)
+                    {
+                        var typeArg = _typeResolver.ResolveType(indexSyntax.Index);
+                        if (typeArg == null)
+                        {
+                            typeArg = TypeSymbol.Error;
+                        }
+
+                        return ResolveGenericCallWithTypeArgs(funcSymbol, new[] { typeArg }, syntax, span);
+                    }
+                }
+            }
+
             return null;
         }
 
@@ -707,29 +880,82 @@ namespace Ngo.Compiler.Semantics
             TextSpan span)
         {
             // Validate type argument count
-            if (typeArgs.Count != funcSymbol.TypeParameters.Count)
+            if (typeArgs.Count > funcSymbol.TypeParameters.Count)
             {
                 _context.Errors.ReportError(span, ErrorCode.WrongTypeArgumentCount,
                     $"Function '{funcSymbol.Name}' expects {funcSymbol.TypeParameters.Count} type arguments, got {typeArgs.Count}");
                 return new ErrorExpression("Wrong type argument count", span);
             }
 
-            // Validate constraints
-            for (int i = 0; i < typeArgs.Count; i++)
+            // Partial type arguments: infer remaining from arguments
+            IReadOnlyList<TypeSymbol> fullTypeArgs = typeArgs;
+            if (typeArgs.Count < funcSymbol.TypeParameters.Count)
             {
-                if (typeArgs[i] != TypeSymbol.Error &&
-                    !ConstraintChecker.Satisfies(typeArgs[i], funcSymbol.TypeParameters[i].Constraint))
+                var partialArgs = BindArguments(syntax);
+                // Create a partially-substituted function for inference
+                var partialSubstParams = TypeSubstituter.SubstituteParams(
+                    funcSymbol.Parameters, funcSymbol.TypeParameters, typeArgs);
+
+                var partialFunc = new FunctionSymbol(funcSymbol.Name,
+                    funcSymbol.TypeParameters, partialSubstParams,
+                    funcSymbol.ReturnTypes, funcSymbol.IsVariadic, funcSymbol.PackageName);
+
+                var merged = new TypeSymbol[funcSymbol.TypeParameters.Count];
+                for (int i = 0; i < typeArgs.Count; i++)
+                    merged[i] = typeArgs[i];
+
+                // Try to infer remaining type args from arguments
+                var inferredAll = TypeInferrer.InferTypeArguments(partialFunc, partialArgs);
+                if (inferredAll != null)
+                {
+                    for (int i = typeArgs.Count; i < funcSymbol.TypeParameters.Count; i++)
+                        merged[i] = inferredAll[i];
+                }
+
+                // For any still-missing type params, try to infer from constraint
+                // relationships with already-known type params. E.g., S ~[]E with S known
+                // implies E = element type of S.
+                for (int i = 0; i < merged.Length; i++)
+                {
+                    if (merged[i] != null) continue;
+                    merged[i] = InferTypeParamFromConstraints(
+                        funcSymbol.TypeParameters[i], funcSymbol.TypeParameters, merged);
+                }
+
+                bool allResolved = true;
+                for (int i = 0; i < merged.Length; i++)
+                {
+                    if (merged[i] == null) { allResolved = false; break; }
+                }
+
+                if (allResolved)
+                {
+                    fullTypeArgs = merged;
+                }
+                else
+                {
+                    _context.Errors.ReportError(span, ErrorCode.WrongTypeArgumentCount,
+                        $"Function '{funcSymbol.Name}' expects {funcSymbol.TypeParameters.Count} type arguments, got {typeArgs.Count}");
+                    return new ErrorExpression("Wrong type argument count", span);
+                }
+            }
+
+            // Validate constraints
+            for (int i = 0; i < fullTypeArgs.Count; i++)
+            {
+                if (fullTypeArgs[i] != TypeSymbol.Error &&
+                    !ConstraintChecker.Satisfies(fullTypeArgs[i], funcSymbol.TypeParameters[i].Constraint))
                 {
                     _context.Errors.ReportError(span, ErrorCode.ConstraintNotSatisfied,
-                        $"Type '{typeArgs[i].Name}' does not satisfy constraint '{funcSymbol.TypeParameters[i].Constraint.Name}'");
+                        $"Type '{fullTypeArgs[i].Name}' does not satisfy constraint '{funcSymbol.TypeParameters[i].Constraint.Name}'");
                 }
             }
 
             // Substitute type parameters in parameter and return types
             var substParams = TypeSubstituter.SubstituteParams(
-                funcSymbol.Parameters, funcSymbol.TypeParameters, typeArgs);
+                funcSymbol.Parameters, funcSymbol.TypeParameters, fullTypeArgs);
             var substReturnTypes = TypeSubstituter.SubstituteTypes(
-                funcSymbol.ReturnTypes, funcSymbol.TypeParameters, typeArgs);
+                funcSymbol.ReturnTypes, funcSymbol.TypeParameters, fullTypeArgs);
 
             // Bind and validate arguments
             var arguments = BindArguments(syntax);
@@ -753,6 +979,58 @@ namespace Ngo.Compiler.Semantics
             };
         }
 
+        private static TypeSymbol? InferTypeParamFromConstraints(
+            TypeParameterSymbol target,
+            IReadOnlyList<TypeParameterSymbol> allParams,
+            TypeSymbol?[] known)
+        {
+            // Look through constraints of already-known type params to find the target.
+            // E.g., S ~[]E: if S is known as []int, then E = int.
+            for (int i = 0; i < allParams.Count; i++)
+            {
+                if (known[i] == null) continue;
+                var constraint = allParams[i].Constraint;
+                foreach (var elem in constraint.TypeElements)
+                {
+                    var extracted = ExtractTypeParam(elem.Type, target, known[i]);
+                    if (extracted != null) return extracted;
+                }
+            }
+            return null;
+        }
+
+        private static TypeSymbol? ExtractTypeParam(TypeSymbol pattern, TypeParameterSymbol target, TypeSymbol concrete)
+        {
+            if (pattern == target) return concrete;
+
+            var resolvedConcrete = concrete.Resolved();
+            if (resolvedConcrete == concrete && concrete.UnderlyingType != null)
+                resolvedConcrete = concrete.UnderlyingType;
+
+            // For type parameter concrete types, look at their structural constraint
+            if (resolvedConcrete is TypeParameterSymbol concreteTp)
+            {
+                var structural = TypeChecker.GetConstraintStructuralType(concreteTp);
+                if (structural != null)
+                    resolvedConcrete = structural;
+            }
+
+            if (pattern is SliceTypeSymbol patSlice && resolvedConcrete is SliceTypeSymbol conSlice)
+                return ExtractTypeParam(patSlice.ElementType, target, conSlice.ElementType);
+            if (pattern is ArrayTypeSymbol patArr && resolvedConcrete is ArrayTypeSymbol conArr)
+                return ExtractTypeParam(patArr.ElementType, target, conArr.ElementType);
+            if (pattern is MapTypeSymbol patMap && resolvedConcrete is MapTypeSymbol conMap)
+            {
+                return ExtractTypeParam(patMap.KeyType, target, conMap.KeyType)
+                    ?? ExtractTypeParam(patMap.ValueType, target, conMap.ValueType);
+            }
+            if (pattern is PointerTypeSymbol patPtr && resolvedConcrete is PointerTypeSymbol conPtr)
+                return ExtractTypeParam(patPtr.ElementType, target, conPtr.ElementType);
+            if (pattern is ChannelTypeSymbol patChan && resolvedConcrete is ChannelTypeSymbol conChan)
+                return ExtractTypeParam(patChan.ElementType, target, conChan.ElementType);
+            return null;
+        }
+
         private Expression ResolveGenericCallWithInference(
             FunctionSymbol funcSymbol,
             IReadOnlyList<Expression> arguments,
@@ -766,10 +1044,30 @@ namespace Ngo.Compiler.Semantics
                 return new ErrorExpression("Cannot infer type args", span);
             }
 
-            // Validate constraints
+            // Validate constraints (substitute inferred type args into constraint types first)
             for (int i = 0; i < typeArgs.Count; i++)
             {
-                if (!ConstraintChecker.Satisfies(typeArgs[i], funcSymbol.TypeParameters[i].Constraint))
+                var constraint = funcSymbol.TypeParameters[i].Constraint;
+                // Substitute type parameters in constraint type elements
+                if (constraint.TypeElements.Count > 0)
+                {
+                    var substElements = new System.Collections.Generic.List<Symbols.TypeElement>();
+                    bool changed = false;
+                    foreach (var elem in constraint.TypeElements)
+                    {
+                        var substType = TypeSubstituter.Substitute(elem.Type,
+                            funcSymbol.TypeParameters, typeArgs);
+                        substElements.Add(new Symbols.TypeElement(substType, elem.IsTilde));
+                        if (substType != elem.Type) changed = true;
+                    }
+                    if (changed)
+                    {
+                        constraint = new Symbols.ConstraintInfo(constraint.Name,
+                            constraint.Methods, substElements, constraint.IsComparable);
+                    }
+                }
+
+                if (!ConstraintChecker.Satisfies(typeArgs[i], constraint))
                 {
                     _context.Errors.ReportError(span, ErrorCode.ConstraintNotSatisfied,
                         $"Type '{typeArgs[i].Name}' does not satisfy constraint '{funcSymbol.TypeParameters[i].Constraint.Name}'");

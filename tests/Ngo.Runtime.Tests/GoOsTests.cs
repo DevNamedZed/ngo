@@ -19,6 +19,7 @@
 using System;
 using System.IO;
 using Ngo.Runtime;
+using Ngo.Runtime.Os;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 namespace Ngo.Runtime.Tests;

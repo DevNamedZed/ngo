@@ -38,11 +38,19 @@ namespace Ngo.Compiler.Semantics
         public List<(LocalSymbol Symbol, TextSpan Span)> FunctionLocals { get; } = new();
         public bool CheckUnused { get; set; }
         public bool SuppressUsageMarking { get; set; }
-        public Dictionary<string, int> PendingConstInts { get; } = new();
+        public Dictionary<string, long> PendingConstInts { get; } = new();
+        public Dictionary<string, int> PendingConstStringLens { get; } = new();
+        public Dictionary<string, int> PendingVarArrayLens { get; } = new();
 
-        public AnalysisContext(Scope universeScope)
+        /// <summary>
+        /// Per-compilation context for package resolution. May be null for standalone analysis.
+        /// </summary>
+        public CompilationContext? Compilation { get; }
+
+        public AnalysisContext(Scope universeScope, CompilationContext? compilation = null)
         {
             Scope = universeScope;
+            Compilation = compilation;
         }
 
         public void PushScope(string name)
@@ -117,10 +125,28 @@ namespace Ngo.Compiler.Semantics
             }
 
             // Comma-ok patterns: val, ok := m[key] / x.(T) / <-ch
-            if (expr is Ast.IndexExpression idx && idx.Target.Type.Resolved() is Symbols.MapTypeSymbol mapType)
+            if (expr is Ast.IndexExpression idx)
             {
-                idx.IsCommaOk = true;
-                return new[] { mapType.ValueType, Symbols.BuiltinTypes.Bool };
+                var resolved = idx.Target.Type.Resolved();
+                if (resolved is Symbols.MapTypeSymbol mapType)
+                {
+                    idx.IsCommaOk = true;
+                    return new[] { mapType.ValueType, Symbols.BuiltinTypes.Bool };
+                }
+
+                // Type parameter with map constraint: ~map[K]V
+                if (resolved is Symbols.TypeParameterSymbol tp)
+                {
+                    foreach (var elem in tp.Constraint.TypeElements)
+                    {
+                        var et = elem.Type.Resolved();
+                        if (et is Symbols.MapTypeSymbol constraintMap)
+                        {
+                            idx.IsCommaOk = true;
+                            return new[] { constraintMap.ValueType, Symbols.BuiltinTypes.Bool };
+                        }
+                    }
+                }
             }
 
             if (expr is Ast.TypeAssertExpression typeAssert)
@@ -244,6 +270,16 @@ namespace Ngo.Compiler.Semantics
                 {
                     return (object)(!b);
                 }
+            }
+
+            // len(stringExpr) — constant fold when argument is a string constant
+            if (expr is Ast.CallExpression call
+                && call.Function.Name == "len"
+                && call.Arguments.Count == 1)
+            {
+                var argVal = TryEvaluateConstant(call.Arguments[0]);
+                if (argVal is string s)
+                    return (long)System.Text.Encoding.UTF8.GetByteCount(s);
             }
 
             return null;

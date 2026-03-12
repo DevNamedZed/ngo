@@ -31,7 +31,7 @@ public class AnalysisCollectionTests
     private static AnalysisResult Analyze(string source)
     {
         var tree = SyntaxTree.Parse(source);
-        return SemanticAnalyzer.Analyze(tree);
+        return SemanticAnalyzer.Analyze(tree, new CompilationContext(null));
     }
 
     // ---- Type resolution ----
@@ -692,5 +692,81 @@ func main() {
 }");
         Assert.IsTrue(result.HasErrors);
         Assert.IsTrue(result.Errors.Any(e => e.Code == ErrorCode.InvalidRange));
+    }
+
+    [TestMethod]
+    public void For_range_named_string_type()
+    {
+        var result = Analyze(@"package main
+
+type MyString string
+
+func main() {
+    var s MyString = ""hello""
+    for _, c := range s {
+        _ = c
+    }
+}");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
+    }
+
+    [TestMethod]
+    public void For_range_named_channel_type()
+    {
+        var result = Analyze(@"package main
+
+type MyChan chan int
+
+func main() {
+    ch := make(MyChan, 1)
+    ch <- 42
+    for v := range ch {
+        _ = v
+        break
+    }
+}");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
+    }
+
+    [TestMethod]
+    public void Array_length_bitwise_shift_constant()
+    {
+        var result = Analyze(@"package main
+
+const Size = 1 << 4
+
+func main() {
+    var a [Size]int
+    _ = a
+}");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
+    }
+
+    [TestMethod]
+    public void Array_length_parenthesized_expression()
+    {
+        var result = Analyze(@"package main
+
+const N = 5
+
+func main() {
+    var a [(N + 1)]int
+    _ = a
+}");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
+    }
+
+    [TestMethod]
+    public void Array_length_bitwise_and_constant()
+    {
+        var result = Analyze(@"package main
+
+const Mask = 0xFF & 0x0F
+
+func main() {
+    var a [Mask]byte
+    _ = a
+}");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
     }
 }

@@ -109,6 +109,9 @@ namespace Ngo.Compiler.Semantics
             // Pre-scan constants for simple integer values (needed for array lengths in types)
             PreScanConstInts(constSyntaxes);
 
+            // Pre-scan var declarations for auto-sized array literals (needed for len(x) in array types)
+            PreScanVarArrayLens(varSyntaxes);
+
             // Pass 1a: pre-declare all type names as placeholders
             foreach (var typeSyntax in typeSyntaxes)
             {
@@ -118,12 +121,38 @@ namespace Ngo.Compiler.Semantics
                 }
             }
 
+            // Pass 1a2: fixup generic type parameter constraints that referenced
+            // forward-declared types (e.g., nistCurve[Point nistPoint[Point]] where
+            // nistPoint is declared after nistCurve)
+            FixupTypeParameterConstraints(typeSyntaxes);
+
             // Pass 1b: resolve type underlying types and fill in struct/interface details
             foreach (var typeSyntax in typeSyntaxes)
             {
                 foreach (var spec in typeSyntax.Specs)
                 {
                     RegisterTypeDeclaration(spec);
+                }
+            }
+
+            // Pass 1c: fixup named types whose underlying was still a placeholder when registered
+            // (e.g., type MetricBytes SI where SI wasn't yet resolved when MetricBytes was processed)
+            foreach (var typeSyntax in typeSyntaxes)
+            {
+                foreach (var spec in typeSyntax.Specs)
+                {
+                    if (spec.AssignToken != null || spec.Type is StructTypeSyntax || spec.Type is InterfaceTypeSyntax)
+                        continue;
+                    var sym = _context.Scope.Lookup(spec.Name.Text) as TypeSymbol;
+                    if (sym?.UnderlyingType != null && sym.GetType() == typeof(TypeSymbol))
+                    {
+                        var resolved = sym.UnderlyingType;
+                        // Chase through named type chains to get the final TypeKind
+                        while (resolved.GetType() == typeof(TypeSymbol) && resolved.UnderlyingType != null)
+                            resolved = resolved.UnderlyingType;
+                        if (sym.TypeKind != resolved.TypeKind && resolved.TypeKind != TypeKind.Error)
+                            sym.TypeKind = resolved.TypeKind;
+                    }
                 }
             }
 
@@ -149,14 +178,56 @@ namespace Ngo.Compiler.Semantics
                 }
             }
 
+            // Post-process: fixup interfaces with embedded interfaces that had empty method sets
+            // due to forward references (e.g., boolFlag embeds Value, but Value wasn't resolved yet)
+            FixupEmbeddedInterfaces(typeSyntaxes);
+
             // Post-process: upgrade named types based on structs to StructTypeSymbol
             // (must happen after all struct fields are populated)
             UpgradeStructBasedTypes(typeSyntaxes);
+
+            // Pre-declare all constant names across all const blocks so cross-file references resolve.
+            // e.g., active_help.go references configEnvVarGlobalPrefix defined in completions.go
+            foreach (var constSyntax in constSyntaxes)
+            {
+                foreach (var spec in constSyntax.Specs)
+                {
+                    for (int i = 0; i < spec.Names.Count; i++)
+                    {
+                        var name = spec.Names[i].Text;
+                        if (name != "_")
+                        {
+                            _context.Scope.TryDeclare(new ConstantSymbol(name, TypeSymbol.Error, null));
+                        }
+                    }
+                }
+            }
 
             var constants = new List<ConstDeclaration>();
             foreach (var constSyntax in constSyntaxes)
             {
                 constants.AddRange(ResolveConstDeclaration(constSyntax));
+            }
+
+            // Second pass: retry constants that still have Error type (cross-file forward refs).
+            // e.g., doc.go: Enabled = available; notboring.go: available = false
+            bool hasUnresolved = false;
+            foreach (var c in constants)
+            {
+                if (c.Symbol.Type == TypeSymbol.Error)
+                {
+                    hasUnresolved = true;
+                    break;
+                }
+            }
+            if (hasUnresolved)
+            {
+                var retry = new List<ConstDeclaration>();
+                foreach (var constSyntax in constSyntaxes)
+                {
+                    retry.AddRange(ResolveConstDeclaration(constSyntax));
+                }
+                constants = retry;
             }
 
             // Pre-declare package-level variable names so cross-file references resolve
@@ -222,7 +293,7 @@ namespace Ngo.Compiler.Semantics
                         if (alias == ".")
                         {
                             // Dot import: inject all exports into file scope
-                            var dotPkg = PackageRegistry.Resolve(path);
+                            var dotPkg = _context.Compilation?.ResolvePackage(path);
                             if (dotPkg == null)
                             {
                                 _context.Errors.ReportError(span, ErrorCode.UndeclaredName,
@@ -251,11 +322,11 @@ namespace Ngo.Compiler.Semantics
                     }
                     else
                     {
-                        localName = PackageRegistry.GetDefaultName(path);
+                        localName = CompilationContext.GetDefaultPackageName(path);
                     }
 
                     // Resolve the package
-                    var pkg = PackageRegistry.Resolve(path);
+                    var pkg = _context.Compilation?.ResolvePackage(path);
                     if (pkg == null)
                     {
                         _context.Errors.ReportError(span, ErrorCode.UndeclaredName,
@@ -368,7 +439,21 @@ namespace Ngo.Compiler.Semantics
             }
             else
             {
-                symbol = (FunctionSymbol)_context.Scope.Lookup(syntax.Name.Text)!;
+                var looked = _context.Scope.Lookup(syntax.Name.Text);
+                if (looked is FunctionSymbol fs)
+                {
+                    symbol = fs;
+                }
+                else
+                {
+                    // In rare cases (e.g., runtime package has func main() that shadows the main package),
+                    // the lookup finds a non-function. Report a diagnostic and create a stub.
+                    _context.Errors.ReportError(syntax.Name.Span, ErrorCode.UnsupportedSyntax,
+                        $"Function '{syntax.Name.Text}' shadows a {looked?.GetType().Name ?? "null"} symbol");
+                    symbol = new FunctionSymbol(syntax.Name.Text,
+                        System.Array.Empty<ParameterSymbol>(),
+                        System.Array.Empty<TypeSymbol>());
+                }
             }
 
             // Push function scope and register parameters
@@ -393,7 +478,8 @@ namespace Ngo.Compiler.Semantics
             _context.CurrentNamedReturns = namedReturns;
             foreach (var nr in namedReturns)
             {
-                _context.Scope.TryDeclare(nr);
+                if (nr.Name != "_")
+                    _context.Scope.TryDeclare(nr);
             }
 
             // External function declarations (no body) — skip body resolution
@@ -444,8 +530,10 @@ namespace Ngo.Compiler.Semantics
             var (baseType, receiverTypeParams) = ResolveReceiverType(baseTypeExpr!);
             if (baseType == null)
             {
+                var typeName = baseTypeExpr is Language.Syntax.IdentifierNameSyntax id
+                    ? id.Identifier.Text : baseTypeExpr?.ToString() ?? "?";
                 _context.Errors.ReportError(_context.SpanOf(syntax), ErrorCode.InvalidMethodReceiver,
-                    "Undefined receiver type");
+                    $"Undefined receiver type '{typeName}'");
                 return;
             }
 
@@ -552,7 +640,8 @@ namespace Ngo.Compiler.Semantics
             _context.CurrentNamedReturns = namedReturns;
             foreach (var nr in namedReturns)
             {
-                _context.Scope.TryDeclare(nr);
+                if (nr.Name != "_")
+                    _context.Scope.TryDeclare(nr);
             }
 
             // External method declarations (no body) — skip body resolution
@@ -599,8 +688,10 @@ namespace Ngo.Compiler.Semantics
                         for (int j = 0; j < param.Names.Value.Count; j++)
                         {
                             var name = param.Names.Value[j].Text;
-                            if (name != "_" && typeIndex < returnTypes.Count)
+                            if (typeIndex < returnTypes.Count)
                             {
+                                // Use actual name for named returns, "_" placeholder for blank returns
+                                // Blank-named returns still count (allow bare return statements)
                                 namedReturns.Add(new LocalSymbol(name, returnTypes[typeIndex]));
                             }
 
@@ -628,44 +719,128 @@ namespace Ngo.Compiler.Semantics
 
         private void PreScanConstInts(List<ConstDeclarationSyntax> constSyntaxes)
         {
-            foreach (var constDecl in constSyntaxes)
+            // Multiple passes to resolve forward references within const blocks.
+            // Go allows const decls like: a = 1 << b; b = 9 (forward ref to b).
+            int prevCount = -1;
+            for (int pass = 0; pass < 4; pass++)
             {
-                foreach (var spec in constDecl.Specs)
+                int resolvedCount = _context.PendingConstInts.Count;
+                if (resolvedCount == prevCount)
+                    break; // No progress, stop iterating
+                prevCount = resolvedCount;
+
+                foreach (var constDecl in constSyntaxes)
+                {
+                    int iotaCounter = 0;
+                    SeparatedSyntaxList<ExpressionSyntax>? prevValues = null;
+
+                    foreach (var spec in constDecl.Specs)
+                    {
+                        var values = spec.Values.HasValue ? spec.Values : prevValues;
+                        if (spec.Values.HasValue)
+                            prevValues = spec.Values;
+
+                        if (values.HasValue)
+                        {
+                            for (int i = 0; i < spec.Names.Count && i < values.Value.Count; i++)
+                            {
+                                var name = spec.Names[i].Text;
+                                if (_context.PendingConstInts.ContainsKey(name))
+                                {
+                                    continue; // Already resolved
+                                }
+
+                                var valExpr = values.Value[i];
+                                var constVal = TryEvalConstIntWithIota(valExpr, iotaCounter);
+                                if (constVal.HasValue)
+                                {
+                                    _context.PendingConstInts[name] = constVal.Value;
+                                }
+
+                                // Track string constant lengths for len(StringConst) array sizes
+                                if (pass == 0 && valExpr is LiteralExpressionSyntax strLit
+                                    && strLit.Token.Kind == SyntaxKind.StringLiteralToken)
+                                {
+                                    var str = strLit.Token.Text;
+                                    // Strip surrounding quotes for interpreted strings
+                                    if (str.Length >= 2 && str[0] == '"')
+                                        str = str.Substring(1, str.Length - 2);
+                                    _context.PendingConstStringLens[name] = str.Length;
+                                }
+                            }
+                        }
+
+                        iotaCounter++;
+                    }
+                }
+            }
+        }
+
+        private void PreScanVarArrayLens(List<VarDeclarationSyntax> varSyntaxes)
+        {
+            foreach (var varDecl in varSyntaxes)
+            {
+                foreach (var spec in varDecl.Specs)
                 {
                     if (!spec.Values.HasValue) continue;
                     for (int i = 0; i < spec.Names.Count && i < spec.Values.Value.Count; i++)
                     {
                         var name = spec.Names[i].Text;
-                        var valExpr = spec.Values.Value[i];
-                        var constVal = TryEvalConstInt(valExpr);
-                        if (constVal.HasValue)
+                        var val = spec.Values.Value[i];
+                        // Look for composite literal with auto-sized array type: [...]T{e1, e2, ...}
+                        if (val is CompositeLiteralSyntax composite
+                            && composite.Type is ArrayTypeSyntax arrType
+                            && arrType.Length is LiteralExpressionSyntax litLen
+                            && litLen.Token.Kind == SyntaxKind.EllipsisToken)
                         {
-                            _context.PendingConstInts[name] = constVal.Value;
+                            _context.PendingVarArrayLens[name] = composite.Elements.Count;
                         }
                     }
                 }
             }
         }
 
-        private int? TryEvalConstInt(ExpressionSyntax expr)
+        private long? TryEvalConstIntWithIota(ExpressionSyntax expr, int iota)
         {
+            if (expr is IdentifierNameSyntax id && id.Identifier.Text == "iota")
+                return iota;
+            return TryEvalConstInt(expr, iota);
+        }
+
+        private long? TryEvalConstInt(ExpressionSyntax expr) => TryEvalConstInt(expr, -1, 0);
+
+        private long? TryEvalConstInt(ExpressionSyntax expr, int iota) => TryEvalConstInt(expr, iota, 0);
+
+        private long? TryEvalConstInt(ExpressionSyntax expr, int iota, int depth)
+        {
+            if (depth > 50) return null; // Prevent stack overflow from deeply nested expressions
+
             if (expr is LiteralExpressionSyntax lit
-                && lit.Token.Kind == SyntaxKind.IntLiteralToken
-                && int.TryParse(lit.Token.Text, out var val))
+                && lit.Token.Kind == SyntaxKind.IntLiteralToken)
             {
-                return val;
+                var text = lit.Token.Text;
+                if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+                    && long.TryParse(text.AsSpan(2), System.Globalization.NumberStyles.HexNumber, null, out var hexVal))
+                    return hexVal;
+                if (text.StartsWith("0o", StringComparison.OrdinalIgnoreCase)
+                    && TryParseOctalLong(text.AsSpan(2), out var octVal))
+                    return octVal;
+                if (long.TryParse(text, out var val))
+                    return val;
             }
 
-            if (expr is IdentifierNameSyntax id
-                && _context.PendingConstInts.TryGetValue(id.Identifier.Text, out var idVal))
+            if (expr is IdentifierNameSyntax id)
             {
-                return idVal;
+                if (iota >= 0 && id.Identifier.Text == "iota")
+                    return iota;
+                if (_context.PendingConstInts.TryGetValue(id.Identifier.Text, out var idVal))
+                    return idVal;
             }
 
             if (expr is BinaryExpressionSyntax bin)
             {
-                var left = TryEvalConstInt(bin.Left);
-                var right = TryEvalConstInt(bin.Right);
+                var left = TryEvalConstInt(bin.Left, iota, depth + 1);
+                var right = TryEvalConstInt(bin.Right, iota, depth + 1);
                 if (left.HasValue && right.HasValue)
                 {
                     return bin.OperatorToken.Kind switch
@@ -675,24 +850,142 @@ namespace Ngo.Compiler.Semantics
                         SyntaxKind.StarToken => left.Value * right.Value,
                         SyntaxKind.SlashToken when right.Value != 0 => left.Value / right.Value,
                         SyntaxKind.PercentToken when right.Value != 0 => left.Value % right.Value,
-                        SyntaxKind.LessThanLessThanToken => left.Value << right.Value,
-                        SyntaxKind.GreaterThanGreaterThanToken => left.Value >> right.Value,
+                        SyntaxKind.LessThanLessThanToken => left.Value << (int)right.Value,
+                        SyntaxKind.GreaterThanGreaterThanToken => left.Value >> (int)right.Value,
                         SyntaxKind.AmpersandToken => left.Value & right.Value,
                         SyntaxKind.PipeToken => left.Value | right.Value,
                         SyntaxKind.CaretToken => left.Value ^ right.Value,
-                        _ => (int?)null,
+                        SyntaxKind.AmpersandCaretToken => left.Value & ~right.Value, // &^ in Go
+                        _ => (long?)null,
                     };
                 }
             }
 
-            if (expr is UnaryExpressionSyntax unary
-                && unary.OperatorToken.Kind == SyntaxKind.MinusToken)
+            if (expr is UnaryExpressionSyntax unary)
             {
-                var inner = TryEvalConstInt(unary.Operand);
-                if (inner.HasValue) return -inner.Value;
+                var inner = TryEvalConstInt(unary.Operand, iota, depth + 1);
+                if (inner.HasValue)
+                {
+                    return unary.OperatorToken.Kind switch
+                    {
+                        SyntaxKind.MinusToken => -inner.Value,
+                        SyntaxKind.PlusToken => inner.Value,
+                        SyntaxKind.CaretToken => ~inner.Value, // bitwise NOT in Go is ^
+                        _ => (long?)null,
+                    };
+                }
+            }
+
+            // Parenthesized expressions: (expr)
+            if (expr is ParenthesizedExpressionSyntax parenExpr)
+            {
+                return TryEvalConstInt(parenExpr.Expression, iota, depth + 1);
+            }
+
+            // Cross-package constant: pkg.Const (e.g., goarch.PtrSize, sys.PtrSize)
+            if (expr is SelectorExpressionSyntax sel
+                && sel.Expression is IdentifierNameSyntax pkgId)
+            {
+                var pkgSym = _context.Scope.Lookup(pkgId.Identifier.Text);
+                if (pkgSym is PackageSymbol pkg)
+                {
+                    var member = pkg.LookupExport(sel.Name.Text);
+                    if (member is ConstantSymbol c)
+                    {
+                        return c.Value is long lv ? lv : c.Value is int iv ? (long)iv : null;
+                    }
+                }
+            }
+
+            // Type conversion: uintptr(expr), int(expr), uint(expr) — evaluate inner expression
+            if (expr is CallExpressionSyntax convCall
+                && convCall.Arguments.Count == 1
+                && convCall.Function is IdentifierNameSyntax convId)
+            {
+                var typeName = convId.Identifier.Text;
+                if (typeName is "uintptr" or "int" or "uint" or "int64" or "uint64"
+                    or "int32" or "uint32" or "int16" or "uint16" or "int8" or "uint8" or "byte")
+                {
+                    return TryEvalConstInt(convCall.Arguments[0], iota, depth + 1);
+                }
+            }
+
+            // unsafe.Sizeof(...) — compute size of type for amd64
+            if (expr is CallExpressionSyntax sizeofCall
+                && sizeofCall.Function is SelectorExpressionSyntax sizeofSel
+                && sizeofSel.Expression is IdentifierNameSyntax sizeofPkg
+                && sizeofPkg.Identifier.Text == "unsafe"
+                && sizeofSel.Name.Text == "Sizeof"
+                && sizeofCall.Arguments.Count == 1)
+            {
+                // Return 8 as default for amd64 word size; actual struct size computation
+                // happens later in TypeResolver.TryEvalConstantLength when types are resolved
+                return 8;
+            }
+
+            // unsafe.Offsetof(...) — return 0 as default stub
+            if (expr is CallExpressionSyntax offsetCall
+                && offsetCall.Function is SelectorExpressionSyntax offsetSel
+                && offsetSel.Expression is IdentifierNameSyntax offsetPkg
+                && offsetPkg.Identifier.Text == "unsafe"
+                && offsetSel.Name.Text == "Offsetof"
+                && offsetCall.Arguments.Count == 1)
+            {
+                return 0;
+            }
+
+            // len("string literal") — Go len on string returns UTF-8 byte count
+            if (expr is CallExpressionSyntax call
+                && call.Function is IdentifierNameSyntax callId
+                && callId.Identifier.Text == "len"
+                && call.Arguments.Count == 1)
+            {
+                if (call.Arguments[0] is LiteralExpressionSyntax strLit
+                    && strLit.Token.Kind == SyntaxKind.StringLiteralToken)
+                {
+                    var raw = strLit.Token.Text;
+                    if (raw.Length >= 2 && raw[0] == '"')
+                    {
+                        var inner = raw.Substring(1, raw.Length - 2);
+                        return System.Text.Encoding.UTF8.GetByteCount(inner);
+                    }
+                    if (raw.Length >= 2 && raw[0] == '`')
+                    {
+                        var inner = raw.Substring(1, raw.Length - 2);
+                        return System.Text.Encoding.UTF8.GetByteCount(inner);
+                    }
+                }
+                // len(constIdentifier) where the const is a string
+                if (call.Arguments[0] is IdentifierNameSyntax lenArgId
+                    && _context.PendingConstStringLens.TryGetValue(lenArgId.Identifier.Text, out var strLen))
+                    return strLen;
             }
 
             return null;
+        }
+
+        private static bool TryParseOctal(ReadOnlySpan<char> s, out int result)
+        {
+            result = 0;
+            foreach (var c in s)
+            {
+                if (c == '_') continue;
+                if (c < '0' || c > '7') return false;
+                result = result * 8 + (c - '0');
+            }
+            return s.Length > 0;
+        }
+
+        private static bool TryParseOctalLong(ReadOnlySpan<char> s, out long result)
+        {
+            result = 0;
+            foreach (var c in s)
+            {
+                if (c == '_') continue;
+                if (c < '0' || c > '7') return false;
+                result = result * 8 + (c - '0');
+            }
+            return s.Length > 0;
         }
 
         private void PreDeclareType(TypeSpecSyntax syntax)
@@ -755,7 +1048,7 @@ namespace Ngo.Compiler.Semantics
                     underlying = TypeSymbol.Error;
                 }
 
-                var alias = new TypeSymbol(name, underlying.TypeKind, underlying);
+                var alias = new TypeSymbol(name, underlying.TypeKind, underlying) { IsAlias = true };
                 _context.Scope.TryDeclare(alias);
 
                 return;
@@ -798,6 +1091,148 @@ namespace Ngo.Compiler.Semantics
             else
             {
                 _context.Scope.Replace(name, new TypeSymbol(name, resolvedUnderlying.TypeKind, resolvedUnderlying));
+            }
+        }
+
+        private void FixupTypeParameterConstraints(List<TypeDeclarationSyntax> typeSyntaxes)
+        {
+            foreach (var typeDecl in typeSyntaxes)
+            {
+                foreach (var spec in typeDecl.Specs)
+                {
+                    if (spec.TypeParameters == null) continue;
+                    var sym = _context.Scope.Lookup(spec.Name.Text) as TypeSymbol;
+                    if (sym == null || !sym.IsGeneric) continue;
+
+                    bool needsFixup = false;
+                    int idx = 0;
+                    for (int i = 0; i < spec.TypeParameters.Parameters.Count; i++)
+                    {
+                        var decl = spec.TypeParameters.Parameters[i];
+                        for (int j = 0; j < decl.Names.Count; j++, idx++)
+                        {
+                            if (idx < sym.TypeParameters.Count
+                                && sym.TypeParameters[idx].Constraint == ConstraintInfo.Any
+                                && decl.Constraint is not IdentifierNameSyntax idCheck)
+                            {
+                                needsFixup = true;
+                            }
+                            else if (idx < sym.TypeParameters.Count
+                                && sym.TypeParameters[idx].Constraint == ConstraintInfo.Any
+                                && decl.Constraint is IdentifierNameSyntax idSyntax2
+                                && idSyntax2.Identifier.Text != "any")
+                            {
+                                // Constraint was an identifier like a named interface that wasn't found
+                                needsFixup = true;
+                            }
+                        }
+                    }
+
+                    if (!needsFixup) continue;
+
+                    // Re-resolve constraints with all types now in scope
+                    _context.PushScope("typeParamFixup");
+                    foreach (var tp in sym.TypeParameters)
+                        _context.Scope.TryDeclare(tp);
+
+                    idx = 0;
+                    for (int i = 0; i < spec.TypeParameters.Parameters.Count; i++)
+                    {
+                        var decl = spec.TypeParameters.Parameters[i];
+                        var constraint = ResolveConstraint(decl.Constraint);
+                        for (int j = 0; j < decl.Names.Count; j++, idx++)
+                        {
+                            if (idx < sym.TypeParameters.Count && constraint != ConstraintInfo.Any)
+                                sym.TypeParameters[idx].Constraint = constraint;
+                        }
+                    }
+
+                    _context.PopScope();
+                }
+            }
+        }
+
+        private void FixupEmbeddedInterfaces(List<TypeDeclarationSyntax> typeSyntaxes)
+        {
+            // Re-process interfaces that embed other interfaces, in case the embedded
+            // interface hadn't been fully resolved due to forward references.
+            foreach (var typeDecl in typeSyntaxes)
+            {
+                foreach (var spec in typeDecl.Specs)
+                {
+                    if (spec.Type is not InterfaceTypeSyntax ifaceSyntax) continue;
+
+                    var symbol = _context.Scope.Lookup(spec.Name.Text) as InterfaceTypeSymbol;
+                    if (symbol == null) continue;
+
+                    // Check if any embedded interface member exists
+                    bool hasEmbedded = false;
+                    foreach (var member in ifaceSyntax.Members)
+                    {
+                        if (member is not MethodSpecSyntax)
+                        {
+                            hasEmbedded = true;
+                            break;
+                        }
+                    }
+
+                    if (!hasEmbedded) continue;
+
+                    // Re-resolve: rebuild method list with now-populated embedded interfaces
+                    var methods = new List<MethodSymbol>();
+                    foreach (var member in ifaceSyntax.Members)
+                    {
+                        if (member is MethodSpecSyntax methodSpec)
+                        {
+                            var parameters = _typeResolver.ResolveParameterList(methodSpec.Parameters);
+                            var returnTypes = _typeResolver.ResolveResultTypes(methodSpec.Result);
+
+                            bool isVariadic = false;
+                            if (methodSpec.Parameters.Parameters.Count > 0)
+                            {
+                                var lastParam = methodSpec.Parameters.Parameters[methodSpec.Parameters.Parameters.Count - 1];
+                                isVariadic = lastParam.Ellipsis != null;
+                            }
+
+                            var method = new MethodSymbol(methodSpec.Name.Text, symbol, false,
+                                Array.Empty<TypeParameterSymbol>(), parameters, returnTypes, isVariadic);
+                            methods.Add(method);
+                        }
+                        else if (member is ExpressionSyntax embeddedSyntax)
+                        {
+                            var embeddedType = _typeResolver.ResolveType(embeddedSyntax);
+                            if (embeddedType is InterfaceTypeSymbol embeddedIface)
+                            {
+                                foreach (var m in embeddedIface.Methods)
+                                {
+                                    // Avoid duplicates (already added in first pass)
+                                    bool exists = false;
+                                    foreach (var existing in methods)
+                                    {
+                                        if (existing.Name == m.Name)
+                                        {
+                                            exists = true;
+                                            break;
+                                        }
+                                    }
+
+                                    if (!exists)
+                                    {
+                                        var promoted = new MethodSymbol(m.Name, symbol, false,
+                                            Array.Empty<TypeParameterSymbol>(), m.Parameters, m.ReturnTypes, m.IsVariadic);
+                                        methods.Add(promoted);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Only update if we found more methods than before
+                    if (methods.Count > symbol.Methods.Count)
+                    {
+                        symbol.SetMethods(methods);
+                    }
+                }
             }
         }
 
@@ -869,9 +1304,12 @@ namespace Ngo.Compiler.Semantics
                     {
                         // Embedded field: use the base type name as the field name
                         // For *T, the embedded name is T (not *T)
-                        var embeddedName = fieldType is PointerTypeSymbol embPtr
-                            ? embPtr.ElementType.Name
-                            : fieldType.Name;
+                        // For generic instantiations like node[N, T], use "node" (the base name)
+                        var embType = fieldType is PointerTypeSymbol embPtr
+                            ? embPtr.ElementType : fieldType;
+                        var embeddedName = embType is InstantiatedTypeSymbol inst
+                            ? inst.GenericType.Name
+                            : embType.Name;
                         fields.Add(new FieldSymbol(embeddedName, fieldType, ordinal++,
                             isEmbedded: true, tag: tagValue));
                     }
@@ -885,6 +1323,13 @@ namespace Ngo.Compiler.Semantics
 
             if (symbol is InterfaceTypeSymbol ifaceSymbol && syntax.Type is InterfaceTypeSyntax ifaceSyntax)
             {
+                if (ifaceSymbol.IsGeneric)
+                {
+                    _context.PushScope("typeParams");
+                    foreach (var tp in ifaceSymbol.TypeParameters)
+                        _context.Scope.TryDeclare(tp);
+                }
+
                 var methods = new List<MethodSymbol>();
 
                 foreach (var member in ifaceSyntax.Members)
@@ -923,6 +1368,9 @@ namespace Ngo.Compiler.Semantics
                 }
 
                 ifaceSymbol.SetMethods(methods);
+
+                if (ifaceSymbol.IsGeneric)
+                    _context.PopScope();
             }
 
             return new TypeDeclaration(symbol ?? TypeSymbol.Error, _context.SpanOf(syntax));
@@ -1026,8 +1474,11 @@ namespace Ngo.Compiler.Semantics
                 }
                 else
                 {
-                    _context.Errors.ReportError(_context.SpanOf(syntax), ErrorCode.TypeMismatch,
-                        $"Variable '{name}' requires a type or initializer");
+                    if (name != "_")
+                    {
+                        _context.Errors.ReportError(_context.SpanOf(syntax), ErrorCode.TypeMismatch,
+                            $"Variable '{name}' requires a type or initializer");
+                    }
                     varType = TypeSymbol.Error;
                 }
 
@@ -1229,6 +1680,24 @@ namespace Ngo.Compiler.Semantics
             var result = new List<TypeParameterSymbol>();
             int ordinal = 0;
 
+            // First pass: create all type parameters with Any constraint and
+            // push them into scope so that constraints like ~map[K]V can
+            // reference type parameters declared later in the list.
+            _context.PushScope("typeParamPre");
+            for (int i = 0; i < syntax.Parameters.Count; i++)
+            {
+                var decl = syntax.Parameters[i];
+                for (int j = 0; j < decl.Names.Count; j++)
+                {
+                    var name = decl.Names[j].Text;
+                    var tp = new TypeParameterSymbol(name, ordinal++, ConstraintInfo.Any);
+                    result.Add(tp);
+                    _context.Scope.TryDeclare(tp);
+                }
+            }
+
+            // Second pass: resolve constraints now that all type params are in scope
+            int idx = 0;
             for (int i = 0; i < syntax.Parameters.Count; i++)
             {
                 var decl = syntax.Parameters[i];
@@ -1236,11 +1705,11 @@ namespace Ngo.Compiler.Semantics
 
                 for (int j = 0; j < decl.Names.Count; j++)
                 {
-                    var name = decl.Names[j].Text;
-                    result.Add(new TypeParameterSymbol(name, ordinal++, constraint));
+                    result[idx++].Constraint = constraint;
                 }
             }
 
+            _context.PopScope();
             return result;
         }
 
@@ -1310,7 +1779,61 @@ namespace Ngo.Compiler.Semantics
                     typeElements, isComparable: false);
             }
 
+            // Handle generic interface constraint: e.g., nistPoint[Point]
+            if (syntax is IndexExpressionSyntax indexConstraint)
+            {
+                TypeSymbol? baseSym = null;
+                string? baseName = null;
+                if (indexConstraint.Expression is IdentifierNameSyntax baseId)
+                {
+                    baseName = baseId.Identifier.Text;
+                    baseSym = _context.Scope.Lookup(baseName) as TypeSymbol;
+                }
+                if (baseSym is InterfaceTypeSymbol genericIface && genericIface.TypeParameters.Count > 0)
+                {
+                    var argType = _typeResolver.ResolveType(indexConstraint.Index);
+                    // Store the interface reference for lazy method resolution
+                    // (interface methods may not be populated yet during PreDeclareType)
+                    var constraint = new ConstraintInfo(genericIface.Name, Array.Empty<MethodSymbol>(),
+                        Array.Empty<TypeElement>(), isComparable: false);
+                    constraint.InterfaceType = genericIface;
+                    constraint.InterfaceTypeArgs = new[] { argType ?? TypeSymbol.Error };
+                    return constraint;
+                }
+                // If the base type isn't declared yet (forward reference), treat as any
+                // The constraint will be checked at instantiation time when the type exists
+                if (baseSym == null && baseName != null)
+                    return ConstraintInfo.Any;
+            }
+
+            // Handle type expression constraints like *T, []T, map[K]V, etc.
+            // These define the type set for the parameter (e.g., P *T means P's type set is {*T})
+            var constraintType = _typeResolver.ResolveType(syntax);
+            if (constraintType != null && constraintType != TypeSymbol.Error)
+            {
+                var typeElements = new List<TypeElement> { new TypeElement(constraintType, false) };
+                return new ConstraintInfo("type", Array.Empty<MethodSymbol>(),
+                    typeElements, isComparable: false);
+            }
+
             return ConstraintInfo.Any;
+        }
+
+        private static TypeSymbol SubstituteTypeParam(TypeSymbol type, TypeParameterSymbol param, TypeSymbol? arg)
+        {
+            if (arg == null) return type;
+            if (type == param) return arg;
+            if (type is SliceTypeSymbol slice)
+                return new SliceTypeSymbol(SubstituteTypeParam(slice.ElementType, param, arg));
+            if (type is PointerTypeSymbol ptr)
+                return new PointerTypeSymbol(SubstituteTypeParam(ptr.ElementType, param, arg));
+            if (type is MapTypeSymbol map)
+                return new MapTypeSymbol(
+                    SubstituteTypeParam(map.KeyType, param, arg),
+                    SubstituteTypeParam(map.ValueType, param, arg));
+            if (type is ChannelTypeSymbol ch)
+                return new ChannelTypeSymbol(SubstituteTypeParam(ch.ElementType, param, arg));
+            return type;
         }
 
         private void ReportUnusedImports(IReadOnlyList<ImportDeclaration> imports)

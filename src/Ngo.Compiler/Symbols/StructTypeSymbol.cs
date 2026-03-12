@@ -70,8 +70,11 @@ namespace Ngo.Compiler.Symbols
                 if (method != null)
                     return (Fields[i], method);
 
+                // Unwrap generic instantiation for deeper search
+                var resolvedEmbedded = embeddedType is InstantiatedTypeSymbol inst2
+                    ? inst2.Resolved() : embeddedType;
                 // Recurse into embedded structs for deeper promoted methods
-                if (embeddedType is StructTypeSymbol embeddedStruct)
+                if (resolvedEmbedded is StructTypeSymbol embeddedStruct)
                 {
                     var deep = embeddedStruct.LookupPromotedMethod(name);
                     if (deep != null)
@@ -95,6 +98,9 @@ namespace Ngo.Compiler.Symbols
                 // Unwrap pointer for *T embedded fields
                 if (embeddedType is PointerTypeSymbol ptr)
                     embeddedType = ptr.ElementType;
+                // Unwrap generic instantiation (e.g., node[N, T] → node)
+                if (embeddedType is InstantiatedTypeSymbol inst)
+                    embeddedType = inst.Resolved();
                 if (embeddedType is StructTypeSymbol embeddedStruct)
                 {
                     var inner = embeddedStruct.LookupField(name);

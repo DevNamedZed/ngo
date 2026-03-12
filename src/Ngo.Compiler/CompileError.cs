@@ -91,6 +91,8 @@ namespace Ngo.Compiler
         private readonly List<CompileError> _errors = new();
 
         public bool HasErrors => _errors.Any(e => e.Severity == ErrorSeverity.Error);
+        public int Count => _errors.Count;
+        public void TruncateTo(int count) { if (_errors.Count > count) _errors.RemoveRange(count, _errors.Count - count); }
 
         public IReadOnlyList<CompileError> ToReadOnlyList() => _errors;
 

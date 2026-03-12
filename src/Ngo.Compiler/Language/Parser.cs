@@ -294,8 +294,23 @@ namespace Ngo.Compiler.Language
                     offset += 2;
                 }
 
-                // If a type (or ellipsis) follows the identifier(s), they're parameter names
-                if (IsTypeStart(Peek(offset).Kind) || Peek(offset).Kind == SyntaxKind.EllipsisToken)
+                // If a type (or ellipsis) follows the identifier(s), they're parameter names.
+                // But: ident[ident...] is a generic type instantiation (Type[T]),
+                // not name followed by array type ([N]T). Only treat as named param
+                // if [ is followed by int literal, ], or ... (real array/slice syntax).
+                var afterIdents = Peek(offset).Kind;
+                if (afterIdents == SyntaxKind.OpenBracketToken)
+                {
+                    var insideBracket = Peek(offset + 1).Kind;
+                    if (insideBracket != SyntaxKind.IntLiteralToken
+                        && insideBracket != SyntaxKind.CloseBracketToken
+                        && insideBracket != SyntaxKind.EllipsisToken)
+                    {
+                        // Looks like generic instantiation — fall through to unnamed param
+                        afterIdents = SyntaxKind.None;
+                    }
+                }
+                if (IsTypeStart(afterIdents) || afterIdents == SyntaxKind.EllipsisToken)
                 {
                     var names = ParseIdentifierTokenList();
 
@@ -774,7 +789,7 @@ namespace Ngo.Compiler.Language
             var firstExpr = ParseExpressionNoCompositeLit();
 
             // Check for range clause after expression(s)
-            if (At(SyntaxKind.ColonEqualsToken) || At(SyntaxKind.EqualsToken))
+            if (At(SyntaxKind.ColonEqualsToken) || At(SyntaxKind.EqualsToken) || IsAssignmentOperator(Current.Kind))
             {
                 var left = CollectExpressionList(firstExpr);
                 var assignOp = Advance();
@@ -1329,6 +1344,15 @@ namespace Ngo.Compiler.Language
                         expr = ParseCompositeLiteral(expr);
                         break;
 
+                    // In no-composite-lit contexts (if/for conditions), still allow
+                    // composite literals for unambiguous type expressions like [N]T{},
+                    // []T{}, map[K]V{} — these can never be confused with block braces.
+                    case SyntaxKind.OpenBraceToken when !_allowCompositeLit
+                        && (expr is ArrayTypeSyntax || expr is SliceTypeSyntax
+                            || expr is MapTypeSyntax || expr is StructTypeSyntax):
+                        expr = ParseCompositeLiteral(expr);
+                        break;
+
                     default:
                         return expr;
                 }
@@ -1424,6 +1448,13 @@ namespace Ngo.Compiler.Language
 
         private ExpressionSyntax ParseIndexOrSlice(ExpressionSyntax expr)
         {
+            // Check for generic type argument list: expr[Type, ...] followed by (
+            // This handles generic function calls like appendString[string](...)
+            if (LooksLikeGenericInstantiation())
+            {
+                return ParseTypeArgumentList(expr);
+            }
+
             var open = Advance(); // [
 
             // Check for slice: expr[low:high] or expr[low:high:max]
@@ -1573,6 +1604,12 @@ namespace Ngo.Compiler.Language
             var funcKeyword = Advance(); // func
             var parameters = ParseParameterList();
             var result = ParseResult();
+            // If no opening brace follows, this is a function TYPE in expression
+            // context (e.g., (func(int) int)(nil) — type conversion), not a literal.
+            if (!At(SyntaxKind.OpenBraceToken))
+            {
+                return new FuncTypeSyntax(funcKeyword, parameters, result);
+            }
             var body = ParseBlock();
             return new FunctionLiteralSyntax(funcKeyword, parameters, result, body);
         }
@@ -1749,8 +1786,12 @@ namespace Ngo.Compiler.Language
 
             while (!At(SyntaxKind.CloseBraceToken) && !At(SyntaxKind.EndOfFileToken))
             {
+                var posBefore = _pos;
                 fields.Add(ParseFieldDeclaration());
                 SkipSemicolon();
+                // Guard: if we didn't advance, skip the current token to avoid infinite loop
+                if (_pos == posBefore)
+                    Advance();
             }
 
             var close = Expect(SyntaxKind.CloseBraceToken);
@@ -1765,16 +1806,70 @@ namespace Ngo.Compiler.Language
             if (At(SyntaxKind.IdentifierToken))
             {
                 // Could be names or an embedded type
-                if (Peek(1).Kind == SyntaxKind.IdentifierToken ||
-                    Peek(1).Kind == SyntaxKind.StarToken ||
-                    Peek(1).Kind == SyntaxKind.OpenBracketToken ||
-                    Peek(1).Kind == SyntaxKind.MapKeyword ||
-                    Peek(1).Kind == SyntaxKind.ChanKeyword ||
-                    Peek(1).Kind == SyntaxKind.LessThanMinusToken ||
-                    Peek(1).Kind == SyntaxKind.FuncKeyword ||
-                    Peek(1).Kind == SyntaxKind.InterfaceKeyword ||
-                    Peek(1).Kind == SyntaxKind.StructKeyword ||
-                    Peek(1).Kind == SyntaxKind.CommaToken)
+                // When followed by [, distinguish array type (name [5]int) from
+                // generic instantiation (node[N, T] as embedded field)
+                bool looksLikeFieldName = false;
+                var next = Peek(1).Kind;
+                if (next == SyntaxKind.IdentifierToken ||
+                    next == SyntaxKind.StarToken ||
+                    next == SyntaxKind.MapKeyword ||
+                    next == SyntaxKind.ChanKeyword ||
+                    next == SyntaxKind.LessThanMinusToken ||
+                    next == SyntaxKind.FuncKeyword ||
+                    next == SyntaxKind.InterfaceKeyword ||
+                    next == SyntaxKind.StructKeyword ||
+                    next == SyntaxKind.CommaToken)
+                {
+                    looksLikeFieldName = true;
+                }
+                else if (next == SyntaxKind.OpenBracketToken)
+                {
+                    // Distinguish: name [expr]type (field + array) vs name[T, U] (embedded generic)
+                    // Array: [5]int, []int, [...]int, [maxEntries]rect
+                    // Generic: node[N, T] (comma inside brackets)
+                    var insideBracket = Peek(2).Kind;
+                    if (insideBracket == SyntaxKind.IntLiteralToken ||
+                        insideBracket == SyntaxKind.CloseBracketToken ||
+                        insideBracket == SyntaxKind.EllipsisToken)
+                    {
+                        looksLikeFieldName = true;
+                    }
+                    else if (insideBracket == SyntaxKind.IdentifierToken)
+                    {
+                        var afterInner = Peek(3).Kind;
+                        if (afterInner == SyntaxKind.CommaToken)
+                        {
+                            // node[N, T] — embedded generic, not a field name
+                            looksLikeFieldName = false;
+                        }
+                        else if (afterInner == SyntaxKind.CloseBracketToken)
+                        {
+                            // ident[ident] — ambiguous: [const]type vs Type[T]
+                            // If a type-start follows ], it's name [const]Type (field name)
+                            // If semicolon/}/EOF follows ], it's Type[T] (embedded generic)
+                            var afterClose = Peek(4).Kind;
+                            looksLikeFieldName = IsTypeStart(afterClose)
+                                || afterClose == SyntaxKind.OpenBracketToken;
+                        }
+                        else
+                        {
+                            // [maxEntries]rect — treat as array (field name)
+                            looksLikeFieldName = true;
+                        }
+                    }
+                    else if (insideBracket == SyntaxKind.StarToken)
+                    {
+                        // [*Type] — generic type arg with pointer, not array
+                        // Array sizes are always integer literals or identifiers, not *
+                        looksLikeFieldName = false;
+                    }
+                    else
+                    {
+                        looksLikeFieldName = true;
+                    }
+                }
+
+                if (looksLikeFieldName)
                 {
                     names = ParseIdentifierTokenList();
                 }
@@ -1871,6 +1966,14 @@ namespace Ngo.Compiler.Language
                 // [T ~int] — tilde = type params
                 if (afterIdent.Kind == SyntaxKind.TildeToken)
                     return true;
+                // [Bytes []byte | string] — constraint starts with slice/array type
+                if (afterIdent.Kind == SyntaxKind.OpenBracketToken
+                    || afterIdent.Kind == SyntaxKind.StarToken
+                    || afterIdent.Kind == SyntaxKind.MapKeyword
+                    || afterIdent.Kind == SyntaxKind.ChanKeyword
+                    || afterIdent.Kind == SyntaxKind.FuncKeyword
+                    || afterIdent.Kind == SyntaxKind.StructKeyword)
+                    return true;
                 // [T] — single ident followed by close bracket. This is ambiguous.
                 // In Go 1.18+, type params always require a constraint: [T any], [T comparable].
                 // [ident] without a constraint is an array type with constant-length ident.
@@ -1883,6 +1986,83 @@ namespace Ngo.Compiler.Language
             if (next.Kind == SyntaxKind.TildeToken)
                 return true;
 
+            return false;
+        }
+
+        /// <summary>
+        /// In expression context, checks if expr[ starts a generic instantiation
+        /// by scanning ahead to find ] followed by ( — the pattern expr[Types](args).
+        /// Only triggers for type-like content inside brackets (not simple expressions).
+        /// </summary>
+        private bool LooksLikeGenericInstantiation()
+        {
+            if (!At(SyntaxKind.OpenBracketToken)) return false;
+            var next = Peek(1);
+            // [int], [string] or other builtin type names inside [] followed by ]( → generic
+            // [[]byte] or [*T] → definitely type args, but only if followed by (
+            // [ident] → ambiguous (could be index), only treat as generic if ](
+
+            // Must start with something that looks like a type but NOT like a simple expression
+            // Type-only tokens: [], *, struct, func, map, chan, interface, <-
+            bool looksLikeType = false;
+            if (next.Kind == SyntaxKind.OpenBracketToken  // [[]byte]
+                || next.Kind == SyntaxKind.StarToken       // [*Type]
+                || next.Kind == SyntaxKind.StructKeyword
+                || next.Kind == SyntaxKind.FuncKeyword
+                || next.Kind == SyntaxKind.MapKeyword
+                || next.Kind == SyntaxKind.ChanKeyword
+                || next.Kind == SyntaxKind.InterfaceKeyword
+                || next.Kind == SyntaxKind.LessThanMinusToken)
+            {
+                looksLikeType = true;
+            }
+
+            // [ident ...] where ... contains type-only syntax like |, [], etc.
+            if (!looksLikeType && next.Kind == SyntaxKind.IdentifierToken)
+            {
+                // Scan ahead to see if there's type union syntax (|) or other type indicators
+                int depth = 1;
+                int off = 2;
+                bool hasTypeUnion = false;
+                while (depth > 0 && off < 100)
+                {
+                    var tk = Peek(off).Kind;
+                    if (tk == SyntaxKind.OpenBracketToken) depth++;
+                    else if (tk == SyntaxKind.CloseBracketToken)
+                    {
+                        depth--;
+                        if (depth == 0)
+                        {
+                            // Check if ] is followed by (
+                            if (Peek(off + 1).Kind == SyntaxKind.OpenParenToken && hasTypeUnion)
+                                return true;
+                            break;
+                        }
+                    }
+                    else if (tk == SyntaxKind.PipeToken) hasTypeUnion = true;
+                    else if (tk == SyntaxKind.EndOfFileToken) break;
+                    off++;
+                }
+            }
+
+            if (!looksLikeType) return false;
+
+            // Scan ahead to find matching ] and check if followed by (
+            int bracketDepth = 1;
+            int offset = 2;
+            while (bracketDepth > 0 && offset < 100)
+            {
+                var tk = Peek(offset).Kind;
+                if (tk == SyntaxKind.OpenBracketToken) bracketDepth++;
+                else if (tk == SyntaxKind.CloseBracketToken) bracketDepth--;
+                else if (tk == SyntaxKind.EndOfFileToken) return false;
+                if (bracketDepth == 0)
+                {
+                    // Check if ] is followed by (
+                    return Peek(offset + 1).Kind == SyntaxKind.OpenParenToken;
+                }
+                offset++;
+            }
             return false;
         }
 
@@ -1961,18 +2141,19 @@ namespace Ngo.Compiler.Language
             var nameBuilder = new List<SyntaxNode>();
             nameBuilder.Add(Expect(SyntaxKind.IdentifierToken));
 
-            // Check if next is comma followed by identifier followed by non-] non-, token
-            // (i.e., grouped names like T, U comparable)
+            // Check if next is comma followed by identifier, indicating grouped names
+            // sharing a constraint (e.g., [T1, T2, R any] or [K comparable, V any])
             while (At(SyntaxKind.CommaToken) && Peek(1).Kind == SyntaxKind.IdentifierToken)
             {
-                // Peek further: if after the next ident we see another ident or ~,
-                // that's the constraint, so these commas separate names sharing a constraint.
-                // If we see , or ] then the next ident is a new decl group.
+                // Look ahead: if after the next ident we see a constraint token (ident, ~, interface, |),
+                // OR if we see a comma (meaning more names follow before the constraint),
+                // then these are grouped names sharing a constraint.
                 var afterNextIdent = Peek(2);
                 if (afterNextIdent.Kind == SyntaxKind.IdentifierToken
                     || afterNextIdent.Kind == SyntaxKind.TildeToken
                     || afterNextIdent.Kind == SyntaxKind.InterfaceKeyword
-                    || afterNextIdent.Kind == SyntaxKind.PipeToken)
+                    || afterNextIdent.Kind == SyntaxKind.PipeToken
+                    || afterNextIdent.Kind == SyntaxKind.CommaToken)
                 {
                     nameBuilder.Add(Advance()); // comma
                     nameBuilder.Add(Advance()); // identifier

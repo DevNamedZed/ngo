@@ -18,6 +18,7 @@
 
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Ngo.Runtime;
+using Ngo.Runtime.Io;
 
 namespace Ngo.Runtime.Tests;
 

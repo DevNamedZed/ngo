@@ -56,6 +56,13 @@ namespace Ngo.Compiler.Semantics
             var arg = _resolveExpression(syntax.Arguments[0]);
 
             var argResolved = ResolveUnderlying(arg.Type);
+            // In Go, len(*[N]T) is valid — unwrap pointer to array
+            if (argResolved is PointerTypeSymbol ptrForLen)
+            {
+                var ptrBase = ResolveUnderlying(ptrForLen.ElementType);
+                if (ptrBase is ArrayTypeSymbol)
+                    argResolved = ptrBase;
+            }
             if (arg.Type != TypeSymbol.Error
                 && argResolved is not SliceTypeSymbol
                 && argResolved is not ArrayTypeSymbol
@@ -85,6 +92,13 @@ namespace Ngo.Compiler.Semantics
             var arg = _resolveExpression(syntax.Arguments[0]);
 
             var capResolved = ResolveUnderlying(arg.Type);
+            // In Go, cap(*[N]T) is valid — unwrap pointer to array
+            if (capResolved is PointerTypeSymbol ptrForCap)
+            {
+                var ptrBase = ResolveUnderlying(ptrForCap.ElementType);
+                if (ptrBase is ArrayTypeSymbol)
+                    capResolved = ptrBase;
+            }
             if (arg.Type != TypeSymbol.Error
                 && capResolved is not SliceTypeSymbol
                 && capResolved is not ArrayTypeSymbol
@@ -169,6 +183,15 @@ namespace Ngo.Compiler.Semantics
 
             var args = new List<Expression>();
             var resolved = type.Resolved();
+            // Also unwrap UnderlyingType for named types (e.g. sort.StringSlice → []string)
+            if (resolved == type && type.UnderlyingType != null)
+                resolved = type.UnderlyingType;
+
+            // For type parameters with structural constraints (e.g. ~[]E, ~map[K]V),
+            // resolve to the constraint's structural type so make() works.
+            var structural = TypeChecker.GetConstraintStructuralType(resolved);
+            if (structural != null)
+                resolved = structural;
 
             if (resolved is SliceTypeSymbol sliceType)
             {
@@ -249,12 +272,13 @@ namespace Ngo.Compiler.Semantics
             var mapArg = _resolveExpression(syntax.Arguments[0]);
             var keyArg = _resolveExpression(syntax.Arguments[1]);
 
-            if (mapArg.Type != TypeSymbol.Error && mapArg.Type.Resolved() is not MapTypeSymbol)
+            var deleteResolved = ResolveUnderlying(mapArg.Type);
+            if (mapArg.Type != TypeSymbol.Error && deleteResolved is not MapTypeSymbol)
             {
                 _context.Errors.ReportError(span, ErrorCode.InvalidOperation,
                     $"First argument to delete must be a map, got '{mapArg.Type.Name}'");
             }
-            else if (mapArg.Type.Resolved() is MapTypeSymbol mapType)
+            else if (deleteResolved is MapTypeSymbol mapType)
             {
                 if (!TypeChecker.IsAssignable(keyArg.Type, mapType.KeyType) && keyArg.Type != TypeSymbol.Error)
                 {
@@ -396,8 +420,13 @@ namespace Ngo.Compiler.Semantics
                 args.Add(_resolveExpression(syntax.Arguments[i]));
             }
 
-            // Result type is the type of the first argument (all must be ordered/comparable)
+            // Result type is the common type across all arguments
             var resultType = args[0].Type;
+            for (int i = 1; i < args.Count; i++)
+            {
+                var common = TypeChecker.CommonType(resultType, args[i].Type);
+                if (common != null) resultType = common;
+            }
             if (resultType.TypeKind == TypeKind.UntypedInt) resultType = BuiltinTypes.Int;
             if (resultType.TypeKind == TypeKind.UntypedRune) resultType = BuiltinTypes.Rune;
             if (resultType.TypeKind == TypeKind.UntypedFloat) resultType = BuiltinTypes.Float64;
@@ -424,6 +453,11 @@ namespace Ngo.Compiler.Semantics
             }
 
             var resultType = args[0].Type;
+            for (int i = 1; i < args.Count; i++)
+            {
+                var common = TypeChecker.CommonType(resultType, args[i].Type);
+                if (common != null) resultType = common;
+            }
             if (resultType.TypeKind == TypeKind.UntypedInt) resultType = BuiltinTypes.Int;
             if (resultType.TypeKind == TypeKind.UntypedRune) resultType = BuiltinTypes.Rune;
             if (resultType.TypeKind == TypeKind.UntypedFloat) resultType = BuiltinTypes.Float64;
@@ -461,10 +495,24 @@ namespace Ngo.Compiler.Semantics
 
         private static TypeSymbol ResolveUnderlying(TypeSymbol type)
         {
-            var resolved = type.Resolved();
-            if (resolved == type && type.UnderlyingType != null)
-                return type.UnderlyingType;
-            return resolved;
+            // For type parameters with structural constraints (e.g. ~[]E, ~map[K]V),
+            // resolve to the constraint's structural type so builtins work correctly.
+            var structural = TypeChecker.GetConstraintStructuralType(type);
+            if (structural != null)
+                return structural;
+
+            // Recursively unwrap chains of named types (e.g. pallocBits → pageBits → [N]uint64)
+            var current = type.Resolved();
+            for (int i = 0; i < 10; i++)
+            {
+                if (current != type && current.UnderlyingType == null)
+                    return current; // concrete type reached
+                if (current.UnderlyingType != null)
+                    current = current.UnderlyingType.Resolved();
+                else
+                    break;
+            }
+            return current;
         }
     }
 }

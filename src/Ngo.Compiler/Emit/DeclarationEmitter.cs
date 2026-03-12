@@ -20,6 +20,7 @@ using System;
 using System.Reflection;
 using System.Reflection.Emit;
 using Ngo.Compiler.Ast;
+using Ngo.Compiler.Emit.Builder;
 using Ngo.Compiler.Symbols;
 using Ngo.Runtime;
 
@@ -55,8 +56,16 @@ namespace Ngo.Compiler.Emit
             }
         }
 
-        private void EmitStructType(StructTypeSymbol structType)
+        /// <summary>
+        /// Phase 1: Define the TypeBuilder and register it, but don't add fields yet.
+        /// This allows all struct types to be forward-declared before any field types are resolved.
+        /// </summary>
+        public void DefineStructType(StructTypeSymbol structType)
         {
+            // Skip if already defined
+            if (_ctx.StructTypes.ContainsKey(structType))
+                return;
+
             var typeVisibility = (_ctx.Options.IsLibrary && !_ctx.IsExported(structType.Name))
                 ? TypeAttributes.NotPublic
                 : TypeAttributes.Public;
@@ -82,11 +91,25 @@ namespace Ngo.Compiler.Emit
                 }
             }
 
-            // Register early so self-referential fields (e.g. Next *Node) can resolve
-            _ctx.Mapper.Register(structType, typeBuilder);
+            _ctx.Mapper.Register(structType, typeBuilder.AsType());
+            _ctx.StructTypes[structType] = typeBuilder;
+        }
+
+        /// <summary>
+        /// Phase 2: Add fields and String() override to an already-defined struct TypeBuilder.
+        /// Called after all struct types have been defined so cross-references resolve.
+        /// </summary>
+        public void PopulateStructFields(StructTypeSymbol structType)
+        {
+            if (!_ctx.StructTypes.TryGetValue(structType, out var typeBuilder))
+                return;
 
             foreach (var field in structType.Fields)
             {
+                // Skip fields already defined (e.g., if called twice)
+                if (_ctx.StructFields.ContainsKey(field))
+                    continue;
+
                 var fieldType = _ctx.Mapper.Map(field.Type);
                 var fieldVisibility = (_ctx.Options.IsLibrary && !_ctx.IsExported(field.Name))
                     ? FieldAttributes.Assembly
@@ -99,34 +122,37 @@ namespace Ngo.Compiler.Emit
                 }
                 _ctx.StructFields[field] = fb;
             }
+
             // If the struct has a String() string method, add a ToString() override
-            // This enables fmt.Stringer dispatch via FormatValue reflection
             var stringMethod = structType.LookupMethod("String");
             if (stringMethod != null && stringMethod.Parameters.Count == 0
                 && stringMethod.ReturnTypes.Count == 1
-                && stringMethod.ReturnTypes[0].TypeKind == TypeKind.String)
+                && stringMethod.ReturnTypes[0].TypeKind == TypeKind.String
+                && !_ctx.Methods.ContainsKey(stringMethod))
             {
-                // Pre-create the static method that will hold the String() body
                 var staticMethodName = structType.Name + "_String";
                 var staticStringMethod = _ctx.PackageType.DefineMethod(staticMethodName,
                     MethodAttributes.Public | MethodAttributes.Static,
-                    typeof(string), new[] { typeBuilder });
+                    typeof(string), new[] { typeBuilder.AsType() });
                 _ctx.Methods[stringMethod] = staticStringMethod;
 
-                // Define ToString() override on the struct that delegates to the static method
                 var toString = typeBuilder.DefineMethod("ToString",
                     MethodAttributes.Public | MethodAttributes.Virtual | MethodAttributes.HideBySig,
                     typeof(string), Type.EmptyTypes);
-                var il = toString.GetILGenerator();
+                var il = toString.GetILWriter();
                 il.Emit(OpCodes.Ldarg_0);
-                il.Emit(OpCodes.Ldobj, typeBuilder);
-                il.Emit(OpCodes.Call, staticStringMethod);
+                il.Emit(OpCodes.Ldobj, typeBuilder.AsType());
+                il.Emit(OpCodes.Call, staticStringMethod.AsMethodInfo());
                 il.Emit(OpCodes.Ret);
                 typeBuilder.DefineMethodOverride(toString,
                     typeof(object).GetMethod("ToString")!);
             }
+        }
 
-            _ctx.StructTypes[structType] = typeBuilder;
+        private void EmitStructType(StructTypeSymbol structType)
+        {
+            DefineStructType(structType);
+            PopulateStructFields(structType);
         }
 
         private void EmitInterfaceType(InterfaceTypeSymbol interfaceType)
@@ -154,7 +180,7 @@ namespace Ngo.Compiler.Emit
                     paramTypes);
             }
 
-            _ctx.Mapper.Register(interfaceType, typeBuilder);
+            _ctx.Mapper.Register(interfaceType, typeBuilder.AsType());
             _ctx.InterfaceTypes[interfaceType] = typeBuilder;
         }
 
@@ -336,7 +362,7 @@ namespace Ngo.Compiler.Emit
         }
 
         private static void ApplyConstraints(
-            GenericTypeParameterBuilder genericParam,
+            Type genericParam,
             Symbols.ConstraintInfo constraint)
         {
             // any, comparable, union types → unconstrained in .NET
@@ -402,12 +428,12 @@ namespace Ngo.Compiler.Emit
                 CallingConventions.Standard,
                 new[] { concreteClrType });
 
-            var ctorIL = ctorBuilder.GetILGenerator();
+            var ctorIL = ctorBuilder.GetILWriter();
             ctorIL.Emit(OpCodes.Ldarg_0);
             ctorIL.Emit(OpCodes.Call, typeof(object).GetConstructor(Type.EmptyTypes)!);
             ctorIL.Emit(OpCodes.Ldarg_0);
             ctorIL.Emit(OpCodes.Ldarg_1);
-            ctorIL.Emit(OpCodes.Stfld, valueField);
+            ctorIL.Emit(OpCodes.Stfld, valueField.AsFieldInfo());
             ctorIL.Emit(OpCodes.Ret);
 
             // Implement each interface method by delegating to the Go static method
@@ -445,20 +471,20 @@ namespace Ngo.Compiler.Emit
                     returnType,
                     paramTypes);
 
-                var methodIL = methodBuilder.GetILGenerator();
+                var methodIL = methodBuilder.GetILWriter();
 
                 if (embeddedField != null)
                 {
                     // Promoted method: load _value then access the embedded field
                     methodIL.Emit(OpCodes.Ldarg_0);
-                    methodIL.Emit(OpCodes.Ldfld, valueField);
-                    methodIL.Emit(OpCodes.Ldfld, _ctx.StructFields[embeddedField]);
+                    methodIL.Emit(OpCodes.Ldfld, valueField.AsFieldInfo());
+                    methodIL.Emit(OpCodes.Ldfld, _ctx.StructFields[embeddedField].AsFieldInfo());
                 }
                 else
                 {
                     // Direct method: load _value as the receiver
                     methodIL.Emit(OpCodes.Ldarg_0);
-                    methodIL.Emit(OpCodes.Ldfld, valueField);
+                    methodIL.Emit(OpCodes.Ldfld, valueField.AsFieldInfo());
                 }
 
                 // Load method arguments
@@ -466,7 +492,7 @@ namespace Ngo.Compiler.Emit
                     methodIL.Emit(OpCodes.Ldarg, i + 1);
 
                 // Call the static Go method
-                methodIL.Emit(OpCodes.Call, goMethod);
+                methodIL.Emit(OpCodes.Call, goMethod.AsMethodInfo());
                 methodIL.Emit(OpCodes.Ret);
             }
 
@@ -478,7 +504,7 @@ namespace Ngo.Compiler.Emit
                     MethodAttributes.Public | MethodAttributes.Virtual | MethodAttributes.HideBySig,
                     typeof(string),
                     Type.EmptyTypes);
-                var tsIL = toStringBuilder.GetILGenerator();
+                var tsIL = toStringBuilder.GetILWriter();
 
                 // Find the Error() method — check direct then promoted
                 var errorMethod = concreteType.LookupMethod("Error");
@@ -496,10 +522,10 @@ namespace Ngo.Compiler.Emit
                 if (errorMethod != null && _ctx.Methods.TryGetValue(errorMethod, out var goErrorMethod))
                 {
                     tsIL.Emit(OpCodes.Ldarg_0);
-                    tsIL.Emit(OpCodes.Ldfld, valueField);
+                    tsIL.Emit(OpCodes.Ldfld, valueField.AsFieldInfo());
                     if (errorEmbeddedField != null)
-                        tsIL.Emit(OpCodes.Ldfld, _ctx.StructFields[errorEmbeddedField]);
-                    tsIL.Emit(OpCodes.Call, goErrorMethod);
+                        tsIL.Emit(OpCodes.Ldfld, _ctx.StructFields[errorEmbeddedField].AsFieldInfo());
+                    tsIL.Emit(OpCodes.Call, goErrorMethod.AsMethodInfo());
                     tsIL.Emit(OpCodes.Ret);
                 }
                 else

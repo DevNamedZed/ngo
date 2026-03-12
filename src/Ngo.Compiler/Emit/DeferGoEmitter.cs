@@ -23,6 +23,12 @@ using System.Reflection.Emit;
 using Ngo.Compiler.Ast;
 using Ngo.Compiler.Symbols;
 using Ngo.Runtime;
+using Ngo.Runtime.GoRuntimePkg;
+using Ngo.Runtime.Io;
+using Ngo.Runtime.Os;
+using Ngo.Runtime.Reflect;
+using Ngo.Runtime.Time;
+using Ngo.Compiler.Emit.Builder;
 
 namespace Ngo.Compiler.Emit
 {
@@ -154,7 +160,7 @@ namespace Ngo.Compiler.Emit
             _body.EmitExpression(send.Channel);
             _body.EmitExpression(send.Value);
 
-            var sendMethod = chanClrType.GetMethod("Send", new[] { elemClrType })!;
+            var sendMethod = EmitContext.GetMethodSafe(chanClrType, "Send", new[] { elemClrType });
             _ctx.IL.Emit(OpCodes.Call, sendMethod);
         }
 
@@ -167,7 +173,7 @@ namespace Ngo.Compiler.Emit
             _body.EmitExpression(recv.Channel);
 
             // Channel<T>.Receive() returns (T value, bool ok)
-            var receiveMethod = chanClrType.GetMethod("Receive")!;
+            var receiveMethod = EmitContext.GetMethodSafe(chanClrType, "Receive");
             _ctx.IL.Emit(OpCodes.Call, receiveMethod);
 
             if (recv.IsCommaOk)
@@ -181,7 +187,7 @@ namespace Ngo.Compiler.Emit
             var tupleLocal = _ctx.IL.DeclareLocal(tupleType);
             _ctx.IL.Emit(OpCodes.Stloc, tupleLocal);
             _ctx.IL.Emit(OpCodes.Ldloca, tupleLocal);
-            _ctx.IL.Emit(OpCodes.Ldfld, tupleType.GetField("Item1")!);
+            _ctx.IL.Emit(OpCodes.Ldfld, EmitContext.GetFieldSafe(tupleType, "Item1"));
         }
 
         public void EmitSelectStatement(SelectStatement select)
@@ -250,7 +256,7 @@ namespace Ngo.Compiler.Emit
                     // TrySend(value) → bool
                     _ctx.IL.Emit(OpCodes.Ldloc, chanLocals[i]!);
                     _ctx.IL.Emit(OpCodes.Ldloc, sendValLocals[i]!);
-                    var trySendMethod = chanClrType.GetMethod("TrySend", new[] { elemClrType })!;
+                    var trySendMethod = EmitContext.GetMethodSafe(chanClrType, "TrySend", new[] { elemClrType });
                     _ctx.IL.Emit(OpCodes.Call, trySendMethod);
                     _ctx.IL.Emit(OpCodes.Brtrue, bodyLabels[i]);
                 }
@@ -258,7 +264,7 @@ namespace Ngo.Compiler.Emit
                 {
                     // TryReceive() → (T value, bool ok, bool completed)
                     _ctx.IL.Emit(OpCodes.Ldloc, chanLocals[i]!);
-                    var tryRecvMethod = chanClrType.GetMethod("TryReceive", Type.EmptyTypes)!;
+                    var tryRecvMethod = EmitContext.GetMethodSafe(chanClrType, "TryReceive", Type.EmptyTypes);
                     _ctx.IL.Emit(OpCodes.Call, tryRecvMethod);
 
                     var tripleType = typeof(ValueTuple<,,>).MakeGenericType(elemClrType, typeof(bool), typeof(bool));
@@ -267,7 +273,7 @@ namespace Ngo.Compiler.Emit
 
                     // Check Item3 (completed)
                     _ctx.IL.Emit(OpCodes.Ldloca, tripleLocal);
-                    _ctx.IL.Emit(OpCodes.Ldfld, tripleType.GetField("Item3")!);
+                    _ctx.IL.Emit(OpCodes.Ldfld, EmitContext.GetFieldSafe(tripleType, "Item3"));
                     var notCompletedLabel = _ctx.IL.DefineLabel();
                     _ctx.IL.Emit(OpCodes.Brfalse, notCompletedLabel);
 
@@ -277,7 +283,7 @@ namespace Ngo.Compiler.Emit
                         var valueIlLocal = _ctx.IL.DeclareLocal(elemClrType);
                         _ctx.Locals[sc.ValueLocal] = valueIlLocal;
                         _ctx.IL.Emit(OpCodes.Ldloca, tripleLocal);
-                        _ctx.IL.Emit(OpCodes.Ldfld, tripleType.GetField("Item1")!);
+                        _ctx.IL.Emit(OpCodes.Ldfld, EmitContext.GetFieldSafe(tripleType, "Item1"));
                         _ctx.IL.Emit(OpCodes.Stloc, valueIlLocal);
                     }
 
@@ -286,7 +292,7 @@ namespace Ngo.Compiler.Emit
                         var okIlLocal = _ctx.IL.DeclareLocal(typeof(bool));
                         _ctx.Locals[sc.OkLocal] = okIlLocal;
                         _ctx.IL.Emit(OpCodes.Ldloca, tripleLocal);
-                        _ctx.IL.Emit(OpCodes.Ldfld, tripleType.GetField("Item2")!);
+                        _ctx.IL.Emit(OpCodes.Ldfld, EmitContext.GetFieldSafe(tripleType, "Item2"));
                         _ctx.IL.Emit(OpCodes.Stloc, okIlLocal);
                     }
 
@@ -376,14 +382,14 @@ namespace Ngo.Compiler.Emit
                                 MethodAttributes.Private | MethodAttributes.Static,
                                 typeof(void),
                                 new[] { funcType });
-                            var wIL = wrapperMethod.GetILGenerator();
+                            var wIL = wrapperMethod.GetILWriter();
                             wIL.Emit(OpCodes.Ldarg_0);
-                            wIL.Emit(OpCodes.Callvirt, funcType.GetMethod("Invoke")!);
+                            wIL.Emit(OpCodes.Callvirt, EmitContext.GetMethodSafe(funcType, "Invoke"));
                             wIL.Emit(OpCodes.Pop);
                             wIL.Emit(OpCodes.Ret);
 
                             _ctx.IL.Emit(OpCodes.Ldloc, funcLocal);
-                            _ctx.IL.Emit(OpCodes.Ldftn, wrapperMethod);
+                            _ctx.IL.Emit(OpCodes.Ldftn, wrapperMethod.AsMethodInfo());
                             var actionCtor = typeof(Action).GetConstructor(new[] { typeof(object), typeof(IntPtr) })!;
                             _ctx.IL.Emit(OpCodes.Newobj, actionCtor);
                         }
@@ -418,14 +424,14 @@ namespace Ngo.Compiler.Emit
                     paramTypes);
 
                 // Emit the lambda body
-                var lambdaIL = lambdaMethod.GetILGenerator();
+                var lambdaIL = lambdaMethod.GetILWriter();
 
                 if (_ctx.Methods.TryGetValue(call.Function, out var targetMethod))
                 {
                     // User function: load args then call
                     for (int i = 0; i < paramTypes.Length; i++)
                         lambdaIL.Emit(OpCodes.Ldarg, i);
-                    lambdaIL.Emit(OpCodes.Call, targetMethod);
+                    lambdaIL.Emit(OpCodes.Call, targetMethod.AsMethodInfo());
                     if (call.Function.ReturnType != BuiltinTypes.Void)
                         lambdaIL.Emit(OpCodes.Pop);
                 }
@@ -442,7 +448,7 @@ namespace Ngo.Compiler.Emit
                 {
                     // Simple: new Action(null, ldftn lambda)
                     _ctx.IL.Emit(OpCodes.Ldnull);
-                    _ctx.IL.Emit(OpCodes.Ldftn, lambdaMethod);
+                    _ctx.IL.Emit(OpCodes.Ldftn, lambdaMethod.AsMethodInfo());
                     var actionCtor = typeof(Action).GetConstructor(new[] { typeof(object), typeof(IntPtr) })!;
                     _ctx.IL.Emit(OpCodes.Newobj, actionCtor);
                 }
@@ -481,7 +487,7 @@ namespace Ngo.Compiler.Emit
                     typeof(void),
                     paramTypes);
 
-                var lambdaIL = lambdaMethod.GetILGenerator();
+                var lambdaIL = lambdaMethod.GetILWriter();
                 for (int i = 0; i < paramTypes.Length; i++)
                 {
                     lambdaIL.Emit(OpCodes.Ldarg, i);
@@ -489,7 +495,7 @@ namespace Ngo.Compiler.Emit
 
                 if (_ctx.Methods.TryGetValue(methodCall.Method, out var targetMethod))
                 {
-                    lambdaIL.Emit(OpCodes.Call, targetMethod);
+                    lambdaIL.Emit(OpCodes.Call, targetMethod.AsMethodInfo());
                 }
                 else if (!recvType.IsValueType)
                 {
@@ -532,7 +538,7 @@ namespace Ngo.Compiler.Emit
             }
         }
 
-        private void EmitClosureAction(MethodBuilder lambdaMethod, List<(LocalBuilder local, Type type)> argLocals)
+        private void EmitClosureAction(IMethodBuilder lambdaMethod, List<(LocalBuilder local, Type type)> argLocals)
         {
             // Create a closure class with instance fields to capture arg values.
             // Each call site gets its own instance, so defer in loops works correctly.
@@ -541,7 +547,7 @@ namespace Ngo.Compiler.Emit
                 closureName,
                 TypeAttributes.Public | TypeAttributes.Sealed);
 
-            var argFields = new List<FieldBuilder>();
+            var argFields = new List<IFieldBuilder>();
             for (int i = 0; i < argLocals.Count; i++)
             {
                 argFields.Add(closureBuilder.DefineField(
@@ -555,13 +561,13 @@ namespace Ngo.Compiler.Emit
                 typeof(void),
                 Type.EmptyTypes);
 
-            var invokeIL = invokeMethod.GetILGenerator();
+            var invokeIL = invokeMethod.GetILWriter();
             for (int i = 0; i < argFields.Count; i++)
             {
                 invokeIL.Emit(OpCodes.Ldarg_0);
-                invokeIL.Emit(OpCodes.Ldfld, argFields[i]);
+                invokeIL.Emit(OpCodes.Ldfld, argFields[i].AsFieldInfo());
             }
-            invokeIL.Emit(OpCodes.Call, lambdaMethod);
+            invokeIL.Emit(OpCodes.Call, lambdaMethod.AsMethodInfo());
             invokeIL.Emit(OpCodes.Ret);
 
             var closureType = closureBuilder.CreateType()!;
@@ -614,7 +620,7 @@ namespace Ngo.Compiler.Emit
                 TypeAttributes.Public | TypeAttributes.Sealed);
 
             var fnField = wrapperBuilder.DefineField("_fn", delegateType, FieldAttributes.Public);
-            var argFields = new List<FieldBuilder>();
+            var argFields = new List<IFieldBuilder>();
             for (int i = 0; i < eagerLocals.Count; i++)
             {
                 argFields.Add(wrapperBuilder.DefineField(
@@ -627,15 +633,15 @@ namespace Ngo.Compiler.Emit
                 MethodAttributes.Public,
                 typeof(void),
                 Type.EmptyTypes);
-            var wIL = invokeMethod.GetILGenerator();
+            var wIL = invokeMethod.GetILWriter();
             wIL.Emit(OpCodes.Ldarg_0);
-            wIL.Emit(OpCodes.Ldfld, fnField);
+            wIL.Emit(OpCodes.Ldfld, fnField.AsFieldInfo());
             for (int i = 0; i < argFields.Count; i++)
             {
                 wIL.Emit(OpCodes.Ldarg_0);
-                wIL.Emit(OpCodes.Ldfld, argFields[i]);
+                wIL.Emit(OpCodes.Ldfld, argFields[i].AsFieldInfo());
             }
-            wIL.Emit(OpCodes.Callvirt, delegateType.GetMethod("Invoke")!);
+            wIL.Emit(OpCodes.Callvirt, EmitContext.GetMethodSafe(delegateType, "Invoke"));
             if (funcLit.ReturnTypes.Count > 0)
             {
                 wIL.Emit(OpCodes.Pop);
@@ -668,7 +674,7 @@ namespace Ngo.Compiler.Emit
             _ctx.IL.Emit(OpCodes.Newobj, actionCtor);
         }
 
-        private void EmitBuiltinInLambda(ILGenerator il, CallExpression call, Type[] paramTypes)
+        private void EmitBuiltinInLambda(CilWriter il, CallExpression call, Type[] paramTypes)
         {
             var name = call.Function.Name;
             var pkg = call.Function.PackageName;
@@ -711,7 +717,7 @@ namespace Ngo.Compiler.Emit
             throw new NotSupportedException($"Builtin '{name}' not supported in defer/go context");
         }
 
-        private bool TryEmitLambdaPrintFamily(ILGenerator il, string name, string? pkg, Type[] paramTypes)
+        private bool TryEmitLambdaPrintFamily(CilWriter il, string name, string? pkg, Type[] paramTypes)
         {
             Type? targetType = null;
 
@@ -722,10 +728,10 @@ namespace Ngo.Compiler.Emit
             else if (pkg == "fmt" || (pkg == null && (name == "Println" || name == "Print" || name == "Sprint" || name == "Sprintln")))
             {
                 if (name == "Println" || name == "Print" || name == "Sprint" || name == "Sprintln")
-                    targetType = typeof(Fmt);
+                    targetType = typeof(Ngo.Runtime.Fmt.Package);
             }
             else if (pkg == "log" && (name == "Println" || name == "Print" || name == "Fatal"))
-                targetType = typeof(GoLog);
+                targetType = typeof(Ngo.Runtime.Log.Package);
 
             if (targetType == null) return false;
 
@@ -742,20 +748,20 @@ namespace Ngo.Compiler.Emit
             return true;
         }
 
-        private bool TryEmitLambdaFormatFamily(ILGenerator il, string name, string? pkg, Type[] paramTypes)
+        private bool TryEmitLambdaFormatFamily(CilWriter il, string name, string? pkg, Type[] paramTypes)
         {
             Type? targetType = null;
 
             if (pkg == "fmt" || pkg == null)
             {
                 if (name == "Printf" || name == "Sprintf" || name == "Errorf")
-                    targetType = typeof(Fmt);
+                    targetType = typeof(Ngo.Runtime.Fmt.Package);
             }
 
             if (pkg == "log")
             {
                 if (name == "Printf" || name == "Fatalf")
-                    targetType = typeof(GoLog);
+                    targetType = typeof(Ngo.Runtime.Log.Package);
             }
 
             if (targetType == null || paramTypes.Length < 1) return false;
@@ -768,7 +774,7 @@ namespace Ngo.Compiler.Emit
             return true;
         }
 
-        private static void EmitLambdaPrintArgs(ILGenerator il, Type[] paramTypes)
+        private static void EmitLambdaPrintArgs(CilWriter il, Type[] paramTypes)
         {
             il.Emit(OpCodes.Ldc_I4, paramTypes.Length);
             il.Emit(OpCodes.Newarr, typeof(object));
@@ -783,7 +789,7 @@ namespace Ngo.Compiler.Emit
             }
         }
 
-        private static void EmitLambdaFormatArgs(ILGenerator il, Type[] paramTypes)
+        private static void EmitLambdaFormatArgs(CilWriter il, Type[] paramTypes)
         {
             // Arg 0 is the format string
             il.Emit(OpCodes.Ldarg_0);
@@ -803,7 +809,7 @@ namespace Ngo.Compiler.Emit
             }
         }
 
-        private static void EmitLambdaStaticCall(ILGenerator il, Type targetType, string methodName, Type[] paramTypes)
+        private static void EmitLambdaStaticCall(CilWriter il, Type targetType, string methodName, Type[] paramTypes)
         {
             // Find method by name + param count
             MethodInfo? method = targetType.GetMethod(methodName, paramTypes);
@@ -856,27 +862,27 @@ namespace Ngo.Compiler.Emit
             {
                 "os" => typeof(GoOs),
                 "time" => typeof(GoTime),
-                "sort" => typeof(GoSort),
-                "rand" => typeof(GoRand),
-                "strconv" => typeof(GoStrconv),
-                "strings" => typeof(GoStrings),
-                "errors" => typeof(GoErrors),
-                "math" => typeof(GoMath),
-                "regexp" => typeof(GoRegexp),
-                "unicode" => typeof(GoUnicode),
-                "utf8" => typeof(GoUtf8),
-                "bytes" => typeof(GoBytes),
-                "path" => typeof(GoPath),
-                "filepath" => typeof(GoFilepath),
+                "sort" => typeof(Ngo.Runtime.Sort.Package),
+                "rand" => typeof(Ngo.Runtime.Rand.Package),
+                "strconv" => typeof(Ngo.Runtime.Strconv.Package),
+                "strings" => typeof(Ngo.Runtime.Strings.Package),
+                "errors" => typeof(Ngo.Runtime.Errors.Package),
+                "math" => typeof(Ngo.Runtime.Math.Package),
+                "regexp" => typeof(Ngo.Runtime.Regexp.Package),
+                "unicode" => typeof(Ngo.Runtime.Unicode.Package),
+                "utf8" => typeof(Ngo.Runtime.Utf8.Package),
+                "bytes" => typeof(Ngo.Runtime.Bytes.Package),
+                "path" => typeof(Ngo.Runtime.Path.Package),
+                "filepath" => typeof(Ngo.Runtime.Filepath.Package),
                 "io" => typeof(GoIo),
-                "log" => typeof(GoLog),
-                "fmt" => typeof(Fmt),
+                "log" => typeof(Ngo.Runtime.Log.Package),
+                "fmt" => typeof(Ngo.Runtime.Fmt.Package),
                 "ioutil" => typeof(GoIo),
-                "hex" => typeof(GoHex),
-                "sha256" => typeof(GoSha256),
-                "crand" => typeof(GoCryptoRand),
-                "flag" => typeof(GoFlag),
-                "http" => typeof(GoHttp),
+                "hex" => typeof(Ngo.Runtime.Hex.Package),
+                "sha256" => typeof(Ngo.Runtime.Sha256.Package),
+                "crand" => typeof(Ngo.Runtime.Crypto.Rand.Package),
+                "flag" => typeof(Ngo.Runtime.Flag.Package),
+                "http" => typeof(Ngo.Runtime.Http.Package),
                 "reflect" => typeof(GoReflect),
                 "runtime" => typeof(GoRuntime),
                 "reflectlite" => typeof(GoReflect),

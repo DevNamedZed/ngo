@@ -31,7 +31,7 @@ public class AnalysisInterfaceTests
     private static AnalysisResult Analyze(string source)
     {
         var tree = SyntaxTree.Parse(source);
-        return SemanticAnalyzer.Analyze(tree);
+        return SemanticAnalyzer.Analyze(tree, new CompilationContext(null));
     }
 
     [TestMethod]
@@ -356,5 +356,116 @@ func main() {
     greet(d)
 }");
         Assert.IsFalse(result.HasErrors);
+    }
+
+    [TestMethod]
+    public void Pointer_to_struct_returned_as_error_interface()
+    {
+        // *MyError should satisfy error if MyError has Error() string (pointer receiver)
+        var result = Analyze(@"package main
+
+type MyError struct { msg string }
+func (e *MyError) Error() string { return e.msg }
+
+func makeError() error {
+    return &MyError{msg: ""oops""}
+}
+
+func main() {
+    _ = makeError()
+}");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors.Select(e => e.Message)));
+    }
+
+    [TestMethod]
+    public void Pointer_to_struct_returned_as_custom_interface()
+    {
+        // *Impl should satisfy MyInterface if Impl has the required methods
+        var result = Analyze(@"package main
+
+type FileInfo interface {
+    Name() string
+    Size() int64
+}
+
+type fileInfo struct {
+    name string
+    size int64
+}
+
+func (f *fileInfo) Name() string { return f.name }
+func (f *fileInfo) Size() int64 { return f.size }
+
+func getInfo() FileInfo {
+    return &fileInfo{name: ""test"", size: 42}
+}
+
+func main() {
+    _ = getInfo()
+}");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors.Select(e => e.Message)));
+    }
+
+    [TestMethod]
+    public void Pointer_to_struct_assigned_to_interface_var()
+    {
+        // *MyStruct assigned to an interface variable
+        var result = Analyze(@"package main
+
+type Conn interface {
+    Close() error
+}
+
+type myConn struct {}
+func (c *myConn) Close() error { return nil }
+
+func main() {
+    var c Conn = &myConn{}
+    _ = c
+}");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors.Select(e => e.Message)));
+    }
+
+    [TestMethod]
+    public void Pointer_to_stdlib_struct_returned_as_error()
+    {
+        // Test with stdlib import — return &struct as error
+        var result = Analyze(@"package main
+
+import ""fmt""
+
+func makeErr() error {
+    return fmt.Errorf(""test"")
+}
+
+func main() {
+    _ = makeErr()
+}");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors.Select(e => e.Message)));
+    }
+
+    [TestMethod]
+    public void Pointer_to_named_type_with_interface_underlying_satisfies_interface()
+    {
+        // Named type whose underlying is an interface
+        var result = Analyze(@"package main
+
+type Handler interface {
+    Handle() string
+}
+
+type myHandler struct{}
+func (h *myHandler) Handle() string { return ""ok"" }
+
+type MyHandler = Handler
+
+func getHandler() MyHandler {
+    return &myHandler{}
+}
+
+func main() {
+    _ = getHandler()
+}");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors.Select(e => e.Message)));
     }
 }

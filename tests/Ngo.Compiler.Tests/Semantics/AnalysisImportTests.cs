@@ -31,7 +31,7 @@ public class AnalysisImportTests
     private static AnalysisResult Analyze(string source)
     {
         var tree = SyntaxTree.Parse(source);
-        return SemanticAnalyzer.Analyze(tree);
+        return SemanticAnalyzer.Analyze(tree, new CompilationContext(null));
     }
 
     [TestMethod]
@@ -196,5 +196,109 @@ import _ ""fmt""
 func main() {}");
         Assert.IsFalse(result.HasErrors);
         Assert.AreEqual(0, result.Root.Imports.Count);
+    }
+
+    [TestMethod]
+    public void Import_embed_package()
+    {
+        var result = Analyze(@"package main
+import ""embed""
+func main() {
+    var fs embed.FS
+    _, _ = fs.ReadFile(""test.txt"")
+}");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
+    }
+
+    [TestMethod]
+    public void Import_maps_package()
+    {
+        var result = Analyze(@"package main
+import ""maps""
+func main() {
+    m := map[string]int{""a"": 1}
+    maps.Clone(m)
+}");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
+    }
+
+    [TestMethod]
+    public void Import_iter_package()
+    {
+        var result = Analyze(@"package main
+import ""iter""
+func main() {
+    var s iter.Seq[int]
+    _ = s
+}");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
+    }
+
+    [TestMethod]
+    public void Fmt_Fscan_exists()
+    {
+        var result = Analyze(@"package main
+import ""fmt""
+import ""os""
+func main() {
+    var x int
+    fmt.Fscan(os.Stdin, &x)
+}");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
+    }
+
+    [TestMethod]
+    public void Sync_atomic_Pointer_generic()
+    {
+        var result = Analyze(@"package main
+import ""sync/atomic""
+func main() {
+    var p atomic.Pointer[int]
+    p.Store(nil)
+    _ = p.Load()
+}");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
+    }
+
+    [TestMethod]
+    public void Io_ReadSeeker_satisfies_Reader()
+    {
+        var result = Analyze(@"package main
+import ""io""
+func useReader(r io.Reader) {}
+func main() {
+    var rs io.ReadSeeker
+    useReader(rs)
+}");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
+    }
+
+    [TestMethod]
+    public void Io_ReadCloser_satisfies_Reader()
+    {
+        var result = Analyze(@"package main
+import ""io""
+func useReader(r io.Reader) {}
+func main() {
+    var rc io.ReadCloser
+    useReader(rc)
+}");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
+    }
+
+    [TestMethod]
+    public void Os_File_satisfies_io_Writer()
+    {
+        var result = Analyze(@"package main
+import (
+    ""io""
+    ""os""
+)
+func useWriter(w io.Writer) {}
+func main() {
+    var f *os.File
+    useWriter(f)
+}");
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
     }
 }

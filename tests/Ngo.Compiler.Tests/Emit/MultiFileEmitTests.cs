@@ -35,10 +35,11 @@ public class MultiFileEmitTests
         foreach (var src in goSources)
             trees.Add(SyntaxTree.Parse(src));
 
-        var result = SemanticAnalyzer.Analyze(trees);
+        var ctx = new CompilationContext(null);
+        var result = SemanticAnalyzer.Analyze(trees, ctx);
         Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
 
-        var assembly = AssemblyEmitter.Emit(result);
+        var assembly = AssemblyEmitter.Emit(result, ctx);
         var entryPoint = AssemblyEmitter.FindEntryPoint(assembly);
         Assert.IsNotNull(entryPoint);
 
@@ -54,7 +55,7 @@ public class MultiFileEmitTests
             Console.SetOut(oldOut);
         }
 
-        return sw.ToString();
+        return sw.ToString().Replace("\r\n", "\n");
     }
 
     // ================================================================
@@ -221,7 +222,7 @@ func buildMessage() string {
             SyntaxTree.Parse("package other\nfunc helper() {}")
         };
 
-        var result = SemanticAnalyzer.Analyze(trees);
+        var result = SemanticAnalyzer.Analyze(trees, new CompilationContext(null));
         Assert.IsTrue(result.HasErrors);
     }
 }

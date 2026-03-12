@@ -45,18 +45,16 @@ namespace Ngo.Compiler.Symbols
         public IReadOnlyList<TypeElement> TypeElements { get; }
 
         public bool IsComparable { get; }
-    }
 
-    public sealed class TypeElement
-    {
-        public TypeElement(TypeSymbol type, bool isTilde)
-        {
-            Type = type;
-            IsTilde = isTilde;
-        }
+        /// <summary>
+        /// For generic interface constraints (e.g., nistPoint[Point]),
+        /// stores the interface type for lazy method resolution.
+        /// </summary>
+        public InterfaceTypeSymbol? InterfaceType { get; set; }
 
-        public TypeSymbol Type { get; }
-
-        public bool IsTilde { get; }
+        /// <summary>
+        /// Type arguments for the generic interface constraint.
+        /// </summary>
+        public IReadOnlyList<TypeSymbol>? InterfaceTypeArgs { get; set; }
     }
 }

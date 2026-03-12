@@ -152,9 +152,22 @@ namespace Ngo.Compiler.Semantics
                 }
             }
 
+            // Check if any return types failed to resolve (void = unresolved, error-kinded = error sentinel).
+            // When return types didn't resolve, count/type mismatches are cascade errors — suppress them.
+            bool hasUnresolvedReturnTypes = false;
+            for (int i = 0; i < _context.CurrentReturnTypes.Count; i++)
+            {
+                var rt = _context.CurrentReturnTypes[i].Resolved();
+                if (rt == BuiltinTypes.Void || rt.TypeKind == TypeKind.Error)
+                {
+                    hasUnresolvedReturnTypes = true;
+                    break;
+                }
+            }
+
             if (values.Count != _context.CurrentReturnTypes.Count)
             {
-                if (values.Count == 0 && _context.CurrentReturnTypes.Count > 0)
+                if (values.Count == 0 && _context.CurrentReturnTypes.Count > 0 && !hasUnresolvedReturnTypes)
                 {
                     _context.Errors.ReportError(_context.SpanOf(syntax), ErrorCode.MissingReturn,
                         "Missing return value");
@@ -164,7 +177,7 @@ namespace Ngo.Compiler.Semantics
                     _context.Errors.ReportError(_context.SpanOf(syntax), ErrorCode.WrongReturnCount,
                         "Too many return values");
                 }
-                else
+                else if (!hasUnresolvedReturnTypes)
                 {
                     _context.Errors.ReportError(_context.SpanOf(syntax), ErrorCode.WrongReturnCount,
                         $"Wrong number of return values: expected {_context.CurrentReturnTypes.Count}, got {values.Count}");
@@ -174,6 +187,11 @@ namespace Ngo.Compiler.Semantics
             {
                 for (int i = 0; i < values.Count; i++)
                 {
+                    var rt = _context.CurrentReturnTypes[i].Resolved();
+                    // Skip type check if the return type failed to resolve (cascade error)
+                    if (rt == BuiltinTypes.Void || rt.TypeKind == TypeKind.Error)
+                        continue;
+
                     if (!TypeChecker.IsAssignable(values[i].Type, _context.CurrentReturnTypes[i]))
                     {
                         _context.Errors.ReportError(_context.SpanOf(syntax), ErrorCode.TypeMismatch,
@@ -510,7 +528,9 @@ namespace Ngo.Compiler.Semantics
 
             if (condition.Type != TypeSymbol.Error &&
                 condition.Type.TypeKind != TypeKind.Bool &&
-                condition.Type.TypeKind != TypeKind.UntypedBool)
+                condition.Type.TypeKind != TypeKind.UntypedBool &&
+                condition.Type is not TypeParameterSymbol &&
+                condition.Type is not InterfaceTypeSymbol)
             {
                 _context.Errors.ReportError(_context.SpanOf(syntax.Condition), ErrorCode.TypeMismatch,
                     $"Non-bool type '{condition.Type.Name}' used as if condition");
@@ -558,7 +578,8 @@ namespace Ngo.Compiler.Semantics
                 condition = _expressionResolver.ResolveExpression(syntax.Condition);
                 if (condition.Type != TypeSymbol.Error &&
                     condition.Type.TypeKind != TypeKind.Bool &&
-                    condition.Type.TypeKind != TypeKind.UntypedBool)
+                    condition.Type.TypeKind != TypeKind.UntypedBool &&
+                    condition.Type is not TypeParameterSymbol)
                 {
                     _context.Errors.ReportError(_context.SpanOf(syntax.Condition), ErrorCode.TypeMismatch,
                         $"Non-bool type '{condition.Type.Name}' used as for condition");
@@ -630,7 +651,8 @@ namespace Ngo.Compiler.Semantics
                     {
                         if (!TypeChecker.IsAssignable(expr.Type, tagType)
                             && !TypeChecker.IsAssignable(tagType, expr.Type)
-                            && TypeChecker.CommonType(expr.Type, tagType) == null)
+                            && TypeChecker.CommonType(expr.Type, tagType) == null
+                            && !(TypeChecker.IsNumeric(expr.Type) && TypeChecker.IsNumeric(tagType)))
                         {
                             _context.Errors.ReportError(_context.SpanOf(syntax.Expressions.Value[i]), ErrorCode.TypeMismatch,
                                 $"Cannot compare type '{expr.Type.Name}' with switch tag type '{tagType.Name}'");
@@ -641,7 +663,8 @@ namespace Ngo.Compiler.Semantics
                         // Tagless switch: each case must be bool
                         if (expr.Type != TypeSymbol.Error &&
                             expr.Type.TypeKind != TypeKind.Bool &&
-                            expr.Type.TypeKind != TypeKind.UntypedBool)
+                            expr.Type.TypeKind != TypeKind.UntypedBool &&
+                            expr.Type is not TypeParameterSymbol)
                         {
                             _context.Errors.ReportError(_context.SpanOf(syntax.Expressions.Value[i]), ErrorCode.TypeMismatch,
                                 $"Non-bool type '{expr.Type.Name}' used as case condition in tagless switch");
@@ -718,7 +741,12 @@ namespace Ngo.Compiler.Semantics
                 guardExpr = new ErrorExpression("Invalid type switch guard", span);
             }
 
-            if (guardExpr.Type != TypeSymbol.Error && guardExpr.Type is not InterfaceTypeSymbol)
+            var guardResolved = guardExpr.Type.Resolved();
+            if (guardExpr.Type != TypeSymbol.Error
+                && guardExpr.Type is not InterfaceTypeSymbol
+                && guardResolved is not InterfaceTypeSymbol
+                && guardExpr.Type.TypeKind != TypeKind.Interface
+                && guardResolved.TypeKind != TypeKind.Interface)
             {
                 _context.Errors.ReportError(span, ErrorCode.InvalidTypeAssert,
                     $"Cannot type switch on non-interface type '{guardExpr.Type.Name}'");
@@ -877,8 +905,19 @@ namespace Ngo.Compiler.Semantics
             {
                 var resolved = iterable.Type.Resolved();
                 // Also check underlying type for named types (e.g. type Float64Slice []float64)
-                if (resolved == iterable.Type && resolved.UnderlyingType != null)
-                    resolved = resolved.UnderlyingType;
+                // Chain through multiple levels (e.g. type HTTPHeadersCarrier http.Header
+                // where http.Header is type Header map[string][]string)
+                for (int depth = 0; depth < 10; depth++)
+                {
+                    if (resolved is SliceTypeSymbol || resolved is ArrayTypeSymbol
+                        || resolved is MapTypeSymbol || resolved is ChannelTypeSymbol
+                        || resolved is PointerTypeSymbol)
+                        break;
+                    if (resolved.UnderlyingType != null && resolved.UnderlyingType != resolved)
+                        resolved = resolved.UnderlyingType;
+                    else
+                        break;
+                }
                 if (resolved is SliceTypeSymbol sliceType)
                 {
                     keyType = BuiltinTypes.Int;
@@ -894,23 +933,89 @@ namespace Ngo.Compiler.Semantics
                     keyType = mapType.KeyType;
                     valueType = mapType.ValueType;
                 }
-                else if (iterable.Type.TypeKind == TypeKind.String
-                         || iterable.Type.TypeKind == TypeKind.UntypedString)
+                else if (resolved.TypeKind == TypeKind.String
+                         || resolved.TypeKind == TypeKind.UntypedString)
                 {
                     keyType = BuiltinTypes.Int;
                     valueType = BuiltinTypes.Rune;
                 }
-                else if (iterable.Type is ChannelTypeSymbol chanType)
+                else if (resolved is ChannelTypeSymbol chanType)
                 {
                     // Channel range yields only one variable (the received value)
                     keyType = chanType.ElementType;
                     valueType = null;
+                }
+                else if (resolved is PointerTypeSymbol ptrType)
+                {
+                    // Auto-dereference pointer to array/slice
+                    var inner = ptrType.ElementType.Resolved();
+                    if (inner is ArrayTypeSymbol ptrArr)
+                    {
+                        keyType = BuiltinTypes.Int;
+                        valueType = ptrArr.ElementType;
+                    }
+                    else if (inner is SliceTypeSymbol ptrSlice)
+                    {
+                        keyType = BuiltinTypes.Int;
+                        valueType = ptrSlice.ElementType;
+                    }
+                    else
+                    {
+                        _context.Errors.ReportError(span, ErrorCode.InvalidRange,
+                            $"Cannot range over type '{iterable.Type.Name}'");
+                    }
                 }
                 else if (TypeChecker.IsInteger(iterable.Type))
                 {
                     // Go 1.22: for i := range N — iterate 0..N-1
                     keyType = BuiltinTypes.Int;
                     valueType = null;
+                }
+                else if (resolved is TypeParameterSymbol rangeTypeParam)
+                {
+                    // Type parameter with structural constraint (e.g. ~[]E, ~map[K]V)
+                    var structural = TypeChecker.GetConstraintStructuralType(rangeTypeParam);
+                    if (structural != null)
+                    {
+                        var resolvedStructural = structural.Resolved();
+                        if (resolvedStructural == structural && structural.UnderlyingType != null)
+                            resolvedStructural = structural.UnderlyingType;
+                        if (resolvedStructural is SliceTypeSymbol csSlice)
+                        {
+                            keyType = BuiltinTypes.Int;
+                            valueType = csSlice.ElementType;
+                        }
+                        else if (resolvedStructural is ArrayTypeSymbol csArray)
+                        {
+                            keyType = BuiltinTypes.Int;
+                            valueType = csArray.ElementType;
+                        }
+                        else if (resolvedStructural is MapTypeSymbol csMap)
+                        {
+                            keyType = csMap.KeyType;
+                            valueType = csMap.ValueType;
+                        }
+                        else if (resolvedStructural is ChannelTypeSymbol csChan)
+                        {
+                            keyType = csChan.ElementType;
+                            valueType = null;
+                        }
+                        else if (resolvedStructural.TypeKind == TypeKind.String)
+                        {
+                            keyType = BuiltinTypes.Int;
+                            valueType = BuiltinTypes.Rune;
+                        }
+                        else
+                        {
+                            _context.Errors.ReportError(span, ErrorCode.InvalidRange,
+                                $"Cannot range over type '{iterable.Type.Name}'");
+                        }
+                    }
+                    else
+                    {
+                        _context.Errors.ReportError(span, ErrorCode.InvalidRange,
+                            $"Cannot range over type '{iterable.Type.Name}'");
+                    }
                 }
                 else
                 {
@@ -984,7 +1089,16 @@ namespace Ngo.Compiler.Semantics
             var channel = _expressionResolver.ResolveExpression(syntax.Channel);
             var value = _expressionResolver.ResolveExpression(syntax.Value);
 
-            if (channel.Type is ChannelTypeSymbol chanType)
+            // Unwrap named channel types (e.g. type control chan bool → ChannelTypeSymbol)
+            var chanResolved = channel.Type;
+            for (int depth = 0; depth < 10 && chanResolved is not ChannelTypeSymbol; depth++)
+            {
+                if (chanResolved.UnderlyingType != null && chanResolved.UnderlyingType != chanResolved)
+                    chanResolved = chanResolved.UnderlyingType;
+                else
+                    break;
+            }
+            if (chanResolved is ChannelTypeSymbol chanType)
             {
                 if (!TypeChecker.IsAssignable(value.Type, chanType.ElementType))
                 {
@@ -992,7 +1106,7 @@ namespace Ngo.Compiler.Semantics
                         $"Cannot send '{value.Type.Name}' on channel of '{chanType.ElementType.Name}'");
                 }
             }
-            else
+            else if (!(chanResolved is InterfaceTypeSymbol ifaceSend && ifaceSend.Methods.Count == 0))
             {
                 _context.Errors.ReportError(_context.SpanOf(syntax), ErrorCode.InvalidOperation,
                     $"Cannot send on non-channel type '{channel.Type.Name}'");
@@ -1242,7 +1356,7 @@ namespace Ngo.Compiler.Semantics
                     // Type alias
                     var underlying = _typeResolver.ResolveType(spec.Type);
                     if (underlying == null) underlying = TypeSymbol.Error;
-                    var alias = new TypeSymbol(name, underlying.TypeKind, underlying);
+                    var alias = new TypeSymbol(name, underlying.TypeKind, underlying) { IsAlias = true };
                     _context.Scope.TryDeclare(alias);
                     continue;
                 }

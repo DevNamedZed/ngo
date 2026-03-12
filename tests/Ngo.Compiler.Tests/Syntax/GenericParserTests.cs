@@ -183,4 +183,83 @@ func main() {
         var fn = file.Members.OfType<FunctionDeclarationSyntax>().First();
         Assert.AreEqual("main", fn.Name.Text);
     }
+
+    // ================================================================
+    // Struct embedded generic fields
+    // ================================================================
+
+    [TestMethod]
+    public void Struct_with_embedded_multi_arg_generic()
+    {
+        // node[N, T] as embedded field — should NOT be parsed as field name + array type
+        var file = Parse(@"package main
+type node[N any, T any] struct { count int }
+type leafNode[N any, T any] struct {
+    node[N, T]
+    items int
+}");
+        var td = file.Members.OfType<TypeDeclarationSyntax>().Last();
+        var spec = td.Specs[0];
+        Assert.AreEqual("leafNode", spec.Name.Text);
+        var structType = spec.Type as StructTypeSyntax;
+        Assert.IsNotNull(structType);
+        // First field is embedded (no names), second is named
+        Assert.IsNull(structType!.Fields[0].Names);
+        Assert.IsNotNull(structType.Fields[1].Names);
+        Assert.AreEqual("items", structType.Fields[1].Names!.Value[0].Text);
+    }
+
+    [TestMethod]
+    public void Struct_with_embedded_single_arg_generic()
+    {
+        // RTreeG[T] as embedded field
+        var file = Parse(@"package main
+type RTreeG[T any] struct { count int }
+type Generic[T any] struct {
+    RTreeG[T]
+}");
+        var td = file.Members.OfType<TypeDeclarationSyntax>().Last();
+        var spec = td.Specs[0];
+        var structType = spec.Type as StructTypeSyntax;
+        Assert.IsNotNull(structType);
+        Assert.AreEqual(1, structType!.Fields.Count);
+        // Should be embedded (no names)
+        Assert.IsNull(structType.Fields[0].Names);
+    }
+
+    [TestMethod]
+    public void Struct_field_with_const_array_length()
+    {
+        // name [maxEntries]rect — field name + array type with named constant length
+        var file = Parse(@"package main
+const maxEntries = 16
+type node struct {
+    rects [maxEntries]int
+    count int
+}");
+        var td = file.Members.OfType<TypeDeclarationSyntax>().First();
+        var structType = td.Specs[0].Type as StructTypeSyntax;
+        Assert.IsNotNull(structType);
+        Assert.AreEqual(2, structType!.Fields.Count);
+        // Both fields should be named
+        Assert.IsNotNull(structType.Fields[0].Names);
+        Assert.AreEqual("rects", structType.Fields[0].Names!.Value[0].Text);
+        Assert.IsNotNull(structType.Fields[1].Names);
+        Assert.AreEqual("count", structType.Fields[1].Names!.Value[0].Text);
+    }
+
+    [TestMethod]
+    public void Method_with_unnamed_receiver_parses()
+    {
+        // func (TypeName) methodName(...) — receiver with no variable name
+        var file = Parse(@"package main
+type myInstr struct{}
+func (myInstr) exec() {}");
+        var method = file.Members.OfType<MethodDeclarationSyntax>().First();
+        Assert.AreEqual("exec", method.Name.Text);
+        Assert.AreEqual(1, method.Receiver.Parameters.Count);
+        var receiverParam = method.Receiver.Parameters[0];
+        Assert.IsNull(receiverParam.Names);
+        Assert.IsNotNull(receiverParam.Type);
+    }
 }

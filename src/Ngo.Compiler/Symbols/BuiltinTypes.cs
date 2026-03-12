@@ -98,6 +98,13 @@ namespace Ngo.Compiler.Symbols
             ["error"] = Error,
             ["interface{}"] = EmptyInterface,
             ["any"] = EmptyInterface,
+            ["comparable"] = EmptyInterface,
+            ["untyped bool"] = UntypedBool,
+            ["untyped int"] = UntypedInt,
+            ["untyped float"] = UntypedFloat,
+            ["untyped complex"] = UntypedComplex,
+            ["untyped string"] = UntypedString,
+            ["untyped rune"] = UntypedRune,
         };
 
         public static TypeSymbol? Resolve(string name)

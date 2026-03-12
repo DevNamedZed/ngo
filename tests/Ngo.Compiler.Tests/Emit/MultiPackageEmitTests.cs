@@ -41,7 +41,6 @@ public class MultiPackageEmitTests
     public void Cleanup()
     {
         try { Directory.Delete(_tempDir, recursive: true); } catch { }
-        PackageRegistry.SetProjectRoot(null);
     }
 
     private string Run(string mainSource)
@@ -49,15 +48,14 @@ public class MultiPackageEmitTests
         // Write main.go
         File.WriteAllText(Path.Combine(_tempDir, "main.go"), mainSource);
 
-        // Set project root so PackageRegistry can find user packages
-        PackageRegistry.SetProjectRoot(_tempDir);
+        var compilation = new CompilationContext(_tempDir);
 
         var tree = SyntaxTree.Parse(mainSource);
-        var result = SemanticAnalyzer.Analyze(tree);
+        var result = SemanticAnalyzer.Analyze(tree, compilation);
 
         Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
 
-        var assembly = AssemblyEmitter.Emit(result);
+        var assembly = AssemblyEmitter.Emit(result, compilation);
         var entryPoint = AssemblyEmitter.FindEntryPoint(assembly);
         Assert.IsNotNull(entryPoint);
 
@@ -73,7 +71,7 @@ public class MultiPackageEmitTests
             Console.SetOut(oldOut);
         }
 
-        return sw.ToString();
+        return sw.ToString().Replace("\r\n", "\n");
     }
 
     private void WritePackageFile(string pkgPath, string fileName, string content)
@@ -209,7 +207,7 @@ func main() {
     [TestMethod]
     public void Unknown_user_package_reports_error()
     {
-        PackageRegistry.SetProjectRoot(_tempDir);
+        var compilation = new CompilationContext(_tempDir);
 
         var tree = SyntaxTree.Parse(@"package main
 
@@ -217,7 +215,7 @@ import ""nonexistent""
 
 func main() {}");
 
-        var result = SemanticAnalyzer.Analyze(tree);
+        var result = SemanticAnalyzer.Analyze(tree, compilation);
         Assert.IsTrue(result.HasErrors);
     }
 

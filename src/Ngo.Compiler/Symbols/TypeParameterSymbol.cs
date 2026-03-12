@@ -29,6 +29,6 @@ namespace Ngo.Compiler.Symbols
 
         public int Ordinal { get; }
 
-        public ConstraintInfo Constraint { get; }
+        public ConstraintInfo Constraint { get; set; }
     }
 }

@@ -25,7 +25,9 @@ using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 using System.Reflection.PortableExecutable;
 using Ngo.Compiler.Ast;
+using Ngo.Compiler.Emit.Builder;
 using Ngo.Compiler.Semantics;
+using Ngo.Compiler.Symbols;
 
 namespace Ngo.Compiler.Emit
 {
@@ -37,7 +39,7 @@ namespace Ngo.Compiler.Emit
         /// <summary>
         /// Emits an in-memory assembly for immediate execution (used by ngo run).
         /// </summary>
-        public static Assembly Emit(AnalysisResult result, string assemblyName = "NgoProgram", EmitOptions? options = null)
+        public static Assembly Emit(AnalysisResult result, Semantics.CompilationContext compilationContext, string assemblyName = "NgoProgram", EmitOptions? options = null)
         {
             if (result.HasErrors)
                 throw new InvalidOperationException("Cannot emit assembly from source with errors.");
@@ -46,7 +48,7 @@ namespace Ngo.Compiler.Emit
             var asmBuilder = AssemblyBuilder.DefineDynamicAssembly(asmName, AssemblyBuilderAccess.Run);
             var moduleBuilder = asmBuilder.DefineDynamicModule(assemblyName);
 
-            EmitCore(result, moduleBuilder, options);
+            EmitCore(result, moduleBuilder, options, compilationContext);
 
             return asmBuilder;
         }
@@ -54,7 +56,7 @@ namespace Ngo.Compiler.Emit
         /// <summary>
         /// Emits a persisted assembly to disk (used by ngo build).
         /// </summary>
-        public static void EmitToFile(AnalysisResult result, string outputPath, string assemblyName = "NgoProgram", EmitOptions? options = null)
+        public static void EmitToFile(AnalysisResult result, Semantics.CompilationContext compilationContext, string outputPath, string assemblyName = "NgoProgram", EmitOptions? options = null)
         {
             if (result.HasErrors)
                 throw new InvalidOperationException("Cannot emit assembly from source with errors.");
@@ -63,7 +65,7 @@ namespace Ngo.Compiler.Emit
             var ab = new PersistedAssemblyBuilder(asmName, typeof(object).Assembly);
             var moduleBuilder = ab.DefineDynamicModule(assemblyName);
 
-            var ctx = EmitCore(result, moduleBuilder, options);
+            var ctx = EmitCore(result, moduleBuilder, options, compilationContext);
 
             // Find main() entry point
             MethodBuilder? entryPointMethod = null;
@@ -71,7 +73,7 @@ namespace Ngo.Compiler.Emit
             {
                 if (func.Symbol.Name == "main" && ctx.Methods.TryGetValue(func.Symbol, out var mb))
                 {
-                    entryPointMethod = mb;
+                    entryPointMethod = ((LiveMethodBuilder)mb).Inner;
                     break;
                 }
             }
@@ -108,22 +110,54 @@ namespace Ngo.Compiler.Emit
         /// <summary>
         /// Shared 3-pass emit logic used by both Emit and EmitToFile.
         /// </summary>
-        private static EmitContext EmitCore(AnalysisResult result, ModuleBuilder moduleBuilder, EmitOptions? options = null)
+        private static EmitContext EmitCore(AnalysisResult result, ModuleBuilder moduleBuilder, EmitOptions? options, Semantics.CompilationContext compilationContext)
         {
-            var mapper = new TypeMapper();
-            var ctx = new EmitContext(moduleBuilder, mapper, options);
+            var mapper = new TypeMapper(compilationContext);
+            var ctx = new EmitContext(new LiveModuleBuilder(moduleBuilder), mapper, options);
 
-            // First emit any user-defined dependency packages
-            var userPackages = Semantics.PackageRegistry.GetAllUserPackages();
-            foreach (var kvp in userPackages)
+            // Link dependency IL from .ngo archives on disk
+            if (compilationContext.ProjectRoot != null)
             {
-                EmitPackage(kvp.Value.Root, ctx);
+                var linked = new HashSet<string>();
+                LinkDependencies(result.Root, ctx, compilationContext, linked);
             }
 
-            // Then emit the main package
+            // Emit the main package
             EmitPackage(result.Root, ctx);
 
             return ctx;
+        }
+
+        /// <summary>
+        /// Links pre-compiled dependency packages from .ngo archives into the target module.
+        /// Reads IL metadata (Section 2) and IL bytecode (Section 3), creates TypeBuilders
+        /// and MethodBuilders, remaps tokens, and sets method bodies.
+        /// </summary>
+        private static void LinkDependencies(Ast.SourceFile root, EmitContext ctx, Semantics.CompilationContext compilationContext, HashSet<string> linked)
+        {
+            foreach (var import in root.Imports)
+            {
+                var importPath = import.Path;
+                if (string.IsNullOrEmpty(importPath) || linked.Contains(importPath))
+                    continue;
+                linked.Add(importPath);
+
+                // Skip runtime packages — they're in Ngo.Runtime.dll
+                if (RuntimePackageResolver.Instance.Resolve(importPath) != null)
+                    continue;
+
+                var cacheDir = NgoArchive.GetCacheDir(compilationContext.ProjectRoot!);
+                var archivePath = NgoArchive.GetArchivePath(cacheDir, importPath);
+
+                try
+                {
+                    ILSerializer.LinkFromArchive(archivePath, import.Package, ctx);
+                }
+                catch
+                {
+                    // Link failure is non-fatal — package will be missing at runtime
+                }
+            }
         }
 
         private static void EmitPackage(Ast.SourceFile root, EmitContext ctx)
@@ -132,7 +166,7 @@ namespace Ngo.Compiler.Emit
 
             // Create the package static class
             var previousPackageType = ctx.PackageType;
-            ctx.PackageType = ctx.ModuleBuilder.DefineType(
+            ctx.PackageType = ctx.Module.DefineType(
                 ctx.QualifyName(packageName),
                 TypeAttributes.Public | TypeAttributes.Abstract | TypeAttributes.Sealed);
 
@@ -146,10 +180,20 @@ namespace Ngo.Compiler.Emit
                 declEmitter.EmitBuiltinErrorInterface();
             }
 
-            // Pass 1: Define user types (structs, interfaces)
+            // Pass 1a: Forward-declare all struct and interface types (TypeBuilders only)
             foreach (var typeDecl in root.Types)
             {
-                declEmitter.EmitTypeDeclaration(typeDecl);
+                if (typeDecl.Symbol is StructTypeSymbol structType)
+                    declEmitter.DefineStructType(structType);
+                else if (typeDecl.Symbol is InterfaceTypeSymbol)
+                    declEmitter.EmitTypeDeclaration(typeDecl);
+            }
+
+            // Pass 1b: Populate struct fields now that all types are forward-declared
+            foreach (var typeDecl in root.Types)
+            {
+                if (typeDecl.Symbol is StructTypeSymbol structType)
+                    declEmitter.PopulateStructFields(structType);
             }
 
             // Finalize struct types and register the runtime types in the mapper
@@ -224,7 +268,7 @@ namespace Ngo.Compiler.Emit
                     MethodAttributes.Public | MethodAttributes.Static,
                     typeof(void),
                     Type.EmptyTypes);
-                var initIL = initMethod.GetILGenerator();
+                var initIL = initMethod.GetILWriter();
                 initIL.Emit(OpCodes.Ret);
             }
 

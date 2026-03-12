@@ -84,6 +84,7 @@ namespace Ngo.Compiler.Semantics
                 case SyntaxKind.ChannelType:
                 case SyntaxKind.InterfaceType:
                 case SyntaxKind.StructType:
+                case SyntaxKind.FunctionType:
                 {
                     var resolvedType = _typeResolver.ResolveType(syntax);
                     if (resolvedType != null)
@@ -94,6 +95,9 @@ namespace Ngo.Compiler.Semantics
                     }
                     return new ErrorExpression($"Cannot resolve type: {syntax.Kind}", _context.SpanOf(syntax));
                 }
+
+                case SyntaxKind.TypeArgumentList:
+                    return ResolveTypeArgumentListExpression((TypeArgumentListSyntax)syntax);
 
                 default:
                     _context.Errors.ReportError(_context.SpanOf(syntax), ErrorCode.UnsupportedSyntax,
@@ -133,8 +137,11 @@ namespace Ngo.Compiler.Semantics
             _context.CurrentNamedReturns = namedReturns;
             foreach (var nr in namedReturns)
             {
-                _context.Scope.TryDeclare(nr);
-                _context.TrackLocal(nr, _context.SpanOf(syntax));
+                if (nr.Name != "_")
+                {
+                    _context.Scope.TryDeclare(nr);
+                    _context.TrackLocal(nr, _context.SpanOf(syntax));
+                }
             }
 
             var body = _resolveBlock(syntax.Body);
@@ -280,19 +287,26 @@ namespace Ngo.Compiler.Semantics
 
             if (name == "iota")
             {
-                if (_context.IotaCounter < 0)
+                if (_context.IotaCounter >= 0)
                 {
-                    _context.Errors.ReportError(span, ErrorCode.InvalidOperation,
-                        "'iota' is only valid inside a const block");
-                    return new ErrorExpression("iota outside const", span);
+                    return new LiteralExpression((long)_context.IotaCounter, BuiltinTypes.UntypedInt, span);
                 }
 
-                return new LiteralExpression((long)_context.IotaCounter, BuiltinTypes.UntypedInt, span);
+                // Outside a const block, 'iota' might be a regular variable name —
+                // fall through to normal scope lookup
             }
 
             var symbol = _context.Scope.Lookup(name);
             if (symbol == null)
             {
+                // Check if this is a builtin type name used as an expression
+                // (e.g., 'any' used in new(any), map[any]T, etc.)
+                var builtinType = BuiltinTypes.Resolve(name);
+                if (builtinType != null)
+                {
+                    return new IdentifierExpression(builtinType, builtinType, span);
+                }
+
                 _context.Errors.ReportError(span, ErrorCode.UndeclaredName,
                     $"Undefined name '{name}'");
                 return new ErrorExpression($"Undefined: {name}", span);
@@ -367,6 +381,53 @@ namespace Ngo.Compiler.Semantics
                 return TypeSymbol.Error;
             }
 
+            // Type parameters: allow operations based on constraints.
+            // In generic code, type params may support ==, <, +, etc. depending on constraint.
+            if (left is TypeParameterSymbol leftTp || right is TypeParameterSymbol rightTp)
+            {
+                var tp = (left as TypeParameterSymbol) ?? (right as TypeParameterSymbol)!;
+                switch (op)
+                {
+                    case BinaryOperator.Equal:
+                    case BinaryOperator.NotEqual:
+                        // comparable constraint or any type param (Go allows == if constrained)
+                        return BuiltinTypes.UntypedBool;
+                    case BinaryOperator.Less:
+                    case BinaryOperator.Greater:
+                    case BinaryOperator.LessOrEqual:
+                    case BinaryOperator.GreaterOrEqual:
+                        // ordered constraints
+                        return BuiltinTypes.UntypedBool;
+                    case BinaryOperator.LogicalAnd:
+                    case BinaryOperator.LogicalOr:
+                        return BuiltinTypes.UntypedBool;
+                    default:
+                        // Arithmetic/bitwise: return the type parameter type
+                        return tp;
+                }
+            }
+
+            // interface{} fallback: when a selector returns interface{} (unresolved package method),
+            // allow all operators — the concrete type is unknown at compile time.
+            if (left is InterfaceTypeSymbol || right is InterfaceTypeSymbol)
+            {
+                var iface = (left as InterfaceTypeSymbol) ?? (right as InterfaceTypeSymbol)!;
+                switch (op)
+                {
+                    case BinaryOperator.Equal:
+                    case BinaryOperator.NotEqual:
+                    case BinaryOperator.Less:
+                    case BinaryOperator.Greater:
+                    case BinaryOperator.LessOrEqual:
+                    case BinaryOperator.GreaterOrEqual:
+                    case BinaryOperator.LogicalAnd:
+                    case BinaryOperator.LogicalOr:
+                        return BuiltinTypes.UntypedBool;
+                    default:
+                        return iface;
+                }
+            }
+
             switch (op)
             {
                 // Arithmetic: both numeric, result is common type
@@ -436,6 +497,7 @@ namespace Ngo.Compiler.Semantics
                         return BuiltinTypes.UntypedBool;
                     }
 
+
                     // Array equality: same element type and length
                     if (left is ArrayTypeSymbol leftArr && right is ArrayTypeSymbol rightArr
                         && leftArr.Length == rightArr.Length
@@ -496,6 +558,13 @@ namespace Ngo.Compiler.Semantics
                     if ((left.TypeKind == TypeKind.Bool || left.TypeKind == TypeKind.UntypedBool) &&
                         (right.TypeKind == TypeKind.Bool || right.TypeKind == TypeKind.UntypedBool))
                     {
+                        // Named bool types: preserve the named type (e.g., boolVal && boolVal → boolVal)
+                        if (left.TypeKind == TypeKind.Bool && left == right)
+                            return left;
+                        if (left.TypeKind == TypeKind.Bool && right.TypeKind == TypeKind.UntypedBool)
+                            return left;
+                        if (right.TypeKind == TypeKind.Bool && left.TypeKind == TypeKind.UntypedBool)
+                            return right;
                         return BuiltinTypes.UntypedBool;
                     }
 
@@ -533,7 +602,7 @@ namespace Ngo.Compiler.Semantics
                 return new AddressOfExpression(operand, pointerType, span);
             }
 
-            // Dereference: *p
+            // Dereference: *p — or pointer type expression: (*T)
             if (syntax.OperatorToken.Kind == SyntaxKind.StarToken)
             {
                 var operand = ResolveExpression(syntax.Operand);
@@ -542,14 +611,39 @@ namespace Ngo.Compiler.Semantics
                     return operand;
                 }
 
-                if (operand.Type is not PointerTypeSymbol pointerType)
+                // Method expression: (*T).Method — operand is a type, not a value
+                // In Go, (*T) in expression context means "pointer to type T"
+                if (operand is IdentifierExpression typeExpr && typeExpr.Symbol is TypeSymbol ptrTargetType)
                 {
-                    _context.Errors.ReportError(span, ErrorCode.InvalidOperation,
-                        $"Cannot dereference non-pointer type '{operand.Type.Name}'");
-                    return new ErrorExpression("Invalid deref", span);
+                    var ptrType = new PointerTypeSymbol(ptrTargetType);
+                    return new IdentifierExpression(ptrType, ptrType, span);
                 }
 
-                return new DerefExpression(operand, pointerType.ElementType, span);
+                if (operand.Type is PointerTypeSymbol pointerType)
+                {
+                    return new DerefExpression(operand, pointerType.ElementType, span);
+                }
+
+                // Type parameter with pointer constraint: *P where P ~*T
+                if (operand.Type is TypeParameterSymbol tpDeref)
+                {
+                    foreach (var te in tpDeref.Constraint.TypeElements)
+                    {
+                        if (te.Type is PointerTypeSymbol constraintPtr)
+                            return new DerefExpression(operand, constraintPtr.ElementType, span);
+                    }
+                }
+
+                // Workaround: allow *interface{} when generic types (e.g. atomic.Pointer[T])
+                // resolve Load() as interface{} instead of *T
+                if (operand.Type is InterfaceTypeSymbol ifaceDeref && ifaceDeref.Methods.Count == 0)
+                {
+                    return new DerefExpression(operand, BuiltinTypes.EmptyInterface, span);
+                }
+
+                _context.Errors.ReportError(span, ErrorCode.InvalidOperation,
+                    $"Cannot dereference non-pointer type '{operand.Type.Name}'");
+                return new ErrorExpression("Invalid deref", span);
             }
 
             // Receive: <-ch
@@ -564,8 +658,23 @@ namespace Ngo.Compiler.Semantics
                     return new ReceiveExpression(operand, TypeSymbol.Error, span);
                 }
 
-                if (operand.Type is not ChannelTypeSymbol chanType)
+                // Unwrap named channel types (e.g. type control chan bool)
+                var chanResolved = operand.Type;
+                for (int depth = 0; depth < 10 && chanResolved is not ChannelTypeSymbol; depth++)
                 {
+                    if (chanResolved.UnderlyingType != null && chanResolved.UnderlyingType != chanResolved)
+                        chanResolved = chanResolved.UnderlyingType;
+                    else
+                        break;
+                }
+                if (chanResolved is not ChannelTypeSymbol chanType)
+                {
+                    // Workaround: allow <-interface{} when generic types resolve
+                    // channel types as interface{} (e.g. atomic.Pointer[chan T])
+                    if (chanResolved is InterfaceTypeSymbol ifaceRecv && ifaceRecv.Methods.Count == 0)
+                    {
+                        return new ReceiveExpression(operand, BuiltinTypes.EmptyInterface, span);
+                    }
                     _context.Errors.ReportError(span, ErrorCode.InvalidOperation,
                         $"Cannot receive from non-channel type '{operand.Type.Name}'");
                     return new ReceiveExpression(operand, TypeSymbol.Error, span);
@@ -614,6 +723,26 @@ namespace Ngo.Compiler.Semantics
                 return TypeSymbol.Error;
             }
 
+            // Type parameters: allow operations based on constraints
+            if (operand is TypeParameterSymbol)
+            {
+                switch (op)
+                {
+                    case UnaryOperator.Negate:
+                    case UnaryOperator.Plus:
+                    case UnaryOperator.BitwiseNot:
+                    case UnaryOperator.LogicalNot:
+                        return operand;
+                    default:
+                        return null;
+                }
+            }
+
+            // interface{} fallback: when a selector returns interface{} (unresolved package method),
+            // allow all operators — the concrete type is unknown at compile time.
+            if (operand is InterfaceTypeSymbol)
+                return operand;
+
             switch (op)
             {
                 case UnaryOperator.Negate:
@@ -654,41 +783,61 @@ namespace Ngo.Compiler.Semantics
                 return new IdentifierExpression(export, exportType, span);
             }
 
-            if (target.Type == TypeSymbol.Error)
+            if (target.Type == TypeSymbol.Error || target.Type.TypeKind == TypeKind.Error
+                || target.Type == BuiltinTypes.Void)
             {
                 return new ErrorExpression("Error target", span);
             }
 
             // Method expression: Type.Method → func(receiver, args...) returns
-            if (target is IdentifierExpression typeId && typeId.Symbol is TypeSymbol typeSymbol
-                && typeSymbol is StructTypeSymbol methodExprStruct)
+            if (target is IdentifierExpression typeId && typeId.Symbol is TypeSymbol typeSymbol)
             {
-                var method = methodExprStruct.LookupMethod(fieldName);
-                if (method != null)
+                // (*T).Method — pointer type method expression
+                StructTypeSymbol methodExprStruct = null;
+                TypeSymbol receiverType = typeSymbol;
+                if (typeSymbol is PointerTypeSymbol ptrTypeExpr)
                 {
-                    // Include receiver type as first parameter
-                    var paramTypes = new TypeSymbol[method.Parameters.Count + 1];
-                    paramTypes[0] = method.IsPointerReceiver
-                        ? new PointerTypeSymbol(typeSymbol) : typeSymbol;
-                    for (int i = 0; i < method.Parameters.Count; i++)
-                        paramTypes[i + 1] = method.Parameters[i].Type;
-                    var funcType = new FunctionTypeSymbol(paramTypes, method.ReturnTypes);
-                    return new MethodValueExpression(target, method, funcType, span,
-                        isMethodExpression: true);
+                    var baseType = ptrTypeExpr.ElementType;
+                    while (baseType.UnderlyingType != null && baseType is not StructTypeSymbol)
+                        baseType = baseType.UnderlyingType;
+                    if (baseType is StructTypeSymbol ptrStruct)
+                        methodExprStruct = ptrStruct;
+                }
+                else if (typeSymbol is StructTypeSymbol directStruct)
+                {
+                    methodExprStruct = directStruct;
                 }
 
-                // Check promoted methods from embedded structs
-                var promoted = methodExprStruct.LookupPromotedMethod(fieldName);
-                if (promoted.HasValue)
+                if (methodExprStruct != null)
                 {
-                    var (_, promotedMethod) = promoted.Value;
-                    var paramTypes = new TypeSymbol[promotedMethod.Parameters.Count + 1];
-                    paramTypes[0] = typeSymbol;
-                    for (int i = 0; i < promotedMethod.Parameters.Count; i++)
-                        paramTypes[i + 1] = promotedMethod.Parameters[i].Type;
-                    var funcType = new FunctionTypeSymbol(paramTypes, promotedMethod.ReturnTypes);
-                    return new MethodValueExpression(target, promotedMethod, funcType, span,
-                        isMethodExpression: true);
+                    var method = methodExprStruct.LookupMethod(fieldName);
+                    if (method != null)
+                    {
+                        // Include receiver type as first parameter
+                        var paramTypes = new TypeSymbol[method.Parameters.Count + 1];
+                        paramTypes[0] = (typeSymbol is PointerTypeSymbol || method.IsPointerReceiver)
+                            ? (typeSymbol is PointerTypeSymbol ? typeSymbol : new PointerTypeSymbol(typeSymbol))
+                            : typeSymbol;
+                        for (int i = 0; i < method.Parameters.Count; i++)
+                            paramTypes[i + 1] = method.Parameters[i].Type;
+                        var funcType = new FunctionTypeSymbol(paramTypes, method.ReturnTypes);
+                        return new MethodValueExpression(target, method, funcType, span,
+                            isMethodExpression: true);
+                    }
+
+                    // Check promoted methods from embedded structs
+                    var promoted = methodExprStruct.LookupPromotedMethod(fieldName);
+                    if (promoted.HasValue)
+                    {
+                        var (_, promotedMethod) = promoted.Value;
+                        var paramTypes = new TypeSymbol[promotedMethod.Parameters.Count + 1];
+                        paramTypes[0] = receiverType;
+                        for (int i = 0; i < promotedMethod.Parameters.Count; i++)
+                            paramTypes[i + 1] = promotedMethod.Parameters[i].Type;
+                        var funcType = new FunctionTypeSymbol(paramTypes, promotedMethod.ReturnTypes);
+                        return new MethodValueExpression(target, promotedMethod, funcType, span,
+                            isMethodExpression: true);
+                    }
                 }
             }
 
@@ -701,15 +850,34 @@ namespace Ngo.Compiler.Semantics
                 target = new DerefExpression(target, targetType, target.Span);
             }
 
+            // After deref, check for error sentinel again (pointer to error type)
+            if (targetType == TypeSymbol.Error || targetType.TypeKind == TypeKind.Error
+                || targetType == BuiltinTypes.Void)
+            {
+                return new ErrorExpression("Error target", span);
+            }
+
             // Unwrap named type to access underlying struct/slice/etc fields and methods
             var resolvedTargetType = targetType.Resolved();
+
+            // Extract type parameter substitution info from instantiated generic types
+            IReadOnlyList<TypeParameterSymbol>? instTypeParams = null;
+            IReadOnlyList<TypeSymbol>? instTypeArgs = null;
+            if (targetType is InstantiatedTypeSymbol inst)
+            {
+                instTypeParams = inst.GenericType.TypeParameters;
+                instTypeArgs = inst.TypeArguments;
+            }
 
             if (resolvedTargetType is StructTypeSymbol structType)
             {
                 var field = structType.LookupField(fieldName);
                 if (field != null)
                 {
-                    return new SelectorExpression(target, field, field.Type, span);
+                    var fieldType = instTypeParams != null
+                        ? TypeSubstituter.Substitute(field.Type, instTypeParams, instTypeArgs!)
+                        : field.Type;
+                    return new SelectorExpression(target, field, fieldType, span);
                 }
 
                 // Check promoted fields from embedded structs
@@ -717,8 +885,14 @@ namespace Ngo.Compiler.Semantics
                 if (promoted.HasValue)
                 {
                     var (embeddedField, innerField) = promoted.Value;
-                    var embeddedAccess = new SelectorExpression(target, embeddedField, embeddedField.Type, span);
-                    return new SelectorExpression(embeddedAccess, innerField, innerField.Type, span);
+                    var embeddedType = instTypeParams != null
+                        ? TypeSubstituter.Substitute(embeddedField.Type, instTypeParams, instTypeArgs!)
+                        : embeddedField.Type;
+                    var innerType = instTypeParams != null
+                        ? TypeSubstituter.Substitute(innerField.Type, instTypeParams, instTypeArgs!)
+                        : innerField.Type;
+                    var embeddedAccess = new SelectorExpression(target, embeddedField, embeddedType, span);
+                    return new SelectorExpression(embeddedAccess, innerField, innerType, span);
                 }
 
                 // Method value: check named type methods first, then underlying struct methods
@@ -728,8 +902,15 @@ namespace Ngo.Compiler.Semantics
                 {
                     var paramTypes = new TypeSymbol[method.Parameters.Count];
                     for (int i = 0; i < method.Parameters.Count; i++)
-                        paramTypes[i] = method.Parameters[i].Type;
-                    var funcType = new FunctionTypeSymbol(paramTypes, method.ReturnTypes);
+                    {
+                        paramTypes[i] = instTypeParams != null
+                            ? TypeSubstituter.Substitute(method.Parameters[i].Type, instTypeParams, instTypeArgs!)
+                            : method.Parameters[i].Type;
+                    }
+                    var returnTypes = instTypeParams != null
+                        ? TypeSubstituter.SubstituteTypes(method.ReturnTypes, instTypeParams, instTypeArgs!)
+                        : method.ReturnTypes;
+                    var funcType = new FunctionTypeSymbol(paramTypes, returnTypes);
                     return new MethodValueExpression(target, method, funcType, span);
                 }
 
@@ -740,14 +921,37 @@ namespace Ngo.Compiler.Semantics
                     var (_, pm) = promotedMethod.Value;
                     var paramTypes = new TypeSymbol[pm.Parameters.Count];
                     for (int i = 0; i < pm.Parameters.Count; i++)
-                        paramTypes[i] = pm.Parameters[i].Type;
-                    var funcType = new FunctionTypeSymbol(paramTypes, pm.ReturnTypes);
+                    {
+                        paramTypes[i] = instTypeParams != null
+                            ? TypeSubstituter.Substitute(pm.Parameters[i].Type, instTypeParams, instTypeArgs!)
+                            : pm.Parameters[i].Type;
+                    }
+                    var returnTypes = instTypeParams != null
+                        ? TypeSubstituter.SubstituteTypes(pm.ReturnTypes, instTypeParams, instTypeArgs!)
+                        : pm.ReturnTypes;
+                    var funcType = new FunctionTypeSymbol(paramTypes, returnTypes);
                     return new MethodValueExpression(target, pm, funcType, span);
                 }
 
                 _context.Errors.ReportError(span, ErrorCode.UndefinedField,
                     $"Type '{structType.Name}' has no field or method '{fieldName}'");
                 return new ErrorExpression($"Undefined field: {fieldName}", span);
+            }
+
+            // Type parameters: resolve selectors against constraint methods
+            if (resolvedTargetType is TypeParameterSymbol typeParam && typeParam.Constraint != null)
+            {
+                foreach (var cm in typeParam.Constraint.Methods)
+                {
+                    if (cm.Name == fieldName)
+                    {
+                        var paramTypes = new TypeSymbol[cm.Parameters.Count];
+                        for (int i = 0; i < cm.Parameters.Count; i++)
+                            paramTypes[i] = cm.Parameters[i].Type;
+                        var funcType = new FunctionTypeSymbol(paramTypes, cm.ReturnTypes);
+                        return new MethodValueExpression(target, cm, funcType, span);
+                    }
+                }
             }
 
             // Method value on non-struct types (including interfaces)
@@ -768,9 +972,102 @@ namespace Ngo.Compiler.Semantics
                 return new MethodValueExpression(target, typeMethod, funcType, span);
             }
 
+            // Empty interface (interface{}) allows any selector — return interface{} type
+            // The concrete type is unknown at compile time, so assume the field exists.
+            if (targetType is InterfaceTypeSymbol)
+            {
+                var syntheticField = new FieldSymbol(fieldName, targetType, 0);
+                return new SelectorExpression(target, syntheticField, targetType, span);
+            }
+
+            // Type parameter with structural constraint (e.g. ~struct{...}): look up fields
+            if (resolvedTargetType is TypeParameterSymbol fieldTypeParam)
+            {
+                // Check constraint methods first
+                var constraintMethods = fieldTypeParam.Constraint.Methods;
+
+                // For generic interface constraints (e.g., nistPoint[Point]),
+                // lazily resolve methods from the interface type with substitution
+                if (constraintMethods.Count == 0
+                    && fieldTypeParam.Constraint.InterfaceType is InterfaceTypeSymbol constraintIface
+                    && constraintIface.Methods.Count > 0)
+                {
+                    var typeArgs = fieldTypeParam.Constraint.InterfaceTypeArgs;
+                    var substituted = new List<MethodSymbol>();
+                    foreach (var m in constraintIface.Methods)
+                    {
+                        var newParams = new List<ParameterSymbol>();
+                        int pOrd = 0;
+                        foreach (var p in m.Parameters)
+                        {
+                            var pType = SubstituteConstraintTypeParam(p.Type, constraintIface.TypeParameters, typeArgs);
+                            newParams.Add(new ParameterSymbol(p.Name, pType, pOrd++));
+                        }
+                        var newReturns = new List<TypeSymbol>();
+                        foreach (var r in m.ReturnTypes)
+                            newReturns.Add(SubstituteConstraintTypeParam(r, constraintIface.TypeParameters, typeArgs));
+                        substituted.Add(new MethodSymbol(m.Name, m.ReceiverType, m.IsPointerReceiver, newParams, newReturns));
+                    }
+                    constraintMethods = substituted;
+                }
+
+                foreach (var method in constraintMethods)
+                {
+                    if (method.Name == fieldName)
+                    {
+                        var paramTypes = new TypeSymbol[method.Parameters.Count];
+                        for (int i = 0; i < method.Parameters.Count; i++)
+                            paramTypes[i] = method.Parameters[i].Type;
+                        var funcType = new FunctionTypeSymbol(paramTypes, method.ReturnTypes);
+                        return new MethodValueExpression(target, method, funcType, span);
+                    }
+                }
+
+                // Check structural type element for struct fields
+                var structural = TypeChecker.GetConstraintStructuralType(fieldTypeParam);
+                if (structural != null)
+                {
+                    var resolvedStructural = structural.Resolved();
+                    if (resolvedStructural == structural && structural.UnderlyingType != null)
+                        resolvedStructural = structural.UnderlyingType;
+                    if (resolvedStructural is StructTypeSymbol constraintStruct)
+                    {
+                        var field = constraintStruct.LookupField(fieldName);
+                        if (field != null)
+                        {
+                            return new SelectorExpression(target, field, field.Type, span);
+                        }
+                        var promoted = constraintStruct.LookupPromotedField(fieldName);
+                        if (promoted.HasValue)
+                        {
+                            var (embeddedField, innerField) = promoted.Value;
+                            var embeddedAccess = new SelectorExpression(target, embeddedField, embeddedField.Type, span);
+                            return new SelectorExpression(embeddedAccess, innerField, innerField.Type, span);
+                        }
+                    }
+                }
+            }
+
             _context.Errors.ReportError(span, ErrorCode.InvalidSelector,
                 $"Type '{target.Type.Name}' does not support field access");
             return new ErrorExpression("Invalid selector", span);
+        }
+
+        private static TypeSymbol SubstituteConstraintTypeParam(
+            TypeSymbol type,
+            IReadOnlyList<TypeParameterSymbol> typeParams,
+            IReadOnlyList<TypeSymbol>? typeArgs)
+        {
+            if (typeArgs == null || typeParams.Count == 0) return type;
+            for (int i = 0; i < typeParams.Count && i < typeArgs.Count; i++)
+            {
+                if (type == typeParams[i]) return typeArgs[i];
+            }
+            if (type is SliceTypeSymbol slice)
+                return new SliceTypeSymbol(SubstituteConstraintTypeParam(slice.ElementType, typeParams, typeArgs));
+            if (type is PointerTypeSymbol ptr)
+                return new PointerTypeSymbol(SubstituteConstraintTypeParam(ptr.ElementType, typeParams, typeArgs));
+            return type;
         }
 
         private Expression ResolveCompositeLiteral(CompositeLiteralSyntax syntax)
@@ -922,6 +1219,16 @@ namespace Ngo.Compiler.Semantics
                     return ResolveArrayCompositeLiteral(arrayElem, innerLit, innerSpan, elementType);
                 if (resolvedElemType is MapTypeSymbol mapElem)
                     return ResolveMapCompositeLiteral(mapElem, innerLit, innerSpan, elementType);
+                // Handle pointer-to-struct: *T{...} → &T{...}
+                if (resolvedElemType is PointerTypeSymbol ptrType)
+                {
+                    var baseType = ptrType.ElementType.UnderlyingType ?? ptrType.ElementType;
+                    if (baseType is StructTypeSymbol ptrStructType)
+                    {
+                        var structExpr = ResolveStructCompositeLiteral(ptrStructType, innerLit, innerSpan, ptrType.ElementType);
+                        return new AddressOfExpression(structExpr, elementType, innerSpan);
+                    }
+                }
             }
 
             return ResolveExpression(element);
@@ -945,7 +1252,12 @@ namespace Ngo.Compiler.Semantics
                 {
                     var keyExpr = ResolveExpression(kv.Key);
                     var keyVal = _context.TryEvaluateConstant(keyExpr);
-                    if (keyVal is not long keyLong || keyLong < 0)
+                    long keyLong;
+                    if (keyVal is long kl) keyLong = kl;
+                    else if (keyVal is int ki) keyLong = ki;
+                    else if (keyVal is ulong kul) keyLong = (long)kul;
+                    else keyLong = -1;
+                    if (keyLong < 0)
                     {
                         _context.Errors.ReportError(_context.SpanOf(kv.Key), ErrorCode.InvalidIndex,
                             "Index in composite literal must be a non-negative integer constant");
@@ -1011,7 +1323,12 @@ namespace Ngo.Compiler.Semantics
                 {
                     var keyExpr = ResolveExpression(kv.Key);
                     var keyVal = _context.TryEvaluateConstant(keyExpr);
-                    if (keyVal is not long keyLong || keyLong < 0)
+                    long keyLong;
+                    if (keyVal is long kl) keyLong = kl;
+                    else if (keyVal is int ki) keyLong = ki;
+                    else if (keyVal is ulong kul) keyLong = (long)kul;
+                    else keyLong = -1;
+                    if (keyLong < 0)
                     {
                         _context.Errors.ReportError(_context.SpanOf(kv.Key), ErrorCode.InvalidIndex,
                             "Index in composite literal must be a non-negative integer constant");
@@ -1106,6 +1423,52 @@ namespace Ngo.Compiler.Semantics
             return new CompositeLiteralExpression(namedType, elements, span);
         }
 
+        private Expression ResolveTypeArgumentListExpression(TypeArgumentListSyntax syntax)
+        {
+            var span = _context.SpanOf(syntax);
+
+            // Generic type instantiation in expression position: Map[string, int]{...}
+            // or generic function reference: Sort[int]
+            var resolvedType = _typeResolver.ResolveType(syntax);
+            if (resolvedType != null)
+            {
+                return new IdentifierExpression(
+                    new LocalSymbol(resolvedType.Name, resolvedType),
+                    resolvedType, span);
+            }
+
+            // Try as a generic function reference
+            var funcExpr = ResolveExpression(syntax.Expression);
+            if (funcExpr is IdentifierExpression idExpr && idExpr.Symbol is FunctionSymbol funcSymbol
+                && funcSymbol.IsGeneric)
+            {
+                var typeArgs = new List<TypeSymbol>();
+                for (int i = 0; i < syntax.TypeArguments.Count; i++)
+                {
+                    var resolved = _typeResolver.ResolveType(syntax.TypeArguments[i]);
+                    typeArgs.Add(resolved ?? TypeSymbol.Error);
+                }
+
+                var substParams = TypeSubstituter.SubstituteParams(
+                    funcSymbol.Parameters, funcSymbol.TypeParameters, typeArgs);
+                var substReturnTypes = TypeSubstituter.SubstituteTypes(
+                    funcSymbol.ReturnTypes, funcSymbol.TypeParameters, typeArgs);
+
+                var paramTypes = new List<TypeSymbol>();
+                for (int i = 0; i < substParams.Count; i++)
+                {
+                    paramTypes.Add(substParams[i].Type);
+                }
+
+                var funcType = new FunctionTypeSymbol(paramTypes, substReturnTypes);
+                return new IdentifierExpression(funcSymbol, funcType, span);
+            }
+
+            _context.Errors.ReportError(span, ErrorCode.UnsupportedSyntax,
+                $"Cannot resolve generic type expression");
+            return new ErrorExpression("Cannot resolve generic type", span);
+        }
+
         private Expression ResolveIndexExpression(IndexExpressionSyntax syntax)
         {
             var span = _context.SpanOf(syntax);
@@ -1141,6 +1504,35 @@ namespace Ngo.Compiler.Semantics
             }
 
             var target = ResolveExpression(syntax.Expression);
+
+            // Check if this is a generic instantiation via selector: pkg.Func[Type]
+            if (target is IdentifierExpression selectorId && selectorId.Symbol is FunctionSymbol selectorFunc)
+            {
+                // Try resolving the index as a type argument
+                var typeArg = _typeResolver.ResolveType(syntax.Index);
+                if (typeArg != null)
+                {
+                    if (selectorFunc.IsGeneric)
+                    {
+                        var typeArgs = new[] { typeArg };
+                        var substParams = TypeSubstituter.SubstituteParams(
+                            selectorFunc.Parameters, selectorFunc.TypeParameters, typeArgs);
+                        var substReturnTypes = TypeSubstituter.SubstituteTypes(
+                            selectorFunc.ReturnTypes, selectorFunc.TypeParameters, typeArgs);
+                        var paramTypes = new List<TypeSymbol>();
+                        for (int i = 0; i < substParams.Count; i++)
+                            paramTypes.Add(substParams[i].Type);
+                        var funcType = new FunctionTypeSymbol(paramTypes, substReturnTypes);
+                        return new IdentifierExpression(selectorFunc, funcType, span);
+                    }
+                    else
+                    {
+                        // Non-generic function with type arg — return as-is (e.g., reflect.TypeFor[T])
+                        return new IdentifierExpression(selectorFunc, _context.GetSymbolType(selectorFunc), span);
+                    }
+                }
+            }
+
             var index = ResolveExpression(syntax.Index);
 
             if (target.Type == TypeSymbol.Error)
@@ -1149,14 +1541,28 @@ namespace Ngo.Compiler.Semantics
             }
 
             var resolvedTargetType = target.Type.Resolved();
-            // Also unwrap named types with underlying composite types
-            if (resolvedTargetType == target.Type && resolvedTargetType.UnderlyingType != null)
-                resolvedTargetType = resolvedTargetType.UnderlyingType;
+            // Unwrap chains of named types (e.g. pallocBits → pageBits → [N]uint64)
+            {
+                var unwrapped = resolvedTargetType;
+                for (int i = 0; i < 10; i++)
+                {
+                    if (unwrapped.UnderlyingType == null) break;
+                    unwrapped = unwrapped.UnderlyingType.Resolved();
+                }
+                if (unwrapped != resolvedTargetType)
+                    resolvedTargetType = unwrapped;
+            }
 
             // Auto-dereference pointer to array/slice: (*t)[i] when t is *[N]T or *[]T
             if (resolvedTargetType is PointerTypeSymbol ptrForIndex)
             {
                 var inner = ptrForIndex.ElementType.Resolved();
+                // Unwrap named type chains within pointer element
+                for (int i = 0; i < 10; i++)
+                {
+                    if (inner.UnderlyingType == null) break;
+                    inner = inner.UnderlyingType.Resolved();
+                }
                 if (inner is ArrayTypeSymbol || inner is SliceTypeSymbol)
                 {
                     target = new DerefExpression(target, inner, span);
@@ -1217,17 +1623,25 @@ namespace Ngo.Compiler.Semantics
                 foreach (var elem in typeParam.Constraint.TypeElements)
                 {
                     var elemType = elem.Type;
-                    if (elemType is ArrayTypeSymbol arrElem)
+                    // Resolve named types to their underlying structural type
+                    var resolvedElem = elemType.Resolved();
+                    if (resolvedElem == elemType && elemType.UnderlyingType != null)
+                        resolvedElem = elemType.UnderlyingType;
+                    if (resolvedElem is ArrayTypeSymbol arrElem)
                     {
                         commonElement ??= arrElem.ElementType;
                     }
-                    else if (elemType is SliceTypeSymbol sliceElem)
+                    else if (resolvedElem is SliceTypeSymbol sliceElem)
                     {
                         commonElement ??= sliceElem.ElementType;
                     }
-                    else if (elemType is MapTypeSymbol mapElem)
+                    else if (resolvedElem is MapTypeSymbol mapElem)
                     {
                         commonElement ??= mapElem.ValueType;
+                    }
+                    else if (resolvedElem.TypeKind == TypeKind.String)
+                    {
+                        commonElement ??= BuiltinTypes.Byte;
                     }
                     else
                     {
@@ -1309,6 +1723,25 @@ namespace Ngo.Compiler.Semantics
 
                 resultType = BuiltinTypes.String;
             }
+            else if (resolvedOpType is TypeParameterSymbol sliceTypeParam)
+            {
+                // Type parameter with structural constraint (e.g. ~[]E): allow slicing
+                var structural = TypeChecker.GetConstraintStructuralType(sliceTypeParam);
+                if (structural is SliceTypeSymbol || structural is ArrayTypeSymbol
+                    || (structural != null && (structural.TypeKind == TypeKind.String
+                        || structural.TypeKind == TypeKind.UntypedString)))
+                {
+                    // For type params constrained to slices, the result type is the type param itself
+                    // (preserves the constraint type)
+                    resultType = operand.Type;
+                }
+                else
+                {
+                    _context.Errors.ReportError(span, ErrorCode.InvalidSlice,
+                        $"Cannot slice type '{operand.Type.Name}'");
+                    return new ErrorExpression("Invalid slice", span);
+                }
+            }
             else
             {
                 _context.Errors.ReportError(span, ErrorCode.InvalidSlice,
@@ -1330,7 +1763,13 @@ namespace Ngo.Compiler.Semantics
             }
 
             // The expression must be an interface type
-            if (expr.Type is not InterfaceTypeSymbol)
+            var exprTypeResolved = expr.Type.Resolved();
+            if (expr.Type is not InterfaceTypeSymbol
+                && exprTypeResolved is not InterfaceTypeSymbol
+                && expr.Type.TypeKind != TypeKind.Interface
+                && exprTypeResolved.TypeKind != TypeKind.Interface
+                && !(expr.Type is InstantiatedTypeSymbol instType
+                     && instType.GenericType is InterfaceTypeSymbol))
             {
                 _context.Errors.ReportError(span, ErrorCode.InvalidTypeAssert,
                     $"Cannot type assert on non-interface type '{expr.Type.Name}'");

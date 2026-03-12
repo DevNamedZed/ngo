@@ -39,6 +39,31 @@ namespace Ngo.Compiler.Semantics
                 if (tp.Constraint == ConstraintInfo.Any && !constraint.IsComparable
                     && constraint.Methods.Count == 0 && constraint.TypeElements.Count == 0)
                     return true;
+
+                // A type parameter whose union constraint elements are all present
+                // in the target constraint satisfies it (e.g., [bytes []byte | string]
+                // passed to another function with the same constraint).
+                if (tp.Constraint.TypeElements.Count > 0 && constraint.TypeElements.Count > 0)
+                {
+                    bool allMatch = true;
+                    for (int i = 0; i < tp.Constraint.TypeElements.Count; i++)
+                    {
+                        var tpElem = tp.Constraint.TypeElements[i];
+                        bool found = false;
+                        for (int j = 0; j < constraint.TypeElements.Count; j++)
+                        {
+                            var cElem = constraint.TypeElements[j];
+                            if (tpElem.Type == cElem.Type || tpElem.Type.Name == cElem.Type.Name)
+                            {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found) { allMatch = false; break; }
+                    }
+                    if (allMatch)
+                        return true;
+                }
             }
 
             if (constraint.IsComparable)
@@ -75,7 +100,8 @@ namespace Ngo.Compiler.Semantics
                     }
                     else
                     {
-                        if (typeArg == element.Type || typeArg.Name == element.Type.Name)
+                        if (typeArg == element.Type || typeArg.Name == element.Type.Name
+                            || TypeChecker.IsAssignable(typeArg, element.Type))
                         {
                             matchesAny = true;
                             break;

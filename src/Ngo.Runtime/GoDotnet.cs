@@ -19,9 +19,11 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using Ngo.Runtime.Discovery;
 
 namespace Ngo.Runtime
 {
+    [GoPackage("dotnet")]
     public static class GoDotnet
     {
         private static readonly Dictionary<string, Type> _typeCache = new();

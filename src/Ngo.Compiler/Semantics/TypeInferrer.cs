@@ -54,6 +54,49 @@ namespace Ngo.Compiler.Semantics
                 Unify(paramType, argType, typeParams, inferred);
             }
 
+            // Use constraints to infer remaining type params.
+            // E.g., for [P *T, T any], if P=*Signature, infer T=Signature from constraint P *T.
+            bool progress = true;
+            while (progress)
+            {
+                progress = false;
+                for (int i = 0; i < inferred.Length; i++)
+                {
+                    if (inferred[i] != null && typeParams[i].Constraint.TypeElements.Count == 1)
+                    {
+                        var constraintType = typeParams[i].Constraint.TypeElements[0].Type;
+                        Unify(constraintType, inferred[i], typeParams, inferred);
+                    }
+                }
+
+                // Check if we made progress (new inferences)
+                for (int i = 0; i < inferred.Length; i++)
+                {
+                    if (inferred[i] == null)
+                    {
+                        // Try to infer from constraints of already-inferred params
+                        for (int j = 0; j < inferred.Length; j++)
+                        {
+                            if (j != i && inferred[j] != null && typeParams[j].Constraint.TypeElements.Count == 1)
+                            {
+                                var before = inferred[i];
+                                Unify(typeParams[j].Constraint.TypeElements[0].Type, inferred[j], typeParams, inferred);
+                                if (inferred[i] != null && inferred[i] != before)
+                                    progress = true;
+                            }
+                        }
+                    }
+                }
+
+                // Prevent infinite loop
+                bool allInferred = true;
+                for (int i = 0; i < inferred.Length; i++)
+                {
+                    if (inferred[i] == null) { allInferred = false; break; }
+                }
+                if (allInferred) break;
+            }
+
             // Check all type params were inferred
             for (int i = 0; i < inferred.Length; i++)
             {
@@ -96,37 +139,53 @@ namespace Ngo.Compiler.Semantics
                 return;
             }
 
-            if (paramType is SliceTypeSymbol paramSlice && argType is SliceTypeSymbol argSlice)
+            // Resolve named types to their underlying structural types for matching
+            var resolvedArg = argType.Resolved();
+            if (resolvedArg == argType && argType.UnderlyingType != null)
+                resolvedArg = argType.UnderlyingType;
+
+            // For type parameter arguments with structural constraints (e.g., S ~[]E),
+            // extract the structural type so we can unify against it.
+            if (resolvedArg is TypeParameterSymbol argTp && argTp.Constraint.TypeElements.Count > 0)
+            {
+                var structural = TypeChecker.GetConstraintStructuralType(argTp);
+                if (structural != null)
+                    resolvedArg = structural;
+            }
+
+            if (paramType is SliceTypeSymbol paramSlice && resolvedArg is SliceTypeSymbol argSlice)
             {
                 Unify(paramSlice.ElementType, argSlice.ElementType, typeParams, inferred);
                 return;
             }
 
-            if (paramType is ArrayTypeSymbol paramArr && argType is ArrayTypeSymbol argArr)
+            if (paramType is ArrayTypeSymbol paramArr && resolvedArg is ArrayTypeSymbol argArr)
             {
                 Unify(paramArr.ElementType, argArr.ElementType, typeParams, inferred);
                 return;
             }
 
-            if (paramType is MapTypeSymbol paramMap && argType is MapTypeSymbol argMap)
+            if (paramType is MapTypeSymbol paramMap && resolvedArg is MapTypeSymbol argMap)
             {
                 Unify(paramMap.KeyType, argMap.KeyType, typeParams, inferred);
                 Unify(paramMap.ValueType, argMap.ValueType, typeParams, inferred);
                 return;
             }
 
-            if (paramType is PointerTypeSymbol paramPtr && argType is PointerTypeSymbol argPtr)
+            if (paramType is PointerTypeSymbol paramPtr && resolvedArg is PointerTypeSymbol argPtr)
             {
                 Unify(paramPtr.ElementType, argPtr.ElementType, typeParams, inferred);
                 return;
             }
 
-            if (paramType is ChannelTypeSymbol paramChan && argType is ChannelTypeSymbol argChan)
+            if (paramType is ChannelTypeSymbol paramChan && resolvedArg is ChannelTypeSymbol argChan)
             {
                 Unify(paramChan.ElementType, argChan.ElementType, typeParams, inferred);
                 return;
             }
 
+            // Check InstantiatedTypeSymbol on the original argType, NOT resolvedArg,
+            // because Resolved() unwraps InstantiatedTypeSymbol to its GenericType
             if (paramType is InstantiatedTypeSymbol paramInst && argType is InstantiatedTypeSymbol argInst)
             {
                 int count = paramInst.TypeArguments.Count < argInst.TypeArguments.Count
@@ -135,6 +194,26 @@ namespace Ngo.Compiler.Semantics
                 for (int i = 0; i < count; i++)
                 {
                     Unify(paramInst.TypeArguments[i], argInst.TypeArguments[i], typeParams, inferred);
+                }
+            }
+
+            // Function type: unify parameter types and return types
+            if (paramType is FunctionTypeSymbol paramFunc && resolvedArg is FunctionTypeSymbol argFunc)
+            {
+                int pCount = paramFunc.ParameterTypes.Count < argFunc.ParameterTypes.Count
+                    ? paramFunc.ParameterTypes.Count
+                    : argFunc.ParameterTypes.Count;
+                for (int i = 0; i < pCount; i++)
+                {
+                    Unify(paramFunc.ParameterTypes[i], argFunc.ParameterTypes[i], typeParams, inferred);
+                }
+
+                int rCount = paramFunc.ReturnTypes.Count < argFunc.ReturnTypes.Count
+                    ? paramFunc.ReturnTypes.Count
+                    : argFunc.ReturnTypes.Count;
+                for (int i = 0; i < rCount; i++)
+                {
+                    Unify(paramFunc.ReturnTypes[i], argFunc.ReturnTypes[i], typeParams, inferred);
                 }
             }
         }

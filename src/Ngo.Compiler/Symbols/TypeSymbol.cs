@@ -38,6 +38,16 @@ namespace Ngo.Compiler.Symbols
 
         public TypeSymbol? UnderlyingType { get; set; }
 
+        /// <summary>
+        /// The Go import path of the package that defines this type.
+        /// e.g. "time" for time.Duration, "sync" for sync.Mutex.
+        /// Null for builtin types and types defined in the current package being compiled.
+        /// </summary>
+        public string? PackagePath { get; set; }
+
+        /// <summary>True for type aliases (type Foo = Bar) vs type definitions (type Foo Bar).</summary>
+        public bool IsAlias { get; set; }
+
         public IReadOnlyList<TypeParameterSymbol> TypeParameters { get; private set; }
             = Array.Empty<TypeParameterSymbol>();
 
