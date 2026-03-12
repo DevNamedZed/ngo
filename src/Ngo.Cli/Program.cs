@@ -133,9 +133,9 @@ class Program
         Console.WriteLine("  ngo help                   Print this help message");
     }
 
-    static IReadOnlyList<(SyntaxTree tree, string filePath)> ParseGoSources(string path)
+    static IReadOnlyList<SourceFile> ParseGoSources(string path)
     {
-        var results = new List<(SyntaxTree, string)>();
+        var results = new List<SourceFile>();
 
         if (Directory.Exists(path))
         {
@@ -144,17 +144,21 @@ class Program
             foreach (var file in goFiles)
             {
                 if (file.EndsWith("_test.go", StringComparison.OrdinalIgnoreCase))
+                {
                     continue;
+                }
                 if (GoPackageResolver.ShouldSkipGoFile(file))
+                {
                     continue;
+                }
                 var source = File.ReadAllText(file);
-                results.Add((SyntaxTree.Parse(source), file));
+                results.Add(new SourceFile(SyntaxTree.Parse(source), file));
             }
         }
         else if (File.Exists(path))
         {
             var source = File.ReadAllText(path);
-            results.Add((SyntaxTree.Parse(source), path));
+            results.Add(new SourceFile(SyntaxTree.Parse(source), path));
         }
 
         return results;
@@ -174,17 +178,19 @@ class Program
         var projectRoot = Directory.Exists(filePath)
             ? Path.GetFullPath(filePath)
             : Path.GetDirectoryName(Path.GetFullPath(filePath))!;
-        var compilation = new CompilationContext(projectRoot);
+        var compilation = new CompilationContext(projectRoot, new ConsoleLog(verbose: false));
 
         var trees = new List<SyntaxTree>();
-        foreach (var (tree, _) in sources)
-            trees.Add(tree);
+        foreach (var src in sources)
+        {
+            trees.Add(src.Tree);
+        }
 
         var result = SemanticAnalyzer.Analyze(trees, compilation, checkUnused: true);
 
         if (result.HasErrors)
         {
-            foreach (var (tree, path) in sources)
+            foreach (var src in sources)
             {
                 var fileErrors = new List<CompileError>();
                 foreach (var err in result.Errors)
@@ -193,7 +199,7 @@ class Program
                 }
                 if (fileErrors.Count > 0)
                 {
-                    PrintErrors(tree.SourceText, path, fileErrors);
+                    PrintErrors(src.Tree.SourceText, src.FilePath, fileErrors);
                     break;
                 }
             }
@@ -309,19 +315,21 @@ class Program
         var projectRoot = Directory.Exists(filePath)
             ? Path.GetFullPath(filePath)
             : Path.GetDirectoryName(Path.GetFullPath(filePath))!;
-        var compilation = new CompilationContext(projectRoot);
+        var compilation = new CompilationContext(projectRoot, new ConsoleLog(verbose: false));
 
         var trees = new List<SyntaxTree>();
-        foreach (var (tree, _) in sources)
-            trees.Add(tree);
+        foreach (var src in sources)
+        {
+            trees.Add(src.Tree);
+        }
 
         var result = SemanticAnalyzer.Analyze(trees, compilation, checkUnused: true);
 
         if (result.HasErrors)
         {
-            foreach (var (tree, path) in sources)
+            foreach (var src in sources)
             {
-                PrintErrors(tree.SourceText, path, result.Errors);
+                PrintErrors(src.Tree.SourceText, src.FilePath, result.Errors);
                 break;
             }
             return 1;
@@ -420,19 +428,21 @@ class Program
         var projectRoot = Directory.Exists(filePath)
             ? Path.GetFullPath(filePath)
             : Path.GetDirectoryName(Path.GetFullPath(filePath))!;
-        var compilation = new CompilationContext(projectRoot);
+        var compilation = new CompilationContext(projectRoot, new ConsoleLog(verbose: false));
 
         var trees = new List<SyntaxTree>();
-        foreach (var (tree, _) in sources)
-            trees.Add(tree);
+        foreach (var src in sources)
+        {
+            trees.Add(src.Tree);
+        }
 
         var result = SemanticAnalyzer.Analyze(trees, compilation, checkUnused: true);
 
         if (result.HasErrors)
         {
-            foreach (var (tree, path) in sources)
+            foreach (var src in sources)
             {
-                PrintErrors(tree.SourceText, path, result.Errors);
+                PrintErrors(src.Tree.SourceText, src.FilePath, result.Errors);
                 break;
             }
             return 1;
@@ -471,7 +481,7 @@ class Program
             return 0;
         }
 
-        var compilation = new CompilationContext(fullDir);
+        var compilation = new CompilationContext(fullDir, new ConsoleLog(verbose: false));
 
         {
             // Parse all files
@@ -631,7 +641,7 @@ class Program
             return 1;
         }
 
-        var resolver = new Ngo.Compiler.Semantics.GoModuleResolver();
+        var resolver = new Ngo.Compiler.Semantics.GoModuleResolver(new ConsoleLog(verbose: false));
         resolver.LoadGoMod(fullDir);
 
         if (resolver.ModuleName == null)
@@ -703,7 +713,9 @@ class Program
             errorCount++;
 
             // Convert character offset to line/column
-            var (line, col) = GetLineAndColumn(source, error.Location.Start);
+            var pos = GetLineAndColumn(source, error.Location.Start);
+            var line = pos.Line;
+            var col = pos.Column;
 
             Console.Error.WriteLine($"{fileName}:{line}:{col}: {error.Message}");
 
@@ -729,10 +741,12 @@ class Program
         }
     }
 
-    static (int line, int column) GetLineAndColumn(string source, int offset)
+    static LinePosition GetLineAndColumn(string source, int offset)
     {
         if (offset < 0 || offset > source.Length)
-            return (1, 1);
+        {
+            return new LinePosition(1, 1);
+        }
 
         int line = 1;
         int col = 1;
@@ -748,6 +762,6 @@ class Program
                 col++;
             }
         }
-        return (line, col);
+        return new LinePosition(line, col);
     }
 }

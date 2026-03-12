@@ -62,7 +62,7 @@ namespace Ngo.Compiler.Emit
         public Dictionary<Symbol, MethodInfo> CachedMethods { get; } = new();
 
         // Loop label stack for break/continue
-        public Stack<(Label breakLabel, Label continueLabel)> LoopLabels { get; } = new();
+        public Stack<LoopLabel> LoopLabels { get; } = new();
 
         // Fallthrough target label for switch cases
         public Label? FallthroughLabel { get; set; }
@@ -71,7 +71,7 @@ namespace Ngo.Compiler.Emit
         public Dictionary<string, Label> GotoLabels { get; } = new();
 
         // Named labels for labeled break/continue: "labelName" → (breakLabel, continueLabel)
-        public Dictionary<string, (Label breakLabel, Label continueLabel)> NamedLabels { get; } = new();
+        public Dictionary<string, LoopLabel> NamedLabels { get; } = new();
 
         // Package-level fields (var declarations)
         public Dictionary<Symbol, IFieldBuilder> PackageFields { get; } = new();
@@ -85,8 +85,8 @@ namespace Ngo.Compiler.Emit
         // Interface type builders (InterfaceTypeSymbol → ITypeBuilder)
         public Dictionary<InterfaceTypeSymbol, ITypeBuilder> InterfaceTypes { get; } = new();
 
-        // Wrapper types for interface satisfaction: (concrete, interface) → (wrapperType, ctor)
-        public Dictionary<(TypeSymbol, InterfaceTypeSymbol), (Type type, ConstructorInfo ctor)> WrapperTypes { get; } = new();
+        // Wrapper types for interface satisfaction: (concrete, interface) → WrapperTypeInfo
+        public Dictionary<WrapperTypeKey, WrapperTypeInfo> WrapperTypes { get; } = new();
 
         // Defer stack local for the current method (null if no defer statements)
         public LocalBuilder? DeferStack { get; set; }

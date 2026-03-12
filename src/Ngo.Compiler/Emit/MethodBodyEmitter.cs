@@ -1441,10 +1441,10 @@ namespace Ngo.Compiler.Emit
                     switch (branch.BranchKind)
                     {
                         case BranchKind.Break:
-                            _ctx.IL.Emit(OpCodes.Br, named.breakLabel);
+                            _ctx.IL.Emit(OpCodes.Br, named.BreakLabel);
                             break;
                         case BranchKind.Continue:
-                            _ctx.IL.Emit(OpCodes.Br, named.continueLabel);
+                            _ctx.IL.Emit(OpCodes.Br, named.ContinueLabel);
                             break;
                     }
                 }
@@ -1461,14 +1461,14 @@ namespace Ngo.Compiler.Emit
             if (_ctx.LoopLabels.Count == 0)
                 return;
 
-            var (breakLabel, continueLabel) = _ctx.LoopLabels.Peek();
+            var loopLabel = _ctx.LoopLabels.Peek();
             switch (branch.BranchKind)
             {
                 case BranchKind.Break:
-                    _ctx.IL.Emit(OpCodes.Br, breakLabel);
+                    _ctx.IL.Emit(OpCodes.Br, loopLabel.BreakLabel);
                     break;
                 case BranchKind.Continue:
-                    _ctx.IL.Emit(OpCodes.Br, continueLabel);
+                    _ctx.IL.Emit(OpCodes.Br, loopLabel.ContinueLabel);
                     break;
             }
         }
@@ -1498,10 +1498,10 @@ namespace Ngo.Compiler.Emit
 
         internal void PushLoopLabels(Label breakLabel, Label continueLabel)
         {
-            _ctx.LoopLabels.Push((breakLabel, continueLabel));
+            _ctx.LoopLabels.Push(new LoopLabel(breakLabel, continueLabel));
             if (_pendingLabel != null)
             {
-                _ctx.NamedLabels[_pendingLabel] = (breakLabel, continueLabel);
+                _ctx.NamedLabels[_pendingLabel] = new LoopLabel(breakLabel, continueLabel);
                 _pendingLabel = null;
             }
         }
@@ -2774,8 +2774,8 @@ namespace Ngo.Compiler.Emit
                 && sourceType.TypeKind != TypeKind.Interface)
             {
                 _ctx.DeclEmitter!.GenerateWrapper(sourceType, ifaceType);
-                var (_, ctor) = _ctx.WrapperTypes[(sourceType, ifaceType)];
-                _ctx.IL.Emit(OpCodes.Newobj, ctor);
+                var wrapper = _ctx.WrapperTypes[new WrapperTypeKey(sourceType, ifaceType)];
+                _ctx.IL.Emit(OpCodes.Newobj, wrapper.Constructor);
                 return;
             }
 

@@ -40,8 +40,8 @@ namespace Ngo.Compiler.Emit.Builder
         public IMethodBuilder DefineMethod(string name, MethodAttributes attrs)
             => new LiveMethodBuilder(_tb.DefineMethod(name, attrs));
 
-        public IConstructorBuilder DefineConstructor(MethodAttributes attrs, CallingConventions cc, Type[] paramTypes)
-            => new LiveConstructorBuilder(_tb.DefineConstructor(attrs, cc, paramTypes));
+        public IConstructorBuilder DefineConstructor(MethodAttributes attrs, CallingConventions callingConvention, Type[] paramTypes)
+            => new LiveConstructorBuilder(_tb.DefineConstructor(attrs, callingConvention, paramTypes));
 
         public Type[] DefineGenericParameters(string[] names)
             => _tb.DefineGenericParameters(names);

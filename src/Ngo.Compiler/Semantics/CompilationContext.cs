@@ -27,18 +27,23 @@ namespace Ngo.Compiler.Semantics
         private readonly IPackageResolver[] _resolvers;
         private readonly Dictionary<string, PackageSymbol> _resolved = new();
 
-        public CompilationContext(string? projectRoot)
+        public CompilationContext(string? projectRoot, ICompilerLog? log = null)
         {
             ProjectRoot = projectRoot;
+            Log = log ?? NullLog.Instance;
 
             var resolvers = new List<IPackageResolver>();
             resolvers.Add(RuntimePackageResolver.Instance);
             if (projectRoot != null)
+            {
                 resolvers.Add(new GoPackageResolver(this, projectRoot));
+            }
             _resolvers = resolvers.ToArray();
         }
 
         public string? ProjectRoot { get; }
+
+        public ICompilerLog Log { get; }
 
         public PackageSymbol? ResolvePackage(string importPath)
         {
@@ -64,6 +69,26 @@ namespace Ngo.Compiler.Semantics
                 var type = resolver.ResolveClrType(importPath, typeName);
                 if (type != null)
                     return type;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Returns the source directory for a Go package resolved from source.
+        /// Used by the emitter to re-compile dependencies into the host module.
+        /// </summary>
+        public string? GetSourceDir(string importPath)
+        {
+            foreach (var resolver in _resolvers)
+            {
+                if (resolver is GoPackageResolver goResolver)
+                {
+                    var dir = goResolver.GetSourceDir(importPath);
+                    if (dir != null)
+                    {
+                        return dir;
+                    }
+                }
             }
             return null;
         }

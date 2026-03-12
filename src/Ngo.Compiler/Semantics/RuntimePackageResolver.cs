@@ -37,11 +37,11 @@ namespace Ngo.Compiler.Semantics
         public static RuntimePackageResolver Instance => _instance.Value;
 
         private readonly Dictionary<string, PackageSymbol> _packages;
-        private readonly Dictionary<(string, string), Type> _clrTypes;
+        private readonly Dictionary<ClrTypeKey, Type> _clrTypes;
 
         private RuntimePackageResolver(
             Dictionary<string, PackageSymbol> packages,
-            Dictionary<(string, string), Type> clrTypes)
+            Dictionary<ClrTypeKey, Type> clrTypes)
         {
             _packages = packages;
             _clrTypes = clrTypes;
@@ -76,14 +76,14 @@ namespace Ngo.Compiler.Semantics
 
         public Type? ResolveClrType(string importPath, string typeName)
         {
-            _clrTypes.TryGetValue((importPath, typeName), out var type);
+            _clrTypes.TryGetValue(new ClrTypeKey(importPath, typeName), out var type);
             return type;
         }
 
         private static RuntimePackageResolver Build()
         {
             var packages = new Dictionary<string, PackageSymbol>();
-            var clrTypes = new Dictionary<(string, string), Type>();
+            var clrTypes = new Dictionary<ClrTypeKey, Type>();
 
             var asm = typeof(GoPackageAttribute).Assembly;
             var packageTypes = new Dictionary<string, Type>();
@@ -128,7 +128,7 @@ namespace Ngo.Compiler.Semantics
             // Synthetic types for Go-source-only packages referenced by runtime GoField/GoParam annotations.
             // These are packages compiled from Go source (not runtime), but runtime types reference their types
             // via GoField Type attributes (e.g., "*parse.Tree"). Without these, the type becomes a broken placeholder.
-            var syntheticTypes = new Dictionary<(string, string), TypeSymbol>();
+            var syntheticTypes = new Dictionary<ClrTypeKey, TypeSymbol>();
             {
                 // text/template/parse.Tree — referenced by text/template and html/template Tree fields
                 var treeFields = new[]
@@ -144,8 +144,8 @@ namespace Ngo.Compiler.Semantics
                     System.Array.Empty<ParameterSymbol>(),
                     new TypeSymbol[] { new PointerTypeSymbol(treeStruct) });
                 treeStruct.AddMethod(copyMethod);
-                syntheticTypes[("parse", "Tree")] = treeStruct;
-                syntheticTypes[("text/template/parse", "Tree")] = treeStruct;
+                syntheticTypes[new ClrTypeKey("parse", "Tree")] = treeStruct;
+                syntheticTypes[new ClrTypeKey("text/template/parse", "Tree")] = treeStruct;
             }
 
             // Cross-package type resolver: looks up types from already-built packages
@@ -161,13 +161,13 @@ namespace Ngo.Compiler.Semantics
                     }
                 }
                 // Fallback: check synthetic types for Go-source-only packages
-                if (syntheticTypes.TryGetValue((crossPkgName, typeName), out var synthetic))
+                if (syntheticTypes.TryGetValue(new ClrTypeKey(crossPkgName, typeName), out var synthetic))
                     return synthetic;
                 return null;
             };
 
             // Pass 1a: Forward-declare all type names for every package (no fields/methods yet)
-            var packageBuildInfo = new Dictionary<string, (Type clrType, PackageSymbol pkg, Dictionary<string, TypeSymbol> typeMap)>();
+            var packageBuildInfo = new Dictionary<string, PackageBuildInfo>();
             foreach (var kvp in packageTypes)
             {
                 var importPath = kvp.Key;
@@ -177,23 +177,23 @@ namespace Ngo.Compiler.Semantics
                 var typeMap = new Dictionary<string, TypeSymbol>();
                 DeclareTypes(clrType, importPath, pkg, typeMap, typesByPackage, clrTypes, crossPkgResolver);
                 packages[importPath] = pkg;
-                packageBuildInfo[importPath] = (clrType, pkg, typeMap);
+                packageBuildInfo[importPath] = new PackageBuildInfo(clrType, pkg, typeMap);
             }
 
             // Pass 1b: Populate struct fields and type methods (all type names now registered across packages)
             foreach (var kvp in packageBuildInfo)
             {
                 var importPath = kvp.Key;
-                var (clrType, pkg, typeMap) = kvp.Value;
-                PopulateTypeMembers(clrType, importPath, pkg, typeMap, typesByPackage, clrTypes, crossPkgResolver);
+                var info = kvp.Value;
+                PopulateTypeMembers(info.ClrType, importPath, info.Package, info.TypeMap, typesByPackage, clrTypes, crossPkgResolver);
             }
 
             // Pass 2: Build methods/functions/vars (all cross-package types now available)
             foreach (var kvp in packageBuildInfo)
             {
                 var importPath = kvp.Key;
-                var (clrType, pkg, typeMap) = kvp.Value;
-                BuildPackageMembers(clrType, importPath, pkg, typeMap, packages);
+                var info = kvp.Value;
+                BuildPackageMembers(info.ClrType, importPath, info.Package, info.TypeMap, packages);
             }
 
             return new RuntimePackageResolver(packages, clrTypes);
@@ -268,16 +268,16 @@ namespace Ngo.Compiler.Semantics
             }
         }
 
-        private static List<(Type clrType, GoTypeAttribute attr)> CollectGoTypes(
+        private static List<GoTypeEntry> CollectGoTypes(
             Type pkgType, string importPath, Dictionary<string, Type[]> typesByPackage)
         {
-            var goTypes = new List<(Type clrType, GoTypeAttribute attr)>();
+            var goTypes = new List<GoTypeEntry>();
             var seen = new HashSet<Type>();
             foreach (var nested in pkgType.GetNestedTypes(BindingFlags.Public))
             {
                 var attr = nested.GetCustomAttribute<GoTypeAttribute>();
                 if (attr != null && seen.Add(nested))
-                    goTypes.Add((nested, attr));
+                    goTypes.Add(new GoTypeEntry(nested, attr));
             }
             if (typesByPackage.TryGetValue(importPath, out var externalTypes))
             {
@@ -285,7 +285,7 @@ namespace Ngo.Compiler.Semantics
                 {
                     var attr = ext.GetCustomAttribute<GoTypeAttribute>();
                     if (attr != null && seen.Add(ext))
-                        goTypes.Add((ext, attr));
+                        goTypes.Add(new GoTypeEntry(ext, attr));
                 }
             }
             return goTypes;
@@ -294,16 +294,16 @@ namespace Ngo.Compiler.Semantics
         private static void DeclareTypes(Type pkgType, string importPath,
             PackageSymbol pkg, Dictionary<string, TypeSymbol> typeMap,
             Dictionary<string, Type[]> typesByPackage,
-            Dictionary<(string, string), Type> clrTypes,
+            Dictionary<ClrTypeKey, Type> clrTypes,
             System.Func<string, string, TypeSymbol?>? crossPkgResolver = null)
         {
             var goTypes = CollectGoTypes(pkgType, importPath, typesByPackage);
 
-            foreach (var (clrType, attr) in goTypes)
+            foreach (var entry in goTypes)
             {
-                var goName = attr.Name ?? clrType.Name;
+                var goName = entry.Attribute.Name ?? entry.ClrType.Name;
                 TypeSymbol goType;
-                switch (attr.Kind)
+                switch (entry.Attribute.Kind)
                 {
                     case "struct":
                         goType = new StructTypeSymbol(goName, new List<FieldSymbol>());
@@ -312,8 +312,8 @@ namespace Ngo.Compiler.Semantics
                         goType = new InterfaceTypeSymbol(goName, new List<MethodSymbol>());
                         break;
                     default:
-                        var underlying = attr.Underlying != null
-                            ? PackageMetadataSerializer.StringToType(attr.Underlying, typeMap, crossPkgResolver)
+                        var underlying = entry.Attribute.Underlying != null
+                            ? PackageMetadataSerializer.StringToType(entry.Attribute.Underlying, typeMap, crossPkgResolver)
                             : BuiltinTypes.EmptyInterface;
                         goType = new TypeSymbol(goName, underlying.TypeKind, underlying);
                         break;
@@ -323,41 +323,49 @@ namespace Ngo.Compiler.Semantics
                 pkg.AddExport(goType);
 
                 // Register CLR type mapping: (importPath, goName) → System.Type
-                clrTypes[(importPath, goName)] = clrType;
+                clrTypes[new ClrTypeKey(importPath, goName)] = entry.ClrType;
             }
         }
 
         private static void PopulateTypeMembers(Type pkgType, string importPath,
             PackageSymbol pkg, Dictionary<string, TypeSymbol> typeMap,
             Dictionary<string, Type[]> typesByPackage,
-            Dictionary<(string, string), Type> clrTypes,
+            Dictionary<ClrTypeKey, Type> clrTypes,
             System.Func<string, string, TypeSymbol?>? crossPkgResolver = null)
         {
             var goTypes = CollectGoTypes(pkgType, importPath, typesByPackage);
 
-            foreach (var (clrType, attr) in goTypes)
+            foreach (var entry in goTypes)
             {
-                var goName = attr.Name ?? clrType.Name;
+                var goName = entry.Attribute.Name ?? entry.ClrType.Name;
                 if (!typeMap.TryGetValue(goName, out var goType))
+                {
                     continue;
+                }
 
                 if (goType is StructTypeSymbol structType)
                 {
                     var fields = new List<FieldSymbol>();
-                    foreach (var fi in clrType.GetFields(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
+                    foreach (var fi in entry.ClrType.GetFields(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
                     {
                         var fieldAttr = fi.GetCustomAttribute<GoFieldAttribute>();
-                        if (fieldAttr == null) continue;
+                        if (fieldAttr == null)
+                        {
+                            continue;
+                        }
                         var fieldName = fieldAttr.Name ?? fi.Name;
                         var fieldType = fieldAttr.Type != null
                             ? PackageMetadataSerializer.StringToType(fieldAttr.Type, typeMap, crossPkgResolver)
                             : MapClrType(fi.FieldType, typeMap);
                         fields.Add(new FieldSymbol(fieldName, fieldType, fields.Count, isEmbedded: fieldAttr.Embedded));
                     }
-                    foreach (var pi in clrType.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
+                    foreach (var pi in entry.ClrType.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
                     {
                         var fieldAttr = pi.GetCustomAttribute<GoFieldAttribute>();
-                        if (fieldAttr == null) continue;
+                        if (fieldAttr == null)
+                        {
+                            continue;
+                        }
                         var fieldName = fieldAttr.Name ?? pi.Name;
                         var fieldType = fieldAttr.Type != null
                             ? PackageMetadataSerializer.StringToType(fieldAttr.Type, typeMap, crossPkgResolver)
@@ -365,23 +373,28 @@ namespace Ngo.Compiler.Semantics
                         fields.Add(new FieldSymbol(fieldName, fieldType, fields.Count, isEmbedded: fieldAttr.Embedded));
                     }
                     if (fields.Count > 0)
+                    {
                         structType.SetFields(fields);
+                    }
                 }
 
                 // For type methods, only include instance methods (not static — those are package functions)
                 // Exception: include static methods only if the class doesn't also have [GoPackage]
-                var includeStatic = clrType.GetCustomAttribute<GoPackageAttribute>() == null;
+                var includeStatic = entry.ClrType.GetCustomAttribute<GoPackageAttribute>() == null;
                 var methodFlags = BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly;
-                if (includeStatic) methodFlags |= BindingFlags.Static;
+                if (includeStatic)
+                {
+                    methodFlags |= BindingFlags.Static;
+                }
                 // For interfaces, also include inherited methods from parent interfaces
                 // (e.g., io.ReadSeeker inherits Read from Reader and Seek from Seeker)
-                var methods = clrType.GetMethods(methodFlags);
-                if (goType is InterfaceTypeSymbol && clrType.IsInterface)
+                var methods = entry.ClrType.GetMethods(methodFlags);
+                if (goType is InterfaceTypeSymbol && entry.ClrType.IsInterface)
                 {
                     var allMethods = new List<System.Reflection.MethodInfo>(methods);
                     var seen = new HashSet<string>();
                     foreach (var m in methods) seen.Add(m.Name);
-                    foreach (var parentIface in clrType.GetInterfaces())
+                    foreach (var parentIface in entry.ClrType.GetInterfaces())
                     {
                         foreach (var m in parentIface.GetMethods(BindingFlags.Public | BindingFlags.Instance))
                         {

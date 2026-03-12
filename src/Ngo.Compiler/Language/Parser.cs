@@ -111,8 +111,13 @@ namespace Ngo.Compiler.Language
             var members = new List<SyntaxNode>();
             while (!At(SyntaxKind.EndOfFileToken))
             {
+                var posBefore = _pos;
                 members.Add(ParseTopLevelDeclaration());
                 SkipSemicolon();
+                if (_pos == posBefore)
+                {
+                    Advance();
+                }
             }
 
             var eof = Expect(SyntaxKind.EndOfFileToken);
@@ -144,8 +149,13 @@ namespace Ngo.Compiler.Language
                 var specs = new List<ImportSpecSyntax>();
                 while (!At(SyntaxKind.CloseParenToken) && !At(SyntaxKind.EndOfFileToken))
                 {
+                    var posBefore = _pos;
                     specs.Add(ParseImportSpec());
                     SkipSemicolon();
+                    if (_pos == posBefore)
+                    {
+                        Advance();
+                    }
                 }
                 var close = Expect(SyntaxKind.CloseParenToken);
                 return new ImportDeclarationSyntax(keyword, open, specs, close);
@@ -370,8 +380,13 @@ namespace Ngo.Compiler.Language
                 var specs = new List<TypeSpecSyntax>();
                 while (!At(SyntaxKind.CloseParenToken) && !At(SyntaxKind.EndOfFileToken))
                 {
+                    var posBefore = _pos;
                     specs.Add(ParseTypeSpec());
                     SkipSemicolon();
+                    if (_pos == posBefore)
+                    {
+                        Advance();
+                    }
                 }
                 var close = Expect(SyntaxKind.CloseParenToken);
                 return new TypeDeclarationSyntax(keyword, open, specs, close);
@@ -411,8 +426,13 @@ namespace Ngo.Compiler.Language
                 var specs = new List<VarSpecSyntax>();
                 while (!At(SyntaxKind.CloseParenToken) && !At(SyntaxKind.EndOfFileToken))
                 {
+                    var posBefore = _pos;
                     specs.Add(ParseVarSpec());
                     SkipSemicolon();
+                    if (_pos == posBefore)
+                    {
+                        Advance();
+                    }
                 }
                 var close = Expect(SyntaxKind.CloseParenToken);
                 return new VarDeclarationSyntax(keyword, open, specs, close);
@@ -458,8 +478,13 @@ namespace Ngo.Compiler.Language
                 var specs = new List<ConstSpecSyntax>();
                 while (!At(SyntaxKind.CloseParenToken) && !At(SyntaxKind.EndOfFileToken))
                 {
+                    var posBefore = _pos;
                     specs.Add(ParseConstSpec());
                     SkipSemicolon();
+                    if (_pos == posBefore)
+                    {
+                        Advance();
+                    }
                 }
                 var close = Expect(SyntaxKind.CloseParenToken);
                 return new ConstDeclarationSyntax(keyword, open, specs, close);
@@ -507,8 +532,13 @@ namespace Ngo.Compiler.Language
 
             while (!At(SyntaxKind.CloseBraceToken) && !At(SyntaxKind.EndOfFileToken))
             {
+                var posBefore = _pos;
                 statements.Add(ParseStatement());
                 SkipSemicolon();
+                if (_pos == posBefore)
+                {
+                    Advance();
+                }
             }
 
             var close = Expect(SyntaxKind.CloseBraceToken);
@@ -1090,7 +1120,12 @@ namespace Ngo.Compiler.Language
 
             while (!At(SyntaxKind.CloseBraceToken) && !At(SyntaxKind.EndOfFileToken))
             {
+                var posBefore = _pos;
                 cases.Add(ParseExprSwitchCase());
+                if (_pos == posBefore)
+                {
+                    Advance();
+                }
             }
 
             var close = Expect(SyntaxKind.CloseBraceToken);
@@ -1118,8 +1153,13 @@ namespace Ngo.Compiler.Language
             while (!At(SyntaxKind.CaseKeyword) && !At(SyntaxKind.DefaultKeyword) &&
                    !At(SyntaxKind.CloseBraceToken) && !At(SyntaxKind.EndOfFileToken))
             {
+                var posBefore = _pos;
                 statements.Add(ParseStatement());
                 SkipSemicolon();
+                if (_pos == posBefore)
+                {
+                    Advance();
+                }
             }
 
             return new ExprSwitchCaseSyntax(caseOrDefault, expressions, colon, statements);
@@ -1133,7 +1173,12 @@ namespace Ngo.Compiler.Language
 
             while (!At(SyntaxKind.CloseBraceToken) && !At(SyntaxKind.EndOfFileToken))
             {
+                var posBefore = _pos;
                 cases.Add(ParseTypeSwitchCase());
+                if (_pos == posBefore)
+                {
+                    Advance();
+                }
             }
 
             var close = Expect(SyntaxKind.CloseBraceToken);
@@ -1161,8 +1206,13 @@ namespace Ngo.Compiler.Language
             while (!At(SyntaxKind.CaseKeyword) && !At(SyntaxKind.DefaultKeyword) &&
                    !At(SyntaxKind.CloseBraceToken) && !At(SyntaxKind.EndOfFileToken))
             {
+                var posBefore = _pos;
                 statements.Add(ParseStatement());
                 SkipSemicolon();
+                if (_pos == posBefore)
+                {
+                    Advance();
+                }
             }
 
             return new TypeSwitchCaseSyntax(caseOrDefault, types, colon, statements);
@@ -1180,7 +1230,12 @@ namespace Ngo.Compiler.Language
 
             while (!At(SyntaxKind.CloseBraceToken) && !At(SyntaxKind.EndOfFileToken))
             {
+                var posBefore = _pos;
                 clauses.Add(ParseCommClause());
+                if (_pos == posBefore)
+                {
+                    Advance();
+                }
             }
 
             var close = Expect(SyntaxKind.CloseBraceToken);
@@ -1208,8 +1263,13 @@ namespace Ngo.Compiler.Language
             while (!At(SyntaxKind.CaseKeyword) && !At(SyntaxKind.DefaultKeyword) &&
                    !At(SyntaxKind.CloseBraceToken) && !At(SyntaxKind.EndOfFileToken))
             {
+                var posBefore = _pos;
                 statements.Add(ParseStatement());
                 SkipSemicolon();
+                if (_pos == posBefore)
+                {
+                    Advance();
+                }
             }
 
             return new CommClauseSyntax(caseOrDefault, commStmt, colon, statements);
@@ -1892,6 +1952,7 @@ namespace Ngo.Compiler.Language
 
             while (!At(SyntaxKind.CloseBraceToken) && !At(SyntaxKind.EndOfFileToken))
             {
+                var posBefore = _pos;
                 if (At(SyntaxKind.TildeToken))
                 {
                     // Union type element starting with ~
@@ -1921,6 +1982,10 @@ namespace Ngo.Compiler.Language
                 }
 
                 SkipSemicolon();
+                if (_pos == posBefore)
+                {
+                    Advance();
+                }
             }
 
             var close = Expect(SyntaxKind.CloseBraceToken);

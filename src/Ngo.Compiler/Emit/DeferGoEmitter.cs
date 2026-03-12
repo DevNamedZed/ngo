@@ -357,7 +357,7 @@ namespace Ngo.Compiler.Emit
             var lambdaName = isDeferPush ? $"__defer_{_body.LambdaCounter++}" : $"__go_{_body.LambdaCounter++}";
 
             // Determine call info and evaluate args eagerly
-            var argLocals = new List<(LocalBuilder local, Type type)>();
+            var argLocals = new List<CapturedLocal>();
 
             if (callExpr is CallExpression call)
             {
@@ -410,13 +410,13 @@ namespace Ngo.Compiler.Emit
                     var argType = _ctx.Mapper.Map(arg.Type);
                     var argLocal = _ctx.IL.DeclareLocal(argType);
                     _ctx.IL.Emit(OpCodes.Stloc, argLocal);
-                    argLocals.Add((argLocal, argType));
+                    argLocals.Add(new CapturedLocal(argLocal, argType));
                 }
 
                 // Build the lambda method that calls f with the captured args
                 var paramTypes = new Type[argLocals.Count];
                 for (int i = 0; i < argLocals.Count; i++)
-                    paramTypes[i] = argLocals[i].type;
+                    paramTypes[i] = argLocals[i].Type;
                 var lambdaMethod = _ctx.PackageType.DefineMethod(
                     lambdaName,
                     MethodAttributes.Public | MethodAttributes.Static,
@@ -467,7 +467,7 @@ namespace Ngo.Compiler.Emit
                 var recvType = _ctx.Mapper.Map(methodCall.Receiver.Type);
                 var recvLocal = _ctx.IL.DeclareLocal(recvType);
                 _ctx.IL.Emit(OpCodes.Stloc, recvLocal);
-                argLocals.Add((recvLocal, recvType));
+                argLocals.Add(new CapturedLocal(recvLocal, recvType));
 
                 foreach (var arg in methodCall.Arguments)
                 {
@@ -475,12 +475,12 @@ namespace Ngo.Compiler.Emit
                     var argType = _ctx.Mapper.Map(arg.Type);
                     var argLocal = _ctx.IL.DeclareLocal(argType);
                     _ctx.IL.Emit(OpCodes.Stloc, argLocal);
-                    argLocals.Add((argLocal, argType));
+                    argLocals.Add(new CapturedLocal(argLocal, argType));
                 }
 
                 var paramTypes = new Type[argLocals.Count];
                 for (int i = 0; i < argLocals.Count; i++)
-                    paramTypes[i] = argLocals[i].type;
+                    paramTypes[i] = argLocals[i].Type;
                 var lambdaMethod = _ctx.PackageType.DefineMethod(
                     lambdaName,
                     MethodAttributes.Public | MethodAttributes.Static,
@@ -538,7 +538,7 @@ namespace Ngo.Compiler.Emit
             }
         }
 
-        private void EmitClosureAction(IMethodBuilder lambdaMethod, List<(LocalBuilder local, Type type)> argLocals)
+        private void EmitClosureAction(IMethodBuilder lambdaMethod, List<CapturedLocal> argLocals)
         {
             // Create a closure class with instance fields to capture arg values.
             // Each call site gets its own instance, so defer in loops works correctly.
@@ -551,7 +551,7 @@ namespace Ngo.Compiler.Emit
             for (int i = 0; i < argLocals.Count; i++)
             {
                 argFields.Add(closureBuilder.DefineField(
-                    $"_a{i}", argLocals[i].type, FieldAttributes.Public));
+                    $"_a{i}", argLocals[i].Type, FieldAttributes.Public));
             }
 
             // Invoke(): loads captured args and calls the lambda
@@ -580,7 +580,7 @@ namespace Ngo.Compiler.Emit
             for (int i = 0; i < argLocals.Count; i++)
             {
                 _ctx.IL.Emit(OpCodes.Ldloc, closureLocal);
-                _ctx.IL.Emit(OpCodes.Ldloc, argLocals[i].local);
+                _ctx.IL.Emit(OpCodes.Ldloc, argLocals[i].Local);
                 _ctx.IL.Emit(OpCodes.Stfld, closureType.GetField($"_a{i}")!);
             }
 
@@ -597,14 +597,14 @@ namespace Ngo.Compiler.Emit
             CallExpression call)
         {
             // Eagerly evaluate call arguments into locals
-            var eagerLocals = new List<(LocalBuilder local, Type type)>();
+            var eagerLocals = new List<CapturedLocal>();
             foreach (var arg in call.Arguments)
             {
                 _body.EmitExpression(arg);
                 var argType = _ctx.Mapper.Map(arg.Type);
                 var argLocal = _ctx.IL.DeclareLocal(argType);
                 _ctx.IL.Emit(OpCodes.Stloc, argLocal);
-                eagerLocals.Add((argLocal, argType));
+                eagerLocals.Add(new CapturedLocal(argLocal, argType));
             }
 
             // Emit the function literal → produces a delegate (handles captures too)
@@ -624,7 +624,7 @@ namespace Ngo.Compiler.Emit
             for (int i = 0; i < eagerLocals.Count; i++)
             {
                 argFields.Add(wrapperBuilder.DefineField(
-                    $"_a{i}", eagerLocals[i].type, FieldAttributes.Public));
+                    $"_a{i}", eagerLocals[i].Type, FieldAttributes.Public));
             }
 
             // Invoke(): calls _fn.Invoke(_a0, _a1, ...)
@@ -662,7 +662,7 @@ namespace Ngo.Compiler.Emit
             for (int i = 0; i < eagerLocals.Count; i++)
             {
                 _ctx.IL.Emit(OpCodes.Ldloc, wrapperLocal);
-                _ctx.IL.Emit(OpCodes.Ldloc, eagerLocals[i].local);
+                _ctx.IL.Emit(OpCodes.Ldloc, eagerLocals[i].Local);
                 _ctx.IL.Emit(OpCodes.Stfld, wrapperType.GetField($"_a{i}")!);
             }
 

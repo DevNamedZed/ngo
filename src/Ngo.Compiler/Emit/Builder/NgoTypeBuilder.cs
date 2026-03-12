@@ -31,6 +31,7 @@ namespace Ngo.Compiler.Emit.Builder
         private readonly NgoProxyType _proxyType;
         private readonly List<NgoFieldBuilder> _fields = new();
         private readonly List<NgoMethodBuilder> _methods = new();
+        private readonly List<NgoMethodOverride> _overrides = new();
         private NgoConstructorBuilder? _constructor;
 
         public NgoTypeBuilder(string fullName, TypeAttributes attrs, Type? baseType)
@@ -50,6 +51,7 @@ namespace Ngo.Compiler.Emit.Builder
         public string BaseTypeName => _baseTypeName;
         public IReadOnlyList<NgoFieldBuilder> Fields => _fields;
         public IReadOnlyList<NgoMethodBuilder> Methods => _methods;
+        public IReadOnlyList<NgoMethodOverride> Overrides => _overrides;
         public NgoConstructorBuilder? Constructor => _constructor;
 
         public Type AsType() => _proxyType;
@@ -77,9 +79,9 @@ namespace Ngo.Compiler.Emit.Builder
             return mb;
         }
 
-        public IConstructorBuilder DefineConstructor(MethodAttributes attrs, CallingConventions cc, Type[] paramTypes)
+        public IConstructorBuilder DefineConstructor(MethodAttributes attrs, CallingConventions callingConvention, Type[] paramTypes)
         {
-            _constructor = new NgoConstructorBuilder();
+            _constructor = new NgoConstructorBuilder(attrs, callingConvention, paramTypes);
             return _constructor;
         }
 
@@ -91,6 +93,12 @@ namespace Ngo.Compiler.Emit.Builder
             return result;
         }
 
-        public void DefineMethodOverride(IMethodBuilder body, MethodInfo declaration) { }
+        public void DefineMethodOverride(IMethodBuilder body, MethodInfo declaration)
+        {
+            var bodyName = ((NgoMethodBuilder)body).Name;
+            var declType = NgoWriter.GetTypeNameStatic(declaration.DeclaringType!);
+            var declName = declaration.Name;
+            _overrides.Add(new NgoMethodOverride(bodyName, declType, declName));
+        }
     }
 }

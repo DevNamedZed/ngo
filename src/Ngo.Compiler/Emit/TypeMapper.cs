@@ -22,15 +22,6 @@ using System.Reflection.Emit;
 using Ngo.Compiler.Semantics;
 using Ngo.Compiler.Symbols;
 using Ngo.Runtime;
-using Ngo.Runtime.GoRuntimePkg;
-using Ngo.Runtime.Context;
-using Ngo.Runtime.Csv;
-using Ngo.Runtime.Io;
-using Ngo.Runtime.Os;
-using Ngo.Runtime.Reflect;
-using Ngo.Runtime.Strings;
-using Ngo.Runtime.Testing;
-using Ngo.Runtime.Time;
 
 namespace Ngo.Compiler.Emit
 {
@@ -59,7 +50,11 @@ namespace Ngo.Compiler.Emit
                 return cached;
 
             if (!_inProgress.Add(symbol))
-                return typeof(object); // break recursive type cycles
+            {
+                throw new InvalidOperationException(
+                    $"Recursive type cycle detected for '{symbol.Name}' (package: {symbol.PackagePath ?? "unknown"}). " +
+                    "User types must be Register()ed before their fields are mapped.");
+            }
 
             try
             {
@@ -171,111 +166,53 @@ namespace Ngo.Compiler.Emit
                     return typeof(Ptr<>).MakeGenericType(elemType);
 
                 case TypeKind.Struct:
-                    // Try fully-qualified CLR type resolution via CompilationContext
+                    // Anonymous empty struct: struct{} → ValueTuple
+                    if (symbol.Name is "struct{}" or "struct" && symbol is StructTypeSymbol sts && sts.Fields.Count == 0)
+                    {
+                        return typeof(ValueTuple);
+                    }
+
+                    // unsafe.Pointer → long
+                    if (symbol.Name == "Pointer" && symbol.PackagePath == "unsafe")
+                    {
+                        return typeof(long);
+                    }
+
+                    // Resolve via [GoType] annotations on runtime types
                     if (symbol.PackagePath != null)
                     {
                         var resolved = _compilationContext.ResolveClrType(symbol.PackagePath, symbol.Name);
                         if (resolved != null)
+                        {
                             return resolved;
+                        }
                     }
-                    // Hardcoded fallbacks — temporary, removed as packages get [GoType] annotations
-                    if (symbol.Name == "WaitGroup") return typeof(Ngo.Runtime.Sync.WaitGroup);
-                    if (symbol.Name == "Mutex") return typeof(Ngo.Runtime.Sync.Mutex);
-                    if (symbol.Name == "Once") return typeof(Ngo.Runtime.Sync.Once);
-                    if (symbol.Name == "RWMutex") return typeof(Ngo.Runtime.Sync.RWMutex);
-                    if (symbol.Name == "Builder") return typeof(Ngo.Runtime.Strings.Builder);
-                    if (symbol.Name == "Buffer") return typeof(Ngo.Runtime.Bytes.Buffer);
-                    if (symbol.Name == "Replacer") return typeof(Ngo.Runtime.Strings.Replacer);
-                    if (symbol.Name == "Context") return typeof(GoContext);
-                    if (symbol.Name == "DirEntry") return typeof(GoDirEntry);
-                    if (symbol.Name == "File") return typeof(GoFile);
-                    if (symbol.Name == "FileInfo") return typeof(GoFileInfo);
-                    if (symbol.Name == "Time") return typeof(GoTimeValue);
-                    if (symbol.Name == "Location") return typeof(object); // time.Location stub
-                    if (symbol.Name == "Timer") return typeof(object); // time.Timer stub
-                    if (symbol.Name == "Ticker") return typeof(object); // time.Ticker stub
-                    if (symbol.Name == "Request") return typeof(object); // http.Request stub
-                    if (symbol.Name == "Server") return typeof(object); // httptest.Server stub
-                    if (symbol.Name == "ResponseRecorder") return typeof(object); // httptest stub
-                    if (symbol.Name == "BuildInfo") return typeof(object); // runtime/debug stub
-                    if (symbol.Name == "URL") return typeof(object); // net/url stub
-                    // Regexp: discovered from [GoType] via RuntimePackageResolver
-                    if (symbol.Name == "Scanner") return typeof(Ngo.Runtime.Bufio.Scanner);
-                    if (symbol.Name == "Reader")
-                    {
-                        var st = (StructTypeSymbol)symbol;
-                        if (st.LookupMethod("ReadAll") != null) return typeof(Ngo.Runtime.Csv.Reader);
-                        if (st.LookupMethod("Seek") != null) return typeof(Ngo.Runtime.Strings.Reader);
-                        return typeof(Ngo.Runtime.Bufio.Reader);
-                    }
-                    if (symbol.Name == "Writer")
-                    {
-                        var st = (StructTypeSymbol)symbol;
-                        if (st.LookupMethod("WriteAll") != null) return typeof(Ngo.Runtime.Csv.Writer);
-                        return typeof(Ngo.Runtime.Bufio.Writer);
-                    }
-                    if (symbol.Name == "Map") return typeof(Ngo.Runtime.Sync.Map);
-                    if (symbol.Name == "T") return typeof(Ngo.Runtime.Testing.T); // testing.T
-                    if (symbol.Name == "Encoding") return typeof(Ngo.Runtime.Base64.Encoding);
-                    if (symbol.Name == "Hash") return typeof(Ngo.Runtime.Sha256.Hash);
-                    if (symbol.Name == "Response") return typeof(Ngo.Runtime.Http.Response);
-                    if (symbol.Name == "Body") return typeof(Ngo.Runtime.Http.ResponseBody);
-                    if (symbol.Name == "Type" && IsReflectType(symbol)) return typeof(GoReflectType);
-                    if (symbol.Name == "Value" && IsReflectValue(symbol)) return typeof(GoReflectValue);
-                    if (symbol.Name == "StructField" && IsReflectStructField(symbol)) return typeof(GoReflectStructField);
-                    if (symbol.Name == "Func" && IsRuntimeFunc(symbol)) return typeof(GoRuntimeFunc);
-                    if (symbol.Name == "Pointer" && symbol is StructTypeSymbol pts && pts.Fields.Count == 0 && pts.Methods.Count == 0) return typeof(long); // unsafe.Pointer
-                    if (symbol.Name == "FileInfo") return typeof(object); // os.FileInfo stub
-                    if (symbol.Name is "struct{}" or "struct" && symbol is StructTypeSymbol sts && sts.Fields.Count == 0) return typeof(ValueTuple); // struct{} → ValueTuple
-                    // Opaque struct types from registry packages — no full .NET runtime type yet
-                    if (symbol.Name == "Rand") return typeof(object); // math/rand.Rand
-                    if (symbol.Name == "Int" && symbol is StructTypeSymbol intSt && intSt.LookupMethod("Add") != null) return typeof(object); // math/big.Int
-                    if (symbol.Name == "Int64") return typeof(object); // sync/atomic.Int64 or expvar.Int
-                    if (symbol.Name == "Float") return typeof(object); // math/big.Float
-                    if (symbol.Name == "Rat") return typeof(object); // math/big.Rat
-                    if (symbol.Name == "RangeTable") return typeof(object); // unicode.RangeTable
-                    if (symbol.Name == "Range16") return typeof(object); // unicode.Range16
-                    if (symbol.Name == "Range32") return typeof(object); // unicode.Range32
-                    if (symbol.Name == "CaseRange") return typeof(object); // unicode.CaseRange
-                    if (symbol.Name == "SpecialCase") return typeof(object); // unicode.SpecialCase
-                    if (symbol.Name == "SectionReader") return typeof(object); // io.SectionReader
-                    if (symbol.Name == "LimitedReader") return typeof(object); // io.LimitedReader
-                    if (symbol.Name == "RGBA") return typeof(object); // image/color.RGBA
-                    if (symbol.Name == "RGBA64") return typeof(object); // image/color.RGBA64
-                    if (symbol.Name == "NRGBA") return typeof(object); // image/color.NRGBA
-                    if (symbol.Name == "NRGBA64") return typeof(object); // image/color.NRGBA64
-                    if (symbol.Name == "Alpha") return typeof(object); // image/color.Alpha
-                    if (symbol.Name == "Alpha16") return typeof(object); // image/color.Alpha16
-                    if (symbol.Name == "Gray") return typeof(object); // image/color.Gray
-                    if (symbol.Name == "Gray16") return typeof(object); // image/color.Gray16
-                    if (symbol.Name == "YCbCr") return typeof(object); // image/color.YCbCr
-                    if (symbol.Name == "NYCbCrA") return typeof(object); // image/color.NYCbCrA
-                    if (symbol.Name == "CMYK") return typeof(object); // image/color.CMYK
-                    if (symbol.Name == "Palette") return typeof(object); // image/color.Palette
-                    if (symbol.Name == "Logger") return typeof(object); // log.Logger
-                    if (symbol.Name == "Tree") return typeof(object); // text/template/parse.Tree
-                    if (symbol.Name == "RawValue") return typeof(object); // encoding/asn1.RawValue
-                    if (symbol.Name == "CurveParams") return typeof(object); // crypto/elliptic.CurveParams
-                    if (symbol.Name == "CommonType") return typeof(object); // encoding/gob.CommonType
-                    if (symbol.Name is "Encoder" or "encoder") return typeof(object); // encoding/xml.Encoder etc
-                    if (symbol.Name is "Decoder" or "decoder") return typeof(object); // encoding/json.Decoder etc
-                    if (symbol.Name == "Rectangle") return typeof(object); // image.Rectangle
-                    if (symbol.Name == "Point") return typeof(object); // image.Point
-                    if (symbol.Name == "Uniform") return typeof(object); // image.Uniform
-                    if (symbol.Name == "Image") return typeof(object); // image types
-                    if (symbol.Name == "Config") return typeof(object); // image.Config
+
                     throw new NotSupportedException(
                         $"Struct type '{symbol.Name}' (package: {symbol.PackagePath ?? "unknown"}) " +
-                        "was not registered in the type mapper. " +
-                        "Runtime types need [GoType] attributes. User types need TypeBuilder registration.");
+                        "has no CLR type mapping. Runtime types need [GoType] attributes. " +
+                        "User types need TypeBuilder registration.");
 
                 case TypeKind.Interface:
                     var ifaceType = (InterfaceTypeSymbol)symbol;
+
+                    // Empty interface{} → object
                     if (ifaceType.Methods.Count == 0)
-                        return typeof(object); // empty interface{} → object
-                    if (symbol.Name == "Context") return typeof(GoContext);
-                    if (symbol.Name == "Type" && ifaceType.LookupMethod("Kind") != null) return typeof(GoReflectType);
-                    // Named non-empty interfaces → object (runtime dispatch)
+                    {
+                        return typeof(object);
+                    }
+
+                    // Resolve via [GoType] annotations on runtime types
+                    if (symbol.PackagePath != null)
+                    {
+                        var resolved = _compilationContext.ResolveClrType(symbol.PackagePath, symbol.Name);
+                        if (resolved != null)
+                        {
+                            return resolved;
+                        }
+                    }
+
+                    // Unresolved named interface → object (runtime dispatch)
                     return typeof(object);
 
                 case TypeKind.Channel:
@@ -347,30 +284,6 @@ namespace Ngo.Compiler.Emit
             allTypes[7] = restType;
 
             return typeof(ValueTuple<,,,,,,,>).MakeGenericType(allTypes);
-        }
-
-        private static bool IsReflectType(TypeSymbol symbol)
-        {
-            if (symbol is not StructTypeSymbol st) return false;
-            return st.LookupMethod("Kind") != null && st.LookupMethod("NumField") != null;
-        }
-
-        private static bool IsReflectValue(TypeSymbol symbol)
-        {
-            if (symbol is not StructTypeSymbol st) return false;
-            return st.LookupMethod("Kind") != null && st.LookupMethod("Interface") != null;
-        }
-
-        private static bool IsRuntimeFunc(TypeSymbol symbol)
-        {
-            if (symbol is not StructTypeSymbol st) return false;
-            return st.LookupMethod("Name") != null && st.LookupMethod("FileLine") != null;
-        }
-
-        private static bool IsReflectStructField(TypeSymbol symbol)
-        {
-            if (symbol is not StructTypeSymbol st) return false;
-            return st.Fields.Count >= 4 && st.Fields[0].Name == "Name" && st.Fields[1].Name == "Type";
         }
 
         private Type MapFunctionType(FunctionTypeSymbol funcType)

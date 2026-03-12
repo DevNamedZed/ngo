@@ -55,20 +55,35 @@ namespace Ngo.Compiler.Symbols
 
         /// <summary>
         /// Looks up a promoted method from embedded structs.
-        /// Returns null if not found. If found, returns the (embeddedField, method) pair.
+        /// Returns null if not found.
         /// </summary>
-        public (FieldSymbol embeddedField, MethodSymbol method)? LookupPromotedMethod(string name)
+        public PromotedMethodResult? LookupPromotedMethod(string name)
         {
+            return LookupPromotedMethod(name, new HashSet<StructTypeSymbol>());
+        }
+
+        private PromotedMethodResult? LookupPromotedMethod(string name, HashSet<StructTypeSymbol> visited)
+        {
+            if (!visited.Add(this))
+            {
+                return null;
+            }
+
             for (int i = 0; i < Fields.Count; i++)
             {
-                if (!Fields[i].IsEmbedded) continue;
+                if (!Fields[i].IsEmbedded)
+                {
+                    continue;
+                }
                 // Look through pointer types for embedded methods
                 var embeddedType = Fields[i].Type is PointerTypeSymbol ptr
                     ? ptr.ElementType
                     : Fields[i].Type;
                 var method = embeddedType.LookupMethod(name);
                 if (method != null)
-                    return (Fields[i], method);
+                {
+                    return new PromotedMethodResult(Fields[i], method);
+                }
 
                 // Unwrap generic instantiation for deeper search
                 var resolvedEmbedded = embeddedType is InstantiatedTypeSymbol inst2
@@ -76,9 +91,11 @@ namespace Ngo.Compiler.Symbols
                 // Recurse into embedded structs for deeper promoted methods
                 if (resolvedEmbedded is StructTypeSymbol embeddedStruct)
                 {
-                    var deep = embeddedStruct.LookupPromotedMethod(name);
+                    var deep = embeddedStruct.LookupPromotedMethod(name, visited);
                     if (deep != null)
-                        return (Fields[i], deep.Value.method);
+                    {
+                        return new PromotedMethodResult(Fields[i], deep.Method);
+                    }
                 }
             }
 
@@ -87,30 +104,51 @@ namespace Ngo.Compiler.Symbols
 
         /// <summary>
         /// Looks up a promoted field from embedded structs.
-        /// Returns null if not found. If found, returns the (embeddedField, promotedField) pair.
+        /// Returns null if not found.
         /// </summary>
-        public (FieldSymbol embeddedField, FieldSymbol promotedField)? LookupPromotedField(string name)
+        public PromotedFieldResult? LookupPromotedField(string name)
         {
+            return LookupPromotedField(name, new HashSet<StructTypeSymbol>());
+        }
+
+        private PromotedFieldResult? LookupPromotedField(string name, HashSet<StructTypeSymbol> visited)
+        {
+            if (!visited.Add(this))
+            {
+                return null;
+            }
+
             for (int i = 0; i < Fields.Count; i++)
             {
-                if (!Fields[i].IsEmbedded) continue;
+                if (!Fields[i].IsEmbedded)
+                {
+                    continue;
+                }
                 var embeddedType = Fields[i].Type;
                 // Unwrap pointer for *T embedded fields
                 if (embeddedType is PointerTypeSymbol ptr)
+                {
                     embeddedType = ptr.ElementType;
+                }
                 // Unwrap generic instantiation (e.g., node[N, T] → node)
                 if (embeddedType is InstantiatedTypeSymbol inst)
+                {
                     embeddedType = inst.Resolved();
+                }
                 if (embeddedType is StructTypeSymbol embeddedStruct)
                 {
                     var inner = embeddedStruct.LookupField(name);
                     if (inner != null)
-                        return (Fields[i], inner);
+                    {
+                        return new PromotedFieldResult(Fields[i], inner);
+                    }
 
                     // Recurse into deeper embedded structs
-                    var deep = embeddedStruct.LookupPromotedField(name);
+                    var deep = embeddedStruct.LookupPromotedField(name, visited);
                     if (deep != null)
-                        return (Fields[i], deep.Value.promotedField);
+                    {
+                        return new PromotedFieldResult(Fields[i], deep.PromotedField);
+                    }
                 }
             }
 

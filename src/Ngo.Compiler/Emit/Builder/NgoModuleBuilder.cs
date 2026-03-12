@@ -50,11 +50,11 @@ namespace Ngo.Compiler.Emit.Builder
         {
             // Collect all method bodies across all types (for Section 3 body index mapping)
             var allBodies = new List<NgoWriter>();
-            var typeMethodBodies = new Dictionary<NgoTypeBuilder, List<(string methodName, MethodAttributes attrs, string returnType, string[] paramTypes, int bodyIndex)>>();
+            var typeMethodBodies = new Dictionary<NgoTypeBuilder, List<NgoMethodEntry>>();
 
             foreach (var type in _types)
             {
-                var methodEntries = new List<(string methodName, MethodAttributes attrs, string returnType, string[] paramTypes, int bodyIndex)>();
+                var methodEntries = new List<NgoMethodEntry>();
 
                 foreach (var method in type.Methods)
                 {
@@ -66,8 +66,10 @@ namespace Ngo.Compiler.Emit.Builder
                     }
                     var paramNames = new string[method.ParamTypeNames.Count];
                     for (int i = 0; i < paramNames.Length; i++)
+                    {
                         paramNames[i] = method.ParamTypeNames[i];
-                    methodEntries.Add((method.Name, method.Attributes, method.ReturnTypeName, paramNames, bodyIndex));
+                    }
+                    methodEntries.Add(new NgoMethodEntry(method.Name, method.Attributes, method.ReturnTypeName, paramNames, bodyIndex));
                 }
 
                 // .cctor
@@ -75,7 +77,7 @@ namespace Ngo.Compiler.Emit.Builder
                 {
                     int bodyIndex = allBodies.Count;
                     allBodies.Add(type.Constructor.Writer);
-                    methodEntries.Add((".cctor",
+                    methodEntries.Add(new NgoMethodEntry(".cctor",
                         MethodAttributes.Private | MethodAttributes.Static | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName,
                         "System.Void", Array.Empty<string>(), bodyIndex));
                 }
@@ -105,13 +107,24 @@ namespace Ngo.Compiler.Emit.Builder
                 writer.Write(methods.Count);
                 foreach (var m in methods)
                 {
-                    writer.Write(m.methodName);
-                    writer.Write((int)m.attrs);
-                    writer.Write(m.returnType);
-                    writer.Write(m.paramTypes.Length);
-                    foreach (var pt in m.paramTypes)
+                    writer.Write(m.MethodName);
+                    writer.Write((int)m.Attributes);
+                    writer.Write(m.ReturnType);
+                    writer.Write(m.ParamTypes.Length);
+                    foreach (var pt in m.ParamTypes)
+                    {
                         writer.Write(pt);
-                    writer.Write(m.bodyIndex);
+                    }
+                    writer.Write(m.BodyIndex);
+                }
+
+                // Method overrides
+                writer.Write(type.Overrides.Count);
+                foreach (var ov in type.Overrides)
+                {
+                    writer.Write(ov.BodyMethodName);
+                    writer.Write(ov.DeclarationTypeName);
+                    writer.Write(ov.DeclarationMethodName);
                 }
             }
 

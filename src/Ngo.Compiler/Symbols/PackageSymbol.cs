@@ -24,6 +24,7 @@ namespace Ngo.Compiler.Symbols
     public sealed class PackageSymbol : Symbol
     {
         private Dictionary<string, Symbol>? _exports;
+        private List<string>? _imports;
 
         public PackageSymbol(string name)
             : base(name, SymbolKind.Package)
@@ -38,6 +39,17 @@ namespace Ngo.Compiler.Symbols
         }
 
         public string ImportPath { get; }
+
+        /// <summary>
+        /// The import paths this package depends on.
+        /// Stored in .ngo archives so dependency discovery doesn't require re-parsing source.
+        /// </summary>
+        public IReadOnlyList<string> Imports => (IReadOnlyList<string>?)_imports ?? Array.Empty<string>();
+
+        public void SetImports(IReadOnlyList<string> imports)
+        {
+            _imports = new List<string>(imports);
+        }
 
         public IReadOnlyDictionary<string, Symbol> Exports =>
             (IReadOnlyDictionary<string, Symbol>?)_exports

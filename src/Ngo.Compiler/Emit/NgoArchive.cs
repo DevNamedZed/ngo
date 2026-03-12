@@ -37,8 +37,12 @@ namespace Ngo.Compiler.Emit
     public static class NgoArchive
     {
         private static readonly byte[] Magic = { (byte)'N', (byte)'G', (byte)'O', 0 };
-        private const ushort CurrentVersion = 5;
-        private const int HeaderSize = 4 + 2 + (4 + 4) * 3; // 30 bytes
+        private const int MagicSize = 4;
+        private const int VersionSize = 2;
+        private const int SectionEntrySize = 4 + 4; // offset(uint32) + length(uint32)
+        private const int SectionCount = 3; // Go metadata, IL metadata, IL bytecode
+        private const int HeaderSize = MagicSize + VersionSize + (SectionEntrySize * SectionCount);
+        internal const ushort CurrentVersion = 2;
 
         /// <summary>
         /// Gets the archive path for a package in the cache directory.
@@ -50,11 +54,14 @@ namespace Ngo.Compiler.Emit
         }
 
         /// <summary>
-        /// Gets the cache directory for a project.
+        /// Gets the global .ngo package cache directory (~/.ngo/cache/pkg/).
+        /// Per the design doc, this is a process-wide cache — not per-project.
+        /// This ensures cross-module dependencies are only analyzed once.
         /// </summary>
         public static string GetCacheDir(string projectRoot)
         {
-            return Path.Combine(projectRoot, ".ngo", "cache", "pkg");
+            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            return Path.Combine(home, ".ngo", "cache", "pkg");
         }
 
         /// <summary>
@@ -213,6 +220,13 @@ namespace Ngo.Compiler.Emit
             w.Write(variables.Count);
             foreach (var v in variables)
                 WriteVariable(w, v, importPath);
+
+            // Imports (added in v6)
+            w.Write(pkg.Imports.Count);
+            foreach (var imp in pkg.Imports)
+            {
+                w.Write(imp);
+            }
         }
 
         private static PackageSymbol ReadGoMetadataSection(BinaryReader r,
@@ -295,6 +309,15 @@ namespace Ngo.Compiler.Emit
                 var v = ReadVariable(r, typeMap, crossPkgResolver);
                 pkg.AddExport(v);
             }
+
+            // Read imports
+            int importCount = r.ReadInt32();
+            var importPaths = new List<string>(importCount);
+            for (int i = 0; i < importCount; i++)
+            {
+                importPaths.Add(r.ReadString());
+            }
+            pkg.SetImports(importPaths);
 
             // Pass 2: seek back and read functions (now typeMap is fully populated)
             r.BaseStream.Seek(afterHeader, SeekOrigin.Begin);

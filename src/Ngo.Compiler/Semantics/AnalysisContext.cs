@@ -35,7 +35,7 @@ namespace Ngo.Compiler.Semantics
         public int LoopDepth { get; set; }
         public int SwitchDepth { get; set; }
         public HashSet<string> UsedPackages { get; } = new();
-        public List<(LocalSymbol Symbol, TextSpan Span)> FunctionLocals { get; } = new();
+        public List<LocalBinding> FunctionLocals { get; } = new();
         public bool CheckUnused { get; set; }
         public bool SuppressUsageMarking { get; set; }
         public Dictionary<string, long> PendingConstInts { get; } = new();
@@ -67,7 +67,7 @@ namespace Ngo.Compiler.Semantics
         {
             if (symbol.Name != "_" && CheckUnused)
             {
-                FunctionLocals.Add((symbol, span));
+                FunctionLocals.Add(new LocalBinding(symbol, span));
             }
         }
 

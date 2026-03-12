@@ -41,6 +41,13 @@ namespace Ngo.Compiler.Semantics
 
         private const string ProxyUrl = "https://proxy.golang.org";
 
+        private readonly ICompilerLog _log;
+
+        public GoModuleResolver(ICompilerLog? log = null)
+        {
+            _log = log ?? NullLog.Instance;
+        }
+
         public string? ModuleName { get; private set; }
         public string? ModuleRoot { get; private set; }
         public IReadOnlyDictionary<string, string> Requirements => _requirements;
@@ -182,7 +189,7 @@ namespace Ngo.Compiler.Semantics
         /// required module it belongs to (e.g. "github.com/foo/bar").
         /// Returns null if no match.
         /// </summary>
-        public (string module, string version)? FindModule(string importPath)
+        public ModuleMatch? FindModule(string importPath)
         {
             // Try longest prefix match
             string? bestModule = null;
@@ -201,7 +208,9 @@ namespace Ngo.Compiler.Semantics
             }
 
             if (bestModule != null && bestVersion != null)
-                return (bestModule, bestVersion);
+            {
+                return new ModuleMatch(bestModule, bestVersion);
+            }
 
             return null;
         }
@@ -279,10 +288,20 @@ namespace Ngo.Compiler.Semantics
 
                 return cacheDir;
             }
-            catch
+            catch (Exception ex)
             {
-                // Clean up partial download
-                try { if (Directory.Exists(cacheDir)) Directory.Delete(cacheDir, true); } catch { }
+                _log.Warn($"module download failed for '{module}@{version}': {ex.Message}");
+                try
+                {
+                    if (Directory.Exists(cacheDir))
+                    {
+                        Directory.Delete(cacheDir, true);
+                    }
+                }
+                catch (Exception cleanupEx)
+                {
+                    _log.Debug($"cleanup failed for '{cacheDir}': {cleanupEx.Message}");
+                }
                 return null;
             }
         }

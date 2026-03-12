@@ -16,11 +16,38 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
+using System;
+using System.Collections.Generic;
+using System.Reflection;
+
 namespace Ngo.Compiler.Emit.Builder
 {
     internal sealed class NgoConstructorBuilder : IConstructorBuilder
     {
+        private readonly MethodAttributes _attrs;
+        private readonly CallingConventions _callingConvention;
+        private readonly List<string> _paramTypeNames;
         private NgoWriter? _writer;
+
+        public NgoConstructorBuilder(MethodAttributes attrs, CallingConventions callingConvention, Type[] paramTypes)
+        {
+            _attrs = attrs;
+            _callingConvention = callingConvention;
+            _paramTypeNames = new List<string>();
+            if (paramTypes != null)
+            {
+                foreach (var pt in paramTypes)
+                {
+                    _paramTypeNames.Add(NgoWriter.GetTypeNameStatic(pt));
+                }
+            }
+        }
+
+        public MethodAttributes Attributes => _attrs;
+
+        public CallingConventions CallingConvention => _callingConvention;
+
+        public IReadOnlyList<string> ParamTypeNames => _paramTypeNames;
 
         public NgoWriter? Writer => _writer;
 

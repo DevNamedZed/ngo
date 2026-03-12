@@ -32,19 +32,32 @@ namespace Ngo.Compiler.Semantics
     public sealed class GoPackageResolver : IPackageResolver
     {
         private readonly CompilationContext _ctx;
-        private readonly GoModuleResolver _moduleResolver = new();
+        private readonly GoModuleResolver _moduleResolver;
         private readonly Dictionary<string, PackageSymbol> _resolvedPackages = new();
+        private readonly Dictionary<string, string> _resolvedDirs = new();
         private readonly HashSet<string> _discoveredPackages = new();
         private bool _isAnalyzingDag;
 
         public GoPackageResolver(CompilationContext ctx, string projectRoot)
         {
             _ctx = ctx;
+            _moduleResolver = new GoModuleResolver(ctx.Log);
             ProjectRoot = projectRoot;
             _moduleResolver.LoadGoMod(projectRoot);
         }
 
         public string ProjectRoot { get; }
+
+        /// <summary>
+        /// Returns the source directory for a package that was resolved from source.
+        /// Used by the emitter to re-compile dependencies into the host module.
+        /// Returns null if the package was resolved from .ngo cache or not found.
+        /// </summary>
+        public string? GetSourceDir(string importPath)
+        {
+            _resolvedDirs.TryGetValue(importPath, out var dir);
+            return dir;
+        }
 
         /// <summary>
         /// Resolves cross-package type references during .ngo archive deserialization.
@@ -80,10 +93,23 @@ namespace Ngo.Compiler.Semantics
             if (_resolvedPackages.TryGetValue(importPath, out var cached))
                 return cached;
 
-            // Always resolve from source — this ensures dependencies are compiled
-            // in topological order so cross-package types are fully resolved.
-            // The .ngo cache is only used by the precompiler pipeline where
-            // dependencies are explicitly pre-loaded.
+            // Check .ngo cache on disk FIRST
+            if (ProjectRoot != null)
+            {
+                var cacheDir = NgoArchive.GetCacheDir(ProjectRoot);
+                var archivePath = NgoArchive.GetArchivePath(cacheDir, importPath);
+                if (File.Exists(archivePath))
+                {
+                    var pkg = NgoArchive.ReadGoMetadata(archivePath, CrossPkgResolver);
+                    if (pkg != null)
+                    {
+                        _resolvedPackages[importPath] = pkg;
+                        return pkg;
+                    }
+                }
+            }
+
+            // Not cached — compile from source
             return ResolveFromSource(importPath);
         }
 
@@ -92,18 +118,24 @@ namespace Ngo.Compiler.Semantics
         private PackageSymbol? ResolveFromSource(string importPath)
         {
             if (_isAnalyzingDag)
+            {
                 return null;
+            }
 
             try
             {
-                var pkgTrees = new Dictionary<string, List<SyntaxTree>>();
+                // Discover transitive imports — stores only directory paths, not parsed trees.
+                // Trees are parsed and discarded during discovery; re-parsed when compiling.
+                var pkgDirs = new Dictionary<string, string>();
                 var deps = new Dictionary<string, List<string>>();
-                DiscoverDependencies(importPath, pkgTrees, deps);
+                DiscoverDependencies(importPath, pkgDirs, deps);
 
-                if (!pkgTrees.ContainsKey(importPath))
+                if (!pkgDirs.ContainsKey(importPath))
+                {
                     return null;
+                }
 
-                var order = TopologicalSort(pkgTrees.Keys, deps);
+                var order = TopologicalSort(pkgDirs.Keys, deps);
 
                 _isAnalyzingDag = true;
                 try
@@ -111,14 +143,29 @@ namespace Ngo.Compiler.Semantics
                     foreach (var pkg in order)
                     {
                         if (_resolvedPackages.ContainsKey(pkg))
+                        {
                             continue;
+                        }
                         // Skip packages already resolved by other resolvers in the chain
                         if (_ctx.ResolvePackage(pkg) != null)
+                        {
                             continue;
-                        if (!pkgTrees.TryGetValue(pkg, out var trees) || trees.Count == 0)
+                        }
+                        if (!pkgDirs.TryGetValue(pkg, out var dir))
+                        {
                             continue;
+                        }
+
+                        // Parse fresh — each package's trees are held only during its compilation
+                        var trees = ParseGoFilesInDir(dir);
+                        if (trees.Count == 0)
+                        {
+                            continue;
+                        }
 
                         AnalyzeAndCachePackage(pkg, trees);
+                        _resolvedDirs[pkg] = dir;
+                        // trees go out of scope here — GC can collect the AST
                     }
                 }
                 finally
@@ -129,9 +176,10 @@ namespace Ngo.Compiler.Semantics
                 _resolvedPackages.TryGetValue(importPath, out var result);
                 return result;
             }
-            catch (OutOfMemoryException)
+            catch (OutOfMemoryException ex)
             {
                 _isAnalyzingDag = false;
+                _ctx.Log.Error($"out of memory resolving '{importPath}': {ex.Message}");
                 GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
                 return null;
             }
@@ -139,7 +187,7 @@ namespace Ngo.Compiler.Semantics
 
         private void DiscoverDependencies(
             string importPath,
-            Dictionary<string, List<SyntaxTree>> pkgTrees,
+            Dictionary<string, string> pkgDirs,
             Dictionary<string, List<string>> deps)
         {
             var worklist = new Queue<string>();
@@ -149,58 +197,219 @@ namespace Ngo.Compiler.Semantics
             {
                 var current = worklist.Dequeue();
 
-                if (pkgTrees.ContainsKey(current) || _resolvedPackages.ContainsKey(current))
+                if (pkgDirs.ContainsKey(current) || _resolvedPackages.ContainsKey(current))
+                {
                     continue;
+                }
                 // Skip packages already resolved by other resolvers
                 if (RuntimePackageResolver.Instance.Resolve(current) != null)
+                {
                     continue;
+                }
+                // Check .ngo disk cache — read PackageSymbol + imports without parsing source
+                if (ProjectRoot != null)
+                {
+                    var cacheDir = NgoArchive.GetCacheDir(ProjectRoot);
+                    var archivePath = NgoArchive.GetArchivePath(cacheDir, current);
+                    if (File.Exists(archivePath))
+                    {
+                        var pkg = NgoArchive.ReadGoMetadata(archivePath, CrossPkgResolver);
+                        if (pkg != null)
+                        {
+                            _resolvedPackages[current] = pkg;
+                            // Enqueue cached package's imports for transitive discovery
+                            foreach (var imp in pkg.Imports)
+                            {
+                                worklist.Enqueue(imp);
+                            }
+                            continue;
+                        }
+                    }
+                }
                 if (_discoveredPackages.Contains(current))
+                {
                     continue;
+                }
                 _discoveredPackages.Add(current);
 
                 var dir = ResolvePackageDir(current);
                 if (dir == null || !Directory.Exists(dir))
-                    continue;
-
-                var trees = new List<SyntaxTree>();
-                var imports = new List<string>();
-
-                foreach (var file in Directory.GetFiles(dir, "*.go"))
                 {
-                    if (ShouldSkipGoFile(file))
-                        continue;
-
-                    try
-                    {
-                        var source = File.ReadAllText(file);
-                        var tree = SyntaxTree.Parse(source);
-                        trees.Add(tree);
-
-                        foreach (var imp in tree.Root.Imports)
-                        {
-                            foreach (var spec in imp.Specs)
-                            {
-                                var path = spec.Path.Text.Trim('"');
-                                if (!string.IsNullOrEmpty(path))
-                                    imports.Add(path);
-                            }
-                        }
-                    }
-                    catch
-                    {
-                        // Parse failures are non-fatal for dependency discovery
-                    }
+                    continue;
                 }
 
-                if (trees.Count > 0)
+                // Parse only to extract imports — trees are discarded immediately.
+                // They'll be re-parsed when the package is actually compiled.
+                var imports = ExtractImports(dir);
+
+                if (imports != null)
                 {
-                    pkgTrees[current] = trees;
+                    pkgDirs[current] = dir;
                     deps[current] = imports;
 
                     foreach (var imp in imports)
+                    {
                         worklist.Enqueue(imp);
+                    }
                 }
             }
+        }
+
+        /// <summary>
+        /// Scans Go files in a directory to extract import paths without building a full CST.
+        /// Uses line-by-line scanning for import declarations — no Parser, no SyntaxTree, no AST.
+        /// Returns null if no valid Go files found.
+        /// </summary>
+        private static List<string>? ExtractImports(string dir)
+        {
+            var imports = new List<string>();
+            bool hasFiles = false;
+
+            foreach (var file in Directory.GetFiles(dir, "*.go"))
+            {
+                if (ShouldSkipGoFile(file))
+                {
+                    continue;
+                }
+
+                hasFiles = true;
+
+                try
+                {
+                    ScanFileForImports(file, imports);
+                }
+                catch
+                {
+                    // Scan failures are non-fatal for dependency discovery
+                }
+            }
+
+            return hasFiles ? imports : null;
+        }
+
+        /// <summary>
+        /// Lightweight line-by-line scanner that extracts import paths from a Go source file.
+        /// Handles both single imports (import "path") and grouped imports (import ( "path" )).
+        /// Does NOT build a CST — avoids creating millions of syntax nodes per file.
+        /// </summary>
+        private static void ScanFileForImports(string filePath, List<string> imports)
+        {
+            using var reader = new StreamReader(filePath);
+            bool pastPackage = false;
+            bool inImportBlock = false;
+
+            string? line;
+            while ((line = reader.ReadLine()) != null)
+            {
+                var trimmed = line.TrimStart();
+
+                // Skip comments and blank lines
+                if (trimmed.Length == 0 || trimmed.StartsWith("//"))
+                {
+                    continue;
+                }
+
+                // Wait for the package declaration first
+                if (!pastPackage)
+                {
+                    if (trimmed.StartsWith("package "))
+                    {
+                        pastPackage = true;
+                    }
+                    continue;
+                }
+
+                if (inImportBlock)
+                {
+                    if (trimmed.StartsWith(")"))
+                    {
+                        inImportBlock = false;
+                        continue;
+                    }
+
+                    // Inside import ( ... ) block: each line is [alias] "path"
+                    var path = ExtractQuotedString(trimmed);
+                    if (path != null)
+                    {
+                        imports.Add(path);
+                    }
+                    continue;
+                }
+
+                // import "path" or import ( ... )
+                if (trimmed.StartsWith("import "))
+                {
+                    var rest = trimmed.Substring(7).TrimStart();
+                    if (rest.StartsWith("("))
+                    {
+                        inImportBlock = true;
+                        continue;
+                    }
+
+                    // Single import: import "path" or import alias "path"
+                    var path = ExtractQuotedString(rest);
+                    if (path != null)
+                    {
+                        imports.Add(path);
+                    }
+                    continue;
+                }
+
+                // Once we hit a non-import top-level declaration, stop scanning.
+                // Go requires all imports before other declarations.
+                if (trimmed.StartsWith("func ") || trimmed.StartsWith("type ") ||
+                    trimmed.StartsWith("var ") || trimmed.StartsWith("const "))
+                {
+                    break;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Extracts the content of the first double-quoted string in the line.
+        /// Returns null if no quoted string found.
+        /// </summary>
+        private static string? ExtractQuotedString(string text)
+        {
+            int start = text.IndexOf('"');
+            if (start < 0)
+            {
+                return null;
+            }
+            int end = text.IndexOf('"', start + 1);
+            if (end < 0)
+            {
+                return null;
+            }
+            var path = text.Substring(start + 1, end - start - 1);
+            return path.Length > 0 ? path : null;
+        }
+
+        /// <summary>
+        /// Parses all Go source files in a directory into SyntaxTrees.
+        /// Used when actually compiling a package (not during discovery).
+        /// </summary>
+        private static List<SyntaxTree> ParseGoFilesInDir(string dir)
+        {
+            var trees = new List<SyntaxTree>();
+            foreach (var file in Directory.GetFiles(dir, "*.go"))
+            {
+                if (ShouldSkipGoFile(file))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    var source = File.ReadAllText(file);
+                    trees.Add(SyntaxTree.Parse(source));
+                }
+                catch
+                {
+                    // Parse failures are non-fatal
+                }
+            }
+            return trees;
         }
 
         private string? ResolvePackageDir(string importPath)
@@ -227,7 +436,7 @@ namespace Ngo.Compiler.Semantics
             // External module: find via go.mod requirements
             var match = _moduleResolver.FindModule(importPath);
             if (match != null)
-                return _moduleResolver.ResolvePackageDir(importPath, match.Value.module, match.Value.version);
+                return _moduleResolver.ResolvePackageDir(importPath, match.Module, match.Version);
 
             return null;
         }
@@ -240,8 +449,9 @@ namespace Ngo.Compiler.Semantics
                 // Pass compilation context so nested imports resolve through the resolver chain
                 result = SemanticAnalyzer.Analyze(trees, _ctx);
             }
-            catch
+            catch (Exception ex)
             {
+                _ctx.Log.Warn($"analysis failed for '{importPath}': {ex.Message}");
                 return;
             }
 
@@ -275,31 +485,35 @@ namespace Ngo.Compiler.Semantics
                     pkg.AddExport(varDecl.Symbol);
             }
 
+            // Collect import paths so they're stored in the .ngo archive.
+            // This allows dependency discovery from cache without re-parsing source.
+            var importPaths = new List<string>();
+            foreach (var imp in result.Root.Imports)
+            {
+                if (!string.IsNullOrEmpty(imp.Path))
+                {
+                    importPaths.Add(imp.Path);
+                }
+            }
+            pkg.SetImports(importPaths);
+
             result.Root.Package.Symbol.CopyExportsFrom(pkg);
 
             _resolvedPackages[importPath] = pkg;
 
-            // Write .ngo archive (all sections) — only for error-free packages
-            if (!result.HasErrors)
+            // Write .ngo archive — all 3 sections via NgoModuleBuilder (zero DynamicAssembly).
+            // NgoModuleBuilder captures IL as pure data; no System.Reflection.Emit allocation.
+            // AST is discarded after this method returns.
+            try
             {
-                try
-                {
-                    var cacheDir = NgoArchive.GetCacheDir(ProjectRoot);
-                    var archivePath = NgoArchive.GetArchivePath(cacheDir, importPath);
-                    ILSerializer.WriteArchive(archivePath, pkg, importPath, result, _ctx);
-                }
-                catch (Exception ex)
-                {
-                    System.Console.Error.WriteLine($"[ngo] WriteArchive failed for {importPath}: {ex.GetType().Name}: {ex.Message}");
-                    // Cache write failure is non-fatal — write Section 1 only
-                    try
-                    {
-                        var cacheDir = NgoArchive.GetCacheDir(ProjectRoot);
-                        var archivePath = NgoArchive.GetArchivePath(cacheDir, importPath);
-                        NgoArchive.Write(archivePath, pkg, importPath);
-                    }
-                    catch { }
-                }
+                var cacheDir = NgoArchive.GetCacheDir(ProjectRoot);
+                var archivePath = NgoArchive.GetArchivePath(cacheDir, importPath);
+                ILSerializer.WriteArchive(archivePath, pkg, importPath, result, _ctx);
+                _ctx.Log.Debug($"wrote archive for '{importPath}'");
+            }
+            catch (Exception ex)
+            {
+                _ctx.Log.Warn($"archive write failed for '{importPath}': {ex.Message}");
             }
         }
 
@@ -324,25 +538,36 @@ namespace Ngo.Compiler.Semantics
                     return true;
             }
 
-            var source = File.ReadAllText(filePath);
-            var lines = source.Split('\n');
-            for (int i = 0; i < Math.Min(lines.Length, 20); i++)
+            // Read only the first ~20 lines for build tag checks — not the whole file
+            using (var reader = new StreamReader(filePath))
             {
-                var line = lines[i].Trim();
-                if (line.StartsWith("package "))
-                    break;
-                if (line.StartsWith("//go:build ") || line.StartsWith("// +build "))
+                for (int i = 0; i < 20; i++)
                 {
-                    var tag = line.StartsWith("//go:build ") ? line.Substring(11).Trim() : line.Substring(10).Trim();
-                    var platformTags = new[] { "windows", "darwin", "freebsd", "openbsd", "netbsd",
-                        "solaris", "plan9", "aix", "ios", "js", "wasip1", "android", "illumos",
-                        "dragonfly", "hurd", "386", "arm", "arm64", "mips", "mips64", "mipsle",
-                        "mips64le", "ppc64", "ppc64le", "riscv64", "s390x", "wasm", "loong64",
-                        "boringcrypto" };
-                    foreach (var pt in platformTags)
+                    var line = reader.ReadLine();
+                    if (line == null)
                     {
-                        if (tag == pt || tag.StartsWith(pt + " ") || tag.StartsWith(pt + ","))
-                            return true;
+                        break;
+                    }
+                    line = line.Trim();
+                    if (line.StartsWith("package "))
+                    {
+                        break;
+                    }
+                    if (line.StartsWith("//go:build ") || line.StartsWith("// +build "))
+                    {
+                        var tag = line.StartsWith("//go:build ") ? line.Substring(11).Trim() : line.Substring(10).Trim();
+                        var platformTags = new[] { "windows", "darwin", "freebsd", "openbsd", "netbsd",
+                            "solaris", "plan9", "aix", "ios", "js", "wasip1", "android", "illumos",
+                            "dragonfly", "hurd", "386", "arm", "arm64", "mips", "mips64", "mipsle",
+                            "mips64le", "ppc64", "ppc64le", "riscv64", "s390x", "wasm", "loong64",
+                            "boringcrypto" };
+                        foreach (var pt in platformTags)
+                        {
+                            if (tag == pt || tag.StartsWith(pt + " ") || tag.StartsWith(pt + ","))
+                            {
+                                return true;
+                            }
+                        }
                     }
                 }
             }

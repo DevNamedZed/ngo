@@ -128,9 +128,11 @@ namespace Ngo.Compiler.Emit
             // Map (map[K]V)
             if (typeStr.StartsWith("map["))
             {
-                var (keyType, valueType) = ParseMapType(typeStr, knownTypes, crossPkgResolver);
-                if (keyType != null && valueType != null)
-                    return new MapTypeSymbol(keyType, valueType);
+                var mapParts = ParseMapType(typeStr, knownTypes, crossPkgResolver);
+                if (mapParts.KeyType != null && mapParts.ValueType != null)
+                {
+                    return new MapTypeSymbol(mapParts.KeyType, mapParts.ValueType);
+                }
             }
 
             // Function type (func(...) ...)
@@ -160,7 +162,7 @@ namespace Ngo.Compiler.Emit
             return new TypeSymbol(typeStr, TypeKind.Struct, null);
         }
 
-        private static (TypeSymbol?, TypeSymbol?) ParseMapType(string typeStr, Dictionary<string, TypeSymbol>? knownTypes,
+        private static MapTypeParts ParseMapType(string typeStr, Dictionary<string, TypeSymbol>? knownTypes,
             System.Func<string, string, TypeSymbol?>? crossPkgResolver = null)
         {
             int depth = 0;
@@ -168,7 +170,10 @@ namespace Ngo.Compiler.Emit
             int keyEnd = -1;
             for (int i = keyStart; i < typeStr.Length; i++)
             {
-                if (typeStr[i] == '[') depth++;
+                if (typeStr[i] == '[')
+                {
+                    depth++;
+                }
                 else if (typeStr[i] == ']')
                 {
                     if (depth == 0)
@@ -179,11 +184,16 @@ namespace Ngo.Compiler.Emit
                     depth--;
                 }
             }
-            if (keyEnd < 0) return (null, null);
+            if (keyEnd < 0)
+            {
+                return new MapTypeParts(null, null);
+            }
 
             var keyStr = typeStr.Substring(keyStart, keyEnd - keyStart);
             var valStr = typeStr.Substring(keyEnd + 1);
-            return (StringToType(keyStr, knownTypes, crossPkgResolver), StringToType(valStr, knownTypes, crossPkgResolver));
+            return new MapTypeParts(
+                StringToType(keyStr, knownTypes, crossPkgResolver),
+                StringToType(valStr, knownTypes, crossPkgResolver));
         }
 
         private static TypeSymbol ParseFuncType(string typeStr, Dictionary<string, TypeSymbol>? knownTypes,

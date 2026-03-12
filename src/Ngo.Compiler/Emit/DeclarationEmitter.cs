@@ -402,9 +402,9 @@ namespace Ngo.Compiler.Emit
         /// </summary>
         public Type GenerateWrapper(TypeSymbol concreteType, InterfaceTypeSymbol interfaceType)
         {
-            var key = (concreteType, interfaceType);
+            var key = new WrapperTypeKey(concreteType, interfaceType);
             if (_ctx.WrapperTypes.TryGetValue(key, out var cached))
-                return cached.type;
+                return cached.Type;
 
             var concreteClrType = _ctx.Mapper.Map(concreteType);
             var interfaceClrType = _ctx.Mapper.Map(interfaceType);
@@ -448,8 +448,8 @@ namespace Ngo.Compiler.Emit
                     var promoted = structType.LookupPromotedMethod(ifaceMethod.Name);
                     if (promoted != null)
                     {
-                        concreteMethod = promoted.Value.method;
-                        embeddedField = promoted.Value.embeddedField;
+                        concreteMethod = promoted.Method;
+                        embeddedField = promoted.EmbeddedField;
                     }
                 }
 
@@ -514,8 +514,8 @@ namespace Ngo.Compiler.Emit
                     var promoted = errorStructType.LookupPromotedMethod("Error");
                     if (promoted != null)
                     {
-                        errorMethod = promoted.Value.method;
-                        errorEmbeddedField = promoted.Value.embeddedField;
+                        errorMethod = promoted.Method;
+                        errorEmbeddedField = promoted.EmbeddedField;
                     }
                 }
 
@@ -537,7 +537,7 @@ namespace Ngo.Compiler.Emit
 
             var wrapperType = wrapperBuilder.CreateType()!;
             var ctor = wrapperType.GetConstructor(new[] { concreteClrType })!;
-            _ctx.WrapperTypes[key] = (wrapperType, ctor);
+            _ctx.WrapperTypes[key] = new WrapperTypeInfo(wrapperType, ctor);
 
             return wrapperType;
         }

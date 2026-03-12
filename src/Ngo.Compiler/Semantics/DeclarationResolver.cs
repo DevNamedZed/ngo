@@ -527,7 +527,9 @@ namespace Ngo.Compiler.Semantics
                 ? ((PointerTypeSyntax)receiverTypeExpr!).ElementType
                 : receiverTypeExpr;
 
-            var (baseType, receiverTypeParams) = ResolveReceiverType(baseTypeExpr!);
+            var receiverResult = ResolveReceiverType(baseTypeExpr!);
+            var baseType = receiverResult.BaseType;
+            var receiverTypeParams = receiverResult.TypeParameters;
             if (baseType == null)
             {
                 var typeName = baseTypeExpr is Language.Syntax.IdentifierNameSyntax id
@@ -593,7 +595,9 @@ namespace Ngo.Compiler.Semantics
                 ? ((PointerTypeSyntax)receiverTypeExpr!).ElementType
                 : receiverTypeExpr;
 
-            var (baseType, receiverTypeParams) = ResolveReceiverType(baseTypeExpr!);
+            var receiverResult = ResolveReceiverType(baseTypeExpr!);
+            var baseType = receiverResult.BaseType;
+            var receiverTypeParams = receiverResult.TypeParameters;
             if (baseType == null)
             {
                 var errorMethod = new MethodSymbol(syntax.Name.Text, TypeSymbol.Error, false,
@@ -1637,19 +1641,18 @@ namespace Ngo.Compiler.Semantics
         private void ReportUnusedLocals()
         {
             if (!_context.CheckUnused) return;
-            foreach (var (symbol, span) in _context.FunctionLocals)
+            foreach (var local in _context.FunctionLocals)
             {
-                if (!symbol.IsUsed)
+                if (!local.Symbol.IsUsed)
                 {
-                    _context.Errors.ReportError(span, ErrorCode.UnusedVariable,
-                        $"'{symbol.Name}' declared but not used");
+                    _context.Errors.ReportError(local.Span, ErrorCode.UnusedVariable,
+                        $"'{local.Symbol.Name}' declared but not used");
                 }
             }
             _context.FunctionLocals.Clear();
         }
 
-        private (TypeSymbol? baseType, IReadOnlyList<TypeParameterSymbol>? typeParams) ResolveReceiverType(
-            SyntaxNode baseTypeExpr)
+        private ReceiverTypeResult ResolveReceiverType(SyntaxNode baseTypeExpr)
         {
             // Handle generic receiver: func (q *Deque[T]) Method(...)
             // The receiver type Deque[T] is parsed as IndexExpressionSyntax
@@ -1658,7 +1661,9 @@ namespace Ngo.Compiler.Semantics
             {
                 var baseSym = _context.Scope.Lookup(baseId.Identifier.Text) as TypeSymbol;
                 if (baseSym != null && baseSym.IsGeneric)
-                    return (baseSym, baseSym.TypeParameters);
+                {
+                    return new ReceiverTypeResult(baseSym, baseSym.TypeParameters);
+                }
             }
 
             // Handle multi-type-arg generic receiver: func (q *Map[K, V]) Method(...)
@@ -1667,11 +1672,13 @@ namespace Ngo.Compiler.Semantics
             {
                 var baseSym = _context.Scope.Lookup(baseId2.Identifier.Text) as TypeSymbol;
                 if (baseSym != null && baseSym.IsGeneric)
-                    return (baseSym, baseSym.TypeParameters);
+                {
+                    return new ReceiverTypeResult(baseSym, baseSym.TypeParameters);
+                }
             }
 
             var resolved = _typeResolver.ResolveType((ExpressionSyntax)baseTypeExpr);
-            return (resolved, null);
+            return new ReceiverTypeResult(resolved, null);
         }
 
         private IReadOnlyList<TypeParameterSymbol> ResolveTypeParameterList(

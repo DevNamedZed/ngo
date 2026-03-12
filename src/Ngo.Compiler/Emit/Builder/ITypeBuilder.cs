@@ -27,7 +27,7 @@ namespace Ngo.Compiler.Emit.Builder
         IFieldBuilder DefineField(string name, Type type, FieldAttributes attrs);
         IMethodBuilder DefineMethod(string name, MethodAttributes attrs, Type returnType, Type[] paramTypes);
         IMethodBuilder DefineMethod(string name, MethodAttributes attrs);
-        IConstructorBuilder DefineConstructor(MethodAttributes attrs, CallingConventions cc, Type[] paramTypes);
+        IConstructorBuilder DefineConstructor(MethodAttributes attrs, CallingConventions callingConvention, Type[] paramTypes);
         Type[] DefineGenericParameters(string[] names);
         void DefineMethodOverride(IMethodBuilder body, MethodInfo declaration);
         Type CreateType();

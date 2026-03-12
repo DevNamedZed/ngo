@@ -1495,11 +1495,11 @@ func main() {
 
             var match = resolver.FindModule("github.com/pkg/errors");
             Assert.IsNotNull(match);
-            Assert.AreEqual("github.com/pkg/errors", match!.Value.module);
+            Assert.AreEqual("github.com/pkg/errors", match!.Module);
 
             var match2 = resolver.FindModule("github.com/pkg/errors/sub");
             Assert.IsNotNull(match2);
-            Assert.AreEqual("github.com/pkg/errors", match2!.Value.module);
+            Assert.AreEqual("github.com/pkg/errors", match2!.Module);
 
             var noMatch = resolver.FindModule("github.com/other/pkg");
             Assert.IsNull(noMatch);
@@ -1704,8 +1704,8 @@ func main() {
             // Verify the module resolver found the right module
             var match = moduleResolver.FindModule("github.com/pkg/errors");
             Assert.IsNotNull(match);
-            Assert.AreEqual("github.com/pkg/errors", match!.Value.module);
-            Assert.AreEqual("v0.9.1", match.Value.version);
+            Assert.AreEqual("github.com/pkg/errors", match!.Module);
+            Assert.AreEqual("v0.9.1", match.Version);
         }
         finally
         {

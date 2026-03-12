@@ -879,13 +879,13 @@ namespace Ngo.Compiler.Semantics
                     {
                         var promoted = structType.LookupPromotedMethod(required.Name);
                         if (promoted != null
-                            && MethodSignaturesMatch(promoted.Value.method, required))
+                            && MethodSignaturesMatch(promoted.Method, required))
                         {
                             // In Go, if the embedding field is a pointer type (*T),
                             // then pointer-receiver methods of T are promoted even
                             // when the outer type is a value type.
-                            bool embeddedViaPointer = promoted.Value.embeddedField.Type is PointerTypeSymbol;
-                            if (includePointerReceivers || embeddedViaPointer || !promoted.Value.method.IsPointerReceiver)
+                            bool embeddedViaPointer = promoted.EmbeddedField.Type is PointerTypeSymbol;
+                            if (includePointerReceivers || embeddedViaPointer || !promoted.Method.IsPointerReceiver)
                             {
                                 found = true;
                             }

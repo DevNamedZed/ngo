@@ -827,9 +827,9 @@ namespace Ngo.Compiler.Semantics
 
                     // Check promoted methods from embedded structs
                     var promoted = methodExprStruct.LookupPromotedMethod(fieldName);
-                    if (promoted.HasValue)
+                    if (promoted != null)
                     {
-                        var (_, promotedMethod) = promoted.Value;
+                        var promotedMethod = promoted.Method;
                         var paramTypes = new TypeSymbol[promotedMethod.Parameters.Count + 1];
                         paramTypes[0] = receiverType;
                         for (int i = 0; i < promotedMethod.Parameters.Count; i++)
@@ -882,17 +882,16 @@ namespace Ngo.Compiler.Semantics
 
                 // Check promoted fields from embedded structs
                 var promoted = structType.LookupPromotedField(fieldName);
-                if (promoted.HasValue)
+                if (promoted != null)
                 {
-                    var (embeddedField, innerField) = promoted.Value;
                     var embeddedType = instTypeParams != null
-                        ? TypeSubstituter.Substitute(embeddedField.Type, instTypeParams, instTypeArgs!)
-                        : embeddedField.Type;
+                        ? TypeSubstituter.Substitute(promoted.EmbeddedField.Type, instTypeParams, instTypeArgs!)
+                        : promoted.EmbeddedField.Type;
                     var innerType = instTypeParams != null
-                        ? TypeSubstituter.Substitute(innerField.Type, instTypeParams, instTypeArgs!)
-                        : innerField.Type;
-                    var embeddedAccess = new SelectorExpression(target, embeddedField, embeddedType, span);
-                    return new SelectorExpression(embeddedAccess, innerField, innerType, span);
+                        ? TypeSubstituter.Substitute(promoted.PromotedField.Type, instTypeParams, instTypeArgs!)
+                        : promoted.PromotedField.Type;
+                    var embeddedAccess = new SelectorExpression(target, promoted.EmbeddedField, embeddedType, span);
+                    return new SelectorExpression(embeddedAccess, promoted.PromotedField, innerType, span);
                 }
 
                 // Method value: check named type methods first, then underlying struct methods
@@ -916,9 +915,9 @@ namespace Ngo.Compiler.Semantics
 
                 // Check promoted methods from embedded structs
                 var promotedMethod = structType.LookupPromotedMethod(fieldName);
-                if (promotedMethod.HasValue)
+                if (promotedMethod != null)
                 {
-                    var (_, pm) = promotedMethod.Value;
+                    var pm = promotedMethod.Method;
                     var paramTypes = new TypeSymbol[pm.Parameters.Count];
                     for (int i = 0; i < pm.Parameters.Count; i++)
                     {
@@ -1038,11 +1037,10 @@ namespace Ngo.Compiler.Semantics
                             return new SelectorExpression(target, field, field.Type, span);
                         }
                         var promoted = constraintStruct.LookupPromotedField(fieldName);
-                        if (promoted.HasValue)
+                        if (promoted != null)
                         {
-                            var (embeddedField, innerField) = promoted.Value;
-                            var embeddedAccess = new SelectorExpression(target, embeddedField, embeddedField.Type, span);
-                            return new SelectorExpression(embeddedAccess, innerField, innerField.Type, span);
+                            var embeddedAccess = new SelectorExpression(target, promoted.EmbeddedField, promoted.EmbeddedField.Type, span);
+                            return new SelectorExpression(embeddedAccess, promoted.PromotedField, promoted.PromotedField.Type, span);
                         }
                     }
                 }

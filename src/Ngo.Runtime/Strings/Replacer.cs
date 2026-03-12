@@ -5,23 +5,23 @@ namespace Ngo.Runtime.Strings
     [GoType("struct", Name = "Replacer", Package = "strings")]
     public sealed class Replacer
     {
-        private readonly (string oldVal, string newVal)[] _pairs;
+        private readonly ReplacementPair[] _pairs;
 
         public Replacer(string[] pairs)
         {
-            _pairs = new (string, string)[pairs.Length / 2];
+            _pairs = new ReplacementPair[pairs.Length / 2];
             for (int i = 0; i < pairs.Length; i += 2)
             {
-                _pairs[i / 2] = (pairs[i], pairs[i + 1]);
+                _pairs[i / 2] = new ReplacementPair(pairs[i], pairs[i + 1]);
             }
         }
 
         [GoMethod]
         public string Replace(string s)
         {
-            foreach (var (oldVal, newVal) in _pairs)
+            foreach (var pair in _pairs)
             {
-                s = s.Replace(oldVal, newVal);
+                s = s.Replace(pair.OldValue, pair.NewValue);
             }
 
             return s;

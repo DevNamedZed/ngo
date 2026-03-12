@@ -45,7 +45,7 @@ namespace Ngo.Compiler.Emit
                 throw new InvalidOperationException("Cannot emit assembly from source with errors.");
 
             var asmName = new AssemblyName(assemblyName);
-            var asmBuilder = AssemblyBuilder.DefineDynamicAssembly(asmName, AssemblyBuilderAccess.Run);
+            var asmBuilder = AssemblyBuilder.DefineDynamicAssembly(asmName, AssemblyBuilderAccess.RunAndCollect);
             var moduleBuilder = asmBuilder.DefineDynamicModule(assemblyName);
 
             EmitCore(result, moduleBuilder, options, compilationContext);
@@ -139,24 +139,92 @@ namespace Ngo.Compiler.Emit
             {
                 var importPath = import.Path;
                 if (string.IsNullOrEmpty(importPath) || linked.Contains(importPath))
+                {
                     continue;
+                }
                 linked.Add(importPath);
 
                 // Skip runtime packages — they're in Ngo.Runtime.dll
                 if (RuntimePackageResolver.Instance.Resolve(importPath) != null)
+                {
                     continue;
-
-                var cacheDir = NgoArchive.GetCacheDir(compilationContext.ProjectRoot!);
-                var archivePath = NgoArchive.GetArchivePath(cacheDir, importPath);
-
-                try
-                {
-                    ILSerializer.LinkFromArchive(archivePath, import.Package, ctx);
                 }
-                catch
+
+                // Try to link from .ngo archive (Sections 2+3)
+                bool linkedFromArchive = false;
+                if (compilationContext.ProjectRoot != null)
                 {
-                    // Link failure is non-fatal — package will be missing at runtime
+                    var cacheDir = NgoArchive.GetCacheDir(compilationContext.ProjectRoot);
+                    var archivePath = NgoArchive.GetArchivePath(cacheDir, importPath);
+                    linkedFromArchive = ILSerializer.LinkFromArchive(archivePath, import.Package, ctx);
                 }
+
+                if (!linkedFromArchive)
+                {
+                    compilationContext.Log.Warn($"archive link failed for '{importPath}', falling back to source compilation");
+                    EmitDependencyFromSource(importPath, import.Package, ctx, compilationContext);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Compiles a dependency package from Go source directly into the host module.
+        /// Used when the .ngo archive has no IL (Section 1 only).
+        /// After emitting, registers the emitted methods/types against the original
+        /// PackageSymbol so the main package emit can find them by symbol identity.
+        /// </summary>
+        private static void EmitDependencyFromSource(string importPath, PackageSymbol originalPkg, EmitContext ctx, Semantics.CompilationContext compilationContext)
+        {
+            var dir = compilationContext.GetSourceDir(importPath);
+            if (dir == null)
+            {
+                return;
+            }
+
+            try
+            {
+                var trees = new List<Language.SyntaxTree>();
+                foreach (var file in System.IO.Directory.GetFiles(dir, "*.go"))
+                {
+                    if (GoPackageResolver.ShouldSkipGoFile(file))
+                    {
+                        continue;
+                    }
+                    var source = System.IO.File.ReadAllText(file);
+                    trees.Add(Language.SyntaxTree.Parse(source));
+                }
+
+                if (trees.Count == 0)
+                {
+                    return;
+                }
+
+                var result = SemanticAnalyzer.Analyze(trees, compilationContext);
+                EmitPackage(result.Root, ctx);
+
+                // Bridge: map original PackageSymbol's exports to the freshly emitted methods.
+                // The main package's AST references the ORIGINAL FunctionSymbol instances,
+                // but EmitPackage registered the NEW ones from re-analysis.
+                // Match by name and register in CachedMethods so EmitCall can find them.
+                foreach (var export in originalPkg.Exports)
+                {
+                    if (export.Value is FunctionSymbol origFunc)
+                    {
+                        // Find the corresponding emitted method by name
+                        foreach (var kvp in ctx.Methods)
+                        {
+                            if (kvp.Key.Name == origFunc.Name)
+                            {
+                                ctx.CachedMethods[origFunc] = kvp.Value.AsMethodInfo();
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                compilationContext.Log.Warn($"dependency emit failed for '{importPath}': {ex.Message}");
             }
         }
 

@@ -65,7 +65,7 @@ namespace Ngo.Compiler.Emit
 
             // Header placeholder
             writer.Write(new byte[] { (byte)'N', (byte)'G', (byte)'O', 0 });
-            writer.Write((ushort)5); // version — must match NgoArchive.CurrentVersion
+            writer.Write(NgoArchive.CurrentVersion);
             for (int i = 0; i < 6; i++) writer.Write((uint)0);
 
             // Section 1: Go metadata
@@ -101,10 +101,13 @@ namespace Ngo.Compiler.Emit
         /// Reads IL from a .ngo archive and links it into the target module.
         /// Creates TypeBuilders, FieldBuilders, MethodBuilders; remaps tokens; sets IL bodies.
         /// </summary>
-        public static void LinkFromArchive(string archivePath, PackageSymbol pkg, EmitContext ctx)
+        /// <returns>true if IL was found and linked; false if archive missing or has no IL sections.</returns>
+        public static bool LinkFromArchive(string archivePath, PackageSymbol pkg, EmitContext ctx)
         {
             if (!File.Exists(archivePath))
-                return;
+            {
+                return false;
+            }
 
             using var stream = new FileStream(archivePath, FileMode.Open, FileAccess.Read);
             using var reader = new BinaryReader(stream);
@@ -112,7 +115,9 @@ namespace Ngo.Compiler.Emit
             // Read header
             var magic = reader.ReadBytes(4);
             if (magic.Length < 4 || magic[0] != 'N' || magic[1] != 'G' || magic[2] != 'O' || magic[3] != 0)
-                return;
+            {
+                return false;
+            }
 
             reader.ReadUInt16(); // version
             reader.ReadUInt32(); reader.ReadUInt32(); // goMeta
@@ -122,7 +127,9 @@ namespace Ngo.Compiler.Emit
             var ilCodeLen = reader.ReadUInt32();
 
             if (ilMetaLen == 0 || ilCodeLen == 0)
-                return;
+            {
+                return false;
+            }
 
             // Read Section 2: IL metadata
             stream.Seek(ilMetaOffset, SeekOrigin.Begin);
@@ -133,6 +140,7 @@ namespace Ngo.Compiler.Emit
             var ilCodeBytes = reader.ReadBytes((int)ilCodeLen);
 
             LinkIL(ilMetaBytes, ilCodeBytes, pkg, ctx);
+            return true;
         }
 
         // ================================================================
@@ -160,7 +168,7 @@ namespace Ngo.Compiler.Emit
 
             // Track method body indices
             var methodBodyIndex = 0;
-            var methodBodies = new List<(MethodDefinitionHandle handle, int bodyIndex)>();
+            var methodBodies = new List<MethodBodyReference>();
 
             foreach (var typeHandle in typeDefs)
             {
@@ -216,7 +224,7 @@ namespace Ngo.Compiler.Emit
                     if (method.RelativeVirtualAddress > 0)
                     {
                         metaWriter.Write(methodBodyIndex);
-                        methodBodies.Add((methodHandle, methodBodyIndex));
+                        methodBodies.Add(new MethodBodyReference(methodHandle, methodBodyIndex));
                         methodBodyIndex++;
                     }
                     else
@@ -229,9 +237,9 @@ namespace Ngo.Compiler.Emit
             // Section 3: method bodies
             codeWriter.Write(methodBodies.Count);
 
-            foreach (var (methodHandle, _) in methodBodies)
+            foreach (var bodyRef in methodBodies)
             {
-                var method = mdReader.GetMethodDefinition(methodHandle);
+                var method = mdReader.GetMethodDefinition(bodyRef.Handle);
                 var body = peReader.GetMethodBody(method.RelativeVirtualAddress);
                 var ilBytes = body.GetILBytes()!;
 
@@ -261,9 +269,9 @@ namespace Ngo.Compiler.Emit
                 codeWriter.Write(tokenEntries.Count);
                 foreach (var entry in tokenEntries)
                 {
-                    codeWriter.Write(entry.offset);
-                    codeWriter.Write(entry.kind);
-                    codeWriter.Write(entry.reference);
+                    codeWriter.Write(entry.Offset);
+                    codeWriter.Write(entry.Kind);
+                    codeWriter.Write(entry.Reference);
                 }
 
                 // Exception handlers
@@ -307,7 +315,7 @@ namespace Ngo.Compiler.Emit
             // Pass 1a: Create all TypeBuilders and FieldBuilders first
             // We need all types defined before resolving method signatures,
             // since methods may reference types defined later in the metadata.
-            var typeInfos = new List<(string fullTypeName, TypeBuilder tb, int methodCount, List<(string methodName, MethodAttributes methodAttrs, string returnTypeName, string[] paramTypeNames, int bodyIndex)> methods)>();
+            var typeInfos = new List<DeserializedTypeInfo>();
 
             for (int t = 0; t < typeCount; t++)
             {
@@ -360,7 +368,7 @@ namespace Ngo.Compiler.Emit
 
                 // Read method metadata but defer defining them
                 int methodCount = metaReader.ReadInt32();
-                var methodInfos = new List<(string methodName, MethodAttributes methodAttrs, string returnTypeName, string[] paramTypeNames, int bodyIndex)>(methodCount);
+                var methodInfos = new List<SerializedMethodInfo>(methodCount);
                 for (int m = 0; m < methodCount; m++)
                 {
                     var methodName = metaReader.ReadString();
@@ -371,34 +379,67 @@ namespace Ngo.Compiler.Emit
                     for (int p = 0; p < paramCount; p++)
                         paramTypeNames[p] = metaReader.ReadString();
                     var bodyIndex = metaReader.ReadInt32();
-                    methodInfos.Add((methodName, methodAttrs, returnTypeName, paramTypeNames, bodyIndex));
+                    methodInfos.Add(new SerializedMethodInfo(methodName, methodAttrs, returnTypeName, paramTypeNames, bodyIndex));
                 }
 
-                typeInfos.Add((fullTypeName, tb, methodCount, methodInfos));
+                // Read method overrides
+                var overrides = new List<SerializedMethodOverride>();
+                int overrideCount = metaReader.ReadInt32();
+                for (int o = 0; o < overrideCount; o++)
+                {
+                    var bodyMethodName = metaReader.ReadString();
+                    var declTypeName = metaReader.ReadString();
+                    var declMethodName = metaReader.ReadString();
+                    overrides.Add(new SerializedMethodOverride(bodyMethodName, declTypeName, declMethodName));
+                }
+
+                typeInfos.Add(new DeserializedTypeInfo(fullTypeName, tb, methodCount, methodInfos, overrides));
             }
 
             // Pass 1b: Now define all methods (all type builders exist)
-            foreach (var (fullTypeName, tb, _, methods) in typeInfos)
+            foreach (var typeInfo in typeInfos)
             {
-                foreach (var (methodName, methodAttrs, returnTypeName, paramTypeNames, bodyIndex) in methods)
+                foreach (var methodInfo in typeInfo.Methods)
                 {
-                    var returnType = ResolveType(returnTypeName, typeBuilders);
-                    var paramTypes = new Type[paramTypeNames.Length];
-                    for (int p = 0; p < paramTypeNames.Length; p++)
-                        paramTypes[p] = ResolveType(paramTypeNames[p], typeBuilders);
+                    var returnType = ResolveType(methodInfo.ReturnTypeName, typeBuilders);
+                    var paramTypes = new Type[methodInfo.ParamTypeNames.Length];
+                    for (int p = 0; p < methodInfo.ParamTypeNames.Length; p++)
+                    {
+                        paramTypes[p] = ResolveType(methodInfo.ParamTypeNames[p], typeBuilders);
+                    }
 
-                    var mb = tb.DefineMethod(methodName, methodAttrs, returnType, paramTypes);
-                    var methodKey = fullTypeName + "." + methodName;
+                    var mb = typeInfo.TypeBuilder.DefineMethod(methodInfo.MethodName, methodInfo.Attributes, returnType, paramTypes);
+                    var methodKey = typeInfo.FullTypeName + "." + methodInfo.MethodName;
                     methodBuilders[methodKey] = mb;
 
-                    if (bodyIndex >= 0)
-                        methodILIndices[methodKey] = bodyIndex;
+                    if (methodInfo.BodyIndex >= 0)
+                    {
+                        methodILIndices[methodKey] = methodInfo.BodyIndex;
+                    }
 
                     // Register exported functions in CachedMethods for the emitter
                     foreach (var (_, sym) in pkg.Exports)
                     {
-                        if (sym is FunctionSymbol funcSym && funcSym.Name == methodName)
+                        if (sym is FunctionSymbol funcSym && funcSym.Name == methodInfo.MethodName)
                             ctx.CachedMethods[funcSym] = mb;
+                    }
+                }
+            }
+
+            // Pass 1c: Apply method overrides (all methods now exist)
+            foreach (var typeInfo in typeInfos)
+            {
+                foreach (var ov in typeInfo.Overrides)
+                {
+                    var bodyKey = typeInfo.FullTypeName + "." + ov.BodyMethodName;
+                    if (methodBuilders.TryGetValue(bodyKey, out var bodyMb))
+                    {
+                        var declType = ResolveType(ov.DeclarationTypeName, typeBuilders);
+                        var declMethod = declType.GetMethod(ov.DeclarationMethodName);
+                        if (declMethod != null)
+                        {
+                            typeInfo.TypeBuilder.DefineMethodOverride(bodyMb, declMethod);
+                        }
                     }
                 }
             }
@@ -444,12 +485,10 @@ namespace Ngo.Compiler.Emit
                 bodyData.TokenEntries = new List<TokenEntry>(tokenCount);
                 for (int te = 0; te < tokenCount; te++)
                 {
-                    bodyData.TokenEntries.Add(new TokenEntry
-                    {
-                        Offset = codeReader.ReadInt32(),
-                        Kind = codeReader.ReadByte(),
-                        Reference = codeReader.ReadString()
-                    });
+                    bodyData.TokenEntries.Add(new TokenEntry(
+                        codeReader.ReadInt32(),
+                        codeReader.ReadByte(),
+                        codeReader.ReadString()));
                 }
 
                 int handlerCount = codeReader.ReadInt32();
@@ -515,9 +554,11 @@ namespace Ngo.Compiler.Emit
             }
 
             // Build token lookup: offset → (kind, reference)
-            var tokenMap = new Dictionary<int, (byte kind, string reference)>();
+            var tokenMap = new Dictionary<int, TokenReference>();
             foreach (var entry in tokenEntries)
-                tokenMap[entry.Offset] = (entry.Kind, entry.Reference);
+            {
+                tokenMap[entry.Offset] = new TokenReference(entry.Kind, entry.Reference);
+            }
 
             // Pre-scan for branch targets and create labels
             var labels = new Dictionary<int, Label>();
@@ -549,8 +590,8 @@ namespace Ngo.Compiler.Emit
 
                     if (op == 0x72) // ldstr
                     {
-                        if (tokenMap.TryGetValue(tokenOffset, out var strRef) && strRef.kind == TokenKindString)
-                            ilGen.Emit(OpCodes.Ldstr, strRef.reference);
+                        if (tokenMap.TryGetValue(tokenOffset, out var strRef) && strRef.Kind == TokenKindString)
+                            ilGen.Emit(OpCodes.Ldstr, strRef.Reference);
                         else
                             ilGen.Emit(OpCodes.Ldnull); // fallback
                         continue;
@@ -559,7 +600,7 @@ namespace Ngo.Compiler.Emit
                     var opCode = GetOpCode(op);
                     if (tokenMap.TryGetValue(tokenOffset, out var tok))
                     {
-                        EmitTokenOpcode(ilGen, opCode, tok.kind, tok.reference, typeBuilders, methodBuilders, fieldBuilders, ctx);
+                        EmitTokenOpcode(ilGen, opCode, tok.Kind, tok.Reference, typeBuilders, methodBuilders, fieldBuilders, ctx);
                     }
                     continue;
                 }
@@ -673,7 +714,7 @@ namespace Ngo.Compiler.Emit
         }
 
         private static void ReplayFEOpcode(byte op2, byte[] il, ref int i, ILGenerator ilGen,
-            Dictionary<int, (byte kind, string reference)> tokenMap,
+            Dictionary<int, TokenReference> tokenMap,
             Dictionary<string, TypeBuilder> typeBuilders,
             Dictionary<string, MethodBuilder> methodBuilders,
             Dictionary<string, FieldBuilder> fieldBuilders,
@@ -688,7 +729,7 @@ namespace Ngo.Compiler.Emit
                     var opCode = op2 == 0x15 ? OpCodes.Initobj : op2 == 0x16 ? OpCodes.Constrained : OpCodes.Sizeof;
                     if (i + 4 <= il.Length && tokenMap.TryGetValue(i, out var tok))
                     {
-                        var type = ResolveTypeReference(tok.reference, typeBuilders, ctx);
+                        var type = ResolveTypeReference(tok.Reference, typeBuilders, ctx);
                         if (type != null)
                             ilGen.Emit(opCode, type);
                     }
@@ -701,7 +742,7 @@ namespace Ngo.Compiler.Emit
                     var opCode = op2 == 0x06 ? OpCodes.Ldftn : OpCodes.Ldvirtftn;
                     if (i + 4 <= il.Length && tokenMap.TryGetValue(i, out var tok))
                     {
-                        var method = ResolveMethodReference(tok.reference, typeBuilders, methodBuilders, ctx);
+                        var method = ResolveMethodReference(tok.Reference, typeBuilders, methodBuilders, ctx);
                         if (method is MethodInfo mi)
                             ilGen.Emit(opCode, mi);
                     }
@@ -1113,10 +1154,10 @@ namespace Ngo.Compiler.Emit
         /// Scans IL bytes for opcodes that embed metadata tokens and resolves
         /// each token to a symbolic reference string.
         /// </summary>
-        private static List<(int offset, byte kind, string reference)> ScanTokens(
+        private static List<TokenEntry> ScanTokens(
             byte[] il, MetadataReader mdReader)
         {
-            var entries = new List<(int offset, byte kind, string reference)>();
+            var entries = new List<TokenEntry>();
             int i = 0;
 
             while (i < il.Length)
@@ -1138,7 +1179,7 @@ namespace Ngo.Compiler.Emit
                                 var token = BitConverter.ToInt32(il, i);
                                 var resolved = ResolveMetadataToken(mdReader, token);
                                 if (resolved != null)
-                                    entries.Add((i, resolved.Value.kind, resolved.Value.reference));
+                                    entries.Add(new TokenEntry(i, resolved.Kind, resolved.Reference));
                                 i += 4;
                             }
                             break;
@@ -1158,7 +1199,7 @@ namespace Ngo.Compiler.Emit
                         var token = BitConverter.ToInt32(il, i);
                         var resolved = ResolveMetadataToken(mdReader, token);
                         if (resolved != null)
-                            entries.Add((i, resolved.Value.kind, resolved.Value.reference));
+                            entries.Add(new TokenEntry(i, resolved.Kind, resolved.Reference));
                         i += 4;
                     }
                     continue;
@@ -1305,7 +1346,7 @@ namespace Ngo.Compiler.Emit
         // Metadata token resolution (PE tokens → symbolic references)
         // ================================================================
 
-        private static (byte kind, string reference)? ResolveMetadataToken(MetadataReader mdReader, int token)
+        private static TokenReference? ResolveMetadataToken(MetadataReader mdReader, int token)
         {
             // User string tokens have table byte 0x70
             if ((token >> 24) == 0x70)
@@ -1314,7 +1355,7 @@ namespace Ngo.Compiler.Emit
                 {
                     var userStringHandle = MetadataTokens.UserStringHandle(token & 0x00FFFFFF);
                     var str = mdReader.GetUserString(userStringHandle);
-                    return (TokenKindString, str);
+                    return new TokenReference(TokenKindString, str);
                 }
                 catch { return null; }
             }
@@ -1330,7 +1371,7 @@ namespace Ngo.Compiler.Emit
                     var name = mdReader.GetString(td.Name);
                     var ns = mdReader.GetString(td.Namespace);
                     var fullName = string.IsNullOrEmpty(ns) ? name : ns + "." + name;
-                    return (TokenKindType, fullName);
+                    return new TokenReference(TokenKindType, fullName);
                 }
                 case HandleKind.TypeReference:
                 {
@@ -1338,13 +1379,13 @@ namespace Ngo.Compiler.Emit
                     var name = mdReader.GetString(tr.Name);
                     var ns = mdReader.GetString(tr.Namespace);
                     var fullName = string.IsNullOrEmpty(ns) ? name : ns + "." + name;
-                    return (TokenKindType, fullName);
+                    return new TokenReference(TokenKindType, fullName);
                 }
                 case HandleKind.TypeSpecification:
                 {
                     var ts = mdReader.GetTypeSpecification((TypeSpecificationHandle)handle);
                     var typeName = ts.DecodeSignature(new TypeNameProvider(mdReader), null);
-                    return (TokenKindType, typeName);
+                    return new TokenReference(TokenKindType, typeName);
                 }
                 case HandleKind.MethodDefinition:
                 {
@@ -1355,7 +1396,7 @@ namespace Ngo.Compiler.Emit
                     var typeName = mdReader.GetString(td.Name);
                     var typeNs = mdReader.GetString(td.Namespace);
                     var fullTypeName = string.IsNullOrEmpty(typeNs) ? typeName : typeNs + "." + typeName;
-                    return (TokenKindMethod, fullTypeName + "::" + methodName);
+                    return new TokenReference(TokenKindMethod, fullTypeName + "::" + methodName);
                 }
                 case HandleKind.MemberReference:
                 {
@@ -1364,9 +1405,9 @@ namespace Ngo.Compiler.Emit
                     var parentName = ResolveTypeRef(mdReader, mr.Parent);
 
                     if (mr.GetKind() == MemberReferenceKind.Method)
-                        return (TokenKindMethod, parentName + "::" + memberName);
+                        return new TokenReference(TokenKindMethod, parentName + "::" + memberName);
                     else
-                        return (TokenKindField, parentName + "::" + memberName);
+                        return new TokenReference(TokenKindField, parentName + "::" + memberName);
                 }
                 case HandleKind.FieldDefinition:
                 {
@@ -1377,7 +1418,7 @@ namespace Ngo.Compiler.Emit
                     var typeName = mdReader.GetString(td.Name);
                     var typeNs = mdReader.GetString(td.Namespace);
                     var fullTypeName = string.IsNullOrEmpty(typeNs) ? typeName : typeNs + "." + typeName;
-                    return (TokenKindField, fullTypeName + "::" + fieldName);
+                    return new TokenReference(TokenKindField, fullTypeName + "::" + fieldName);
                 }
                 default:
                     return null;
@@ -1544,12 +1585,7 @@ namespace Ngo.Compiler.Emit
             public List<ExceptionHandlerData> ExceptionHandlers = new();
         }
 
-        private struct TokenEntry
-        {
-            public int Offset;
-            public byte Kind;
-            public string Reference;
-        }
+        // TokenEntry is now defined in ILSerializerTypes.cs
 
         private struct ExceptionHandlerData
         {

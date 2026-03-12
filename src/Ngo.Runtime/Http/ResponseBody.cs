@@ -1,9 +1,11 @@
 using System.IO;
 using System.Net.Http;
+using Ngo.Runtime.Discovery;
 using Ngo.Runtime.Io;
 
 namespace Ngo.Runtime.Http
 {
+    [GoType("struct", Name = "Body", Package = "net/http")]
     public class ResponseBody : IGoReader
     {
         private readonly HttpResponseMessage _response;
