@@ -275,5 +275,174 @@ namespace Ngo.Runtime.Math.Big
             _value = BigInteger.Zero;
             return this;
         }
+
+        [GoMethod]
+        public GoInt Binomial(long n, long k)
+        {
+            if (k < 0 || k > n) { _value = BigInteger.Zero; return this; }
+            if (k == 0 || k == n) { _value = BigInteger.One; return this; }
+            var result = BigInteger.One;
+            for (long i = 0; i < k; i++)
+            {
+                result = result * (n - i) / (i + 1);
+            }
+            _value = result;
+            return this;
+        }
+
+        [GoMethod]
+        public long CmpAbs(GoInt y) => BigInteger.Abs(_value).CompareTo(BigInteger.Abs(y._value));
+
+        [GoMethod]
+        public void Format(object state, long verb)
+        {
+            // Stub: formatting support
+        }
+
+        [GoMethod]
+        [return: GoReturn("[]byte", "error")]
+        public (Slice<byte>, string) GobEncode()
+        {
+            var bytes = _value.ToByteArray(isUnsigned: false, isBigEndian: true);
+            return (new Slice<byte>(bytes), "");
+        }
+
+        [GoMethod]
+        [return: GoReturn("error")]
+        public string GobDecode(Slice<byte> buf)
+        {
+            _value = new BigInteger(buf.AsSpan().ToArray(), isUnsigned: false, isBigEndian: true);
+            return "";
+        }
+
+        [GoMethod]
+        [return: GoReturn("[]byte", "error")]
+        public (Slice<byte>, string) MarshalJSON()
+        {
+            var s = _value.ToString();
+            return (new Slice<byte>(System.Text.Encoding.UTF8.GetBytes(s)), "");
+        }
+
+        [GoMethod]
+        [return: GoReturn("[]byte", "error")]
+        public (Slice<byte>, string) MarshalText()
+        {
+            var s = _value.ToString();
+            return (new Slice<byte>(System.Text.Encoding.UTF8.GetBytes(s)), "");
+        }
+
+        [GoMethod]
+        [return: GoReturn("error")]
+        public string UnmarshalJSON(Slice<byte> text)
+        {
+            var s = System.Text.Encoding.UTF8.GetString(text.AsSpan().ToArray());
+            if (BigInteger.TryParse(s, out var result))
+            {
+                _value = result;
+                return "";
+            }
+            return "math/big: cannot unmarshal " + s + " into Go value of type *big.Int";
+        }
+
+        [GoMethod]
+        [return: GoReturn("error")]
+        public string UnmarshalText(Slice<byte> text)
+        {
+            var s = System.Text.Encoding.UTF8.GetString(text.AsSpan().ToArray());
+            if (BigInteger.TryParse(s, out var result))
+            {
+                _value = result;
+                return "";
+            }
+            return "math/big: cannot unmarshal " + s + " into Go value of type *big.Int";
+        }
+
+        [GoMethod]
+        public GoInt MulRange(long a, long b)
+        {
+            if (a > b) { _value = BigInteger.One; return this; }
+            var result = BigInteger.One;
+            for (long i = a; i <= b; i++)
+            {
+                result *= i;
+            }
+            _value = result;
+            return this;
+        }
+
+        [GoMethod]
+        public GoInt Rand(object rng, GoInt n)
+        {
+            // Stub: random number in [0, n)
+            _value = BigInteger.Zero;
+            return this;
+        }
+
+        [GoMethod]
+        [return: GoReturn("int", "error")]
+        public (long, string) Scan(object s, long ch)
+        {
+            // Stub: scanning support
+            return (0, "");
+        }
+
+        [GoMethod]
+        public GoInt SetBit(GoInt x, long i, ulong b)
+        {
+            if (b == 0)
+            {
+                _value = x._value & ~(BigInteger.One << (int)i);
+            }
+            else
+            {
+                _value = x._value | (BigInteger.One << (int)i);
+            }
+            return this;
+        }
+
+        [GoMethod]
+        public string Text(long @base)
+        {
+            return @base switch
+            {
+                16 => _value.ToString("x"),
+                10 => _value.ToString(),
+                8 => ConvertToBase(_value, 8),
+                2 => ConvertToBase(_value, 2),
+                _ => _value.ToString(),
+            };
+        }
+
+        [GoMethod]
+        public GoInt TrailingZeroBits()
+        {
+            if (_value == 0) { _value = 0; return this; }
+            var abs = BigInteger.Abs(_value);
+            long count = 0;
+            while ((abs & 1) == 0)
+            {
+                abs >>= 1;
+                count++;
+            }
+            _value = count;
+            return this;
+        }
+
+        private static string ConvertToBase(BigInteger value, int radix)
+        {
+            if (value == 0) return "0";
+            var neg = value < 0;
+            value = BigInteger.Abs(value);
+            var chars = new System.Collections.Generic.List<char>();
+            while (value > 0)
+            {
+                chars.Add("0123456789abcdef"[(int)(value % radix)]);
+                value /= radix;
+            }
+            if (neg) chars.Add('-');
+            chars.Reverse();
+            return new string(chars.ToArray());
+        }
     }
 }
+

@@ -177,6 +177,14 @@ namespace Ngo.Runtime.Reflect
             return new GoReflectValue(fn, typ);
         }
 
+        public static GoReflectValue MakeChan(GoReflectType typ, long buffer)
+        {
+            var elemType = typ.ClrType.GetGenericArguments()[0];
+            var chanType = typeof(Channel<>).MakeGenericType(elemType);
+            var instance = Activator.CreateInstance(chanType, new object[] { (int)buffer });
+            return new GoReflectValue(instance!, typ);
+        }
+
         public static GoReflectValue Append(GoReflectValue s, params GoReflectValue[] elems)
         {
             // Use the runtime Slice<T>.Append pattern

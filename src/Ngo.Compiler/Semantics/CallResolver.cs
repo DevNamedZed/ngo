@@ -181,12 +181,23 @@ namespace Ngo.Compiler.Semantics
                     }
 
                     // Package variable with function type: bufio.ScanLines(data, atEOF)
-                    if (export is PackageVarSymbol pkgVar && pkgVar.Type is FunctionTypeSymbol pkgFuncType)
+                    FunctionTypeSymbol? pkgFuncType = null;
+                    if (export is PackageVarSymbol pkgVar && pkgVar.Type is FunctionTypeSymbol pvft)
+                    {
+                        pkgFuncType = pvft;
+                    }
+                    else if (export is LocalSymbol localVar && localVar.Type is FunctionTypeSymbol lvft)
+                    {
+                        pkgFuncType = lvft;
+                    }
+                    if (pkgFuncType != null)
                     {
                         var arguments = BindArguments(syntax);
                         var paramSymbols = new List<ParameterSymbol>();
                         for (int i = 0; i < pkgFuncType.ParameterTypes.Count; i++)
+                        {
                             paramSymbols.Add(new ParameterSymbol("_", pkgFuncType.ParameterTypes[i], i));
+                        }
                         var syntheticFunc = new FunctionSymbol(methodName, paramSymbols, pkgFuncType.ReturnTypes,
                             isVariadic: pkgFuncType.IsVariadic, packageName: pkg.Name);
                         return new CallExpression(syntheticFunc, arguments, span);
@@ -227,11 +238,15 @@ namespace Ngo.Compiler.Semantics
                         method = ifaceType.LookupMethod(methodName);
                     }
 
-                    // Check on resolved type for instantiated generics
+                    // Check on resolved type (handles type aliases, instantiated generics, etc.)
                     var resolvedLookup = lookupType.Resolved();
-                    if (method == null && resolvedLookup is InterfaceTypeSymbol resolvedIface)
+                    if (method == null && resolvedLookup != lookupType)
                     {
-                        method = resolvedIface.LookupMethod(methodName);
+                        method = resolvedLookup.LookupMethod(methodName);
+                        if (method == null && resolvedLookup is InterfaceTypeSymbol resolvedIface)
+                        {
+                            method = resolvedIface.LookupMethod(methodName);
+                        }
                     }
 
                     // Check promoted methods from embedded structs

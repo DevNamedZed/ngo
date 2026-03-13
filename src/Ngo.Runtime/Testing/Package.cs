@@ -24,6 +24,16 @@ namespace Ngo.Runtime.Testing
     [GoPackage("testing")]
     public static class Package
     {
+        [GoFunc]
+        public static bool Verbose() => false;
+
+        [GoFunc]
+        public static bool Short() => false;
+
+        [GoFunc]
+        [return: GoReturn("*testing.M")]
+        public static GoTestingM MainStart(object? deps, Slice<object?> tests, Slice<object?> benchmarks, Slice<object?> fuzzTargets, Slice<object?> examples)
+            => new GoTestingM();
     }
 
     // testing.M struct

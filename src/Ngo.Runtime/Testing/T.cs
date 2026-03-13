@@ -114,9 +114,18 @@ namespace Ngo.Runtime.Testing
             // No-op in our implementation — Go uses this for stack trace filtering
         }
 
+        [GoMethod]
         public void Cleanup(Action f)
         {
             _cleanups.Add(f);
+        }
+
+        [GoMethod]
+        public void Setenv(string key, string value)
+        {
+            var prev = Environment.GetEnvironmentVariable(key);
+            Environment.SetEnvironmentVariable(key, value);
+            Cleanup(() => Environment.SetEnvironmentVariable(key, prev));
         }
 
         public string TempDir()

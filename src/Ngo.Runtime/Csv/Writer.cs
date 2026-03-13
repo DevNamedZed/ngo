@@ -1,12 +1,19 @@
 using System.Text;
+using Ngo.Runtime.Discovery;
 using Ngo.Runtime.Io;
 
 namespace Ngo.Runtime.Csv
 {
+    [GoType("struct", Name = "Writer", Package = "encoding/csv")]
     public class Writer
     {
         private readonly IGoWriter _writer;
+
+        [GoField(Name = "Comma")]
         public long Comma = ',';
+
+        [GoField(Name = "UseCRLF")]
+        public bool UseCRLF = true;
 
         public Writer(IGoWriter writer)
         {

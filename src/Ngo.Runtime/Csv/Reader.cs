@@ -11,7 +11,24 @@ namespace Ngo.Runtime.Csv
     public class Reader
     {
         private readonly TextReader _reader;
+
+        [GoField(Name = "Comma")]
         public long Comma = ',';
+
+        [GoField(Name = "Comment")]
+        public long Comment = 0;
+
+        [GoField(Name = "FieldsPerRecord")]
+        public long FieldsPerRecord = 0;
+
+        [GoField(Name = "LazyQuotes")]
+        public bool LazyQuotes = false;
+
+        [GoField(Name = "TrimLeadingSpace")]
+        public bool TrimLeadingSpace = false;
+
+        [GoField(Name = "ReuseRecord")]
+        public bool ReuseRecord = false;
 
         public Reader(IGoReader reader)
         {

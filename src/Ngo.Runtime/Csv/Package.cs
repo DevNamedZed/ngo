@@ -25,18 +25,57 @@ namespace Ngo.Runtime.Csv
     [GoPackage("encoding/csv")]
     public static class Package
     {
-        public static Reader NewReader(object r)
+        [GoFunc]
+        [return: GoReturn("*Reader")]
+        public static Reader NewReader([GoParam("io.Reader")] object r)
         {
             if (r is IGoReader reader)
+            {
                 return new Reader(reader);
+            }
             throw new InvalidOperationException("csv.NewReader requires an io.Reader");
         }
 
-        public static Writer NewWriter(object w)
+        [GoFunc]
+        [return: GoReturn("*Writer")]
+        public static Writer NewWriter([GoParam("io.Writer")] object w)
         {
             if (w is IGoWriter writer)
+            {
                 return new Writer(writer);
+            }
             throw new InvalidOperationException("csv.NewWriter requires an io.Writer");
         }
+
+        [GoVar]
+        public static readonly string ErrBareQuote = "bare \" in non-quoted-field";
+
+        [GoVar]
+        public static readonly string ErrFieldCount = "wrong number of fields";
+
+        [GoVar]
+        public static readonly string ErrQuote = "extraneous or missing \" in quoted-field";
+
+        [GoVar]
+        public static readonly string ErrTrailingComma = "extra delimiter at end of line";
+    }
+
+    [GoType("struct", Name = "ParseError", Package = "encoding/csv")]
+    public class ParseError
+    {
+        [GoField(Name = "StartLine")]
+        public long StartLine;
+
+        [GoField(Name = "Line")]
+        public long Line;
+
+        [GoField(Name = "Column")]
+        public long Column;
+
+        [GoField(Name = "Err")]
+        public object? Err;
+
+        [GoMethod]
+        public string Error() => $"record on line {Line}; parse error on line {Line}, column {Column}: {Err}";
     }
 }

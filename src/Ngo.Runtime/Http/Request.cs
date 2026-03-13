@@ -38,7 +38,8 @@ namespace Ngo.Runtime.Http
         [GoMethod]
         public (object?, object?, object?) FormFile(string key) => (null, null, null);
         [GoMethod]
-        public object? Cookie(string name) => null;
+        [return: GoReturn("*Cookie", "error")]
+        public (Cookie?, string) Cookie(string name) => (null, "http: named cookie not present");
         [GoMethod]
         public Slice<Cookie> Cookies() => new Slice<Cookie>();
         [GoMethod]

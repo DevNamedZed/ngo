@@ -109,10 +109,64 @@ namespace Ngo.Runtime.Crypto.X509
         [GoConst(Type = "x509.PublicKeyAlgorithm")]
         public const long Ed25519 = 4;
 
+        // x509.MarshalPKIXPublicKey(pub any) ([]byte, error)
+        [GoFunc]
+        [return: GoReturn("[]byte", "error")]
+        public static (Slice<byte>, object?) MarshalPKIXPublicKey(object? pub) => (new Slice<byte>(), null);
+
+        // x509.ParsePKCS1PublicKey(der []byte) (*rsa.PublicKey, error)
+        [GoFunc]
+        [return: GoReturn("*rsa.PublicKey", "error")]
+        public static (object?, object?) ParsePKCS1PublicKey(Slice<byte> der) => (null, null);
+
+        // x509.DecryptPEMBlock(b *pem.Block, password []byte) ([]byte, error)
+        [GoFunc]
+        [return: GoReturn("[]byte", "error")]
+        public static (Slice<byte>, object?) DecryptPEMBlock(object? b, Slice<byte> password) => (new Slice<byte>(), null);
+
+        // x509.IsEncryptedPEMBlock(b *pem.Block) bool
+        [GoFunc]
+        public static bool IsEncryptedPEMBlock(object? b) => false;
+
         // x509.ParseECPrivateKey(der []byte) (*ecdsa.PrivateKey, error)
         [GoFunc]
         [return: GoReturn("*ecdsa.PrivateKey", "error")]
         public static (object?, object?) ParseECPrivateKey(Slice<byte> der) => (null, null);
+
+        // CertificateRequest type
+        [GoType("struct", Name = "CertificateRequest", Package = "crypto/x509")]
+        public class GoCertificateRequest
+        {
+            [GoField(Name = "Raw")] public Slice<byte> Raw;
+            [GoField(Name = "RawTBSCertificateRequest")] public Slice<byte> RawTBSCertificateRequest;
+            [GoField(Name = "RawSubjectPublicKeyInfo")] public Slice<byte> RawSubjectPublicKeyInfo;
+            [GoField(Name = "RawSubject")] public Slice<byte> RawSubject;
+            [GoField(Name = "Version")] public long Version;
+            [GoField(Name = "Signature")] public Slice<byte> Signature;
+            [GoField(Name = "PublicKey")] public object? PublicKey;
+            [GoField(Name = "PublicKeyAlgorithm")] public long PublicKeyAlgorithm;
+            [GoField(Name = "Subject")] public object? Subject; // pkix.Name
+            [GoField(Name = "DNSNames")] public Slice<string> DNSNames;
+            [GoField(Name = "EmailAddresses")] public Slice<string> EmailAddresses;
+            [GoField(Name = "IPAddresses")] public Slice<object?> IPAddresses;
+            [GoField(Name = "URIs")] public Slice<object?> URIs;
+            [GoField(Name = "SignatureAlgorithm")] public long SignatureAlgorithm;
+
+            [GoMethod]
+            [return: GoReturn("error")]
+            public object? CheckSignature() => null;
+        }
+
+        // x509.CreateCertificateRequest(rand io.Reader, template *CertificateRequest, priv any) (csr []byte, err error)
+        [GoFunc]
+        [return: GoReturn("[]byte", "error")]
+        public static (Slice<byte>, object?) CreateCertificateRequest(object? rand, [GoParam("*x509.CertificateRequest")] object? template, object? priv)
+            => (new Slice<byte>(), null);
+
+        // x509.ParseCertificateRequest(asn1Data []byte) (*CertificateRequest, error)
+        [GoFunc]
+        [return: GoReturn("*x509.CertificateRequest", "error")]
+        public static (object?, object?) ParseCertificateRequest(Slice<byte> asn1Data) => (null, null);
 
         // Error variables
         [GoVar] public static readonly object? ErrCertificateInvalid = "x509: certificate is not authorized";

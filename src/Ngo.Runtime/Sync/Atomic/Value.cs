@@ -1,3 +1,4 @@
+using System.Threading;
 using Ngo.Runtime.Discovery;
 
 namespace Ngo.Runtime.Sync.Atomic
@@ -8,24 +9,27 @@ namespace Ngo.Runtime.Sync.Atomic
         private object? _value;
 
         [GoMethod]
-        public void Store(object? v) { _value = v; }
+        public void Store(object? v)
+        {
+            Interlocked.Exchange(ref _value, v);
+        }
 
         [GoMethod]
-        public object? Load() { return _value; }
+        public object? Load()
+        {
+            return Interlocked.CompareExchange(ref _value, null, null);
+        }
 
         [GoMethod]
         public bool CompareAndSwap(object? old, object? @new)
         {
-            if (object.Equals(_value, old)) { _value = @new; return true; }
-            return false;
+            return Interlocked.CompareExchange(ref _value, @new, old) == old;
         }
 
         [GoMethod]
         public object? Swap(object? @new)
         {
-            var old = _value;
-            _value = @new;
-            return old;
+            return Interlocked.Exchange(ref _value, @new);
         }
     }
 }

@@ -480,6 +480,13 @@ namespace Ngo.Compiler.Semantics
                         return left;
                     }
 
+                    // Go allows untyped float constants in shift (e.g. 1.0 << 10)
+                    // when the float is representable as an integer
+                    if (left.TypeKind == TypeKind.UntypedFloat && TypeChecker.IsInteger(right))
+                    {
+                        return BuiltinTypes.UntypedInt;
+                    }
+
                     return null;
 
                 // Comparison: both comparable, result is bool
@@ -639,6 +646,14 @@ namespace Ngo.Compiler.Semantics
                 if (operand.Type is InterfaceTypeSymbol ifaceDeref && ifaceDeref.Methods.Count == 0)
                 {
                     return new DerefExpression(operand, BuiltinTypes.EmptyInterface, span);
+                }
+
+                // Allow dereferencing struct types backed by classes (reference types).
+                // Go functions like sync.NewCond return *Cond, but runtime returns Cond (class).
+                // Dereferencing a class-backed struct is a no-op.
+                if (operand.Type is StructTypeSymbol || operand.Type.TypeKind == TypeKind.Struct)
+                {
+                    return new DerefExpression(operand, operand.Type, span);
                 }
 
                 _context.Errors.ReportError(span, ErrorCode.InvalidOperation,

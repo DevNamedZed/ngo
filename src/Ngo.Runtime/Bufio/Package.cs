@@ -39,6 +39,10 @@ namespace Ngo.Runtime.Bufio
         [GoVar]
         public static readonly Func<Slice<byte>, bool, (long, Slice<byte>, object?)> ScanRunes = ScanRunesImpl;
 
+        // type SplitFunc func(data []byte, atEOF bool) (advance int, token []byte, err error)
+        [GoType("named", Name = "SplitFunc", Package = "bufio", Underlying = "func([]byte, bool) (int, []byte, error)")]
+        public struct GoSplitFunc { }
+
         [GoConst]
         public const long MaxScanTokenSize = 64 * 1024;
 

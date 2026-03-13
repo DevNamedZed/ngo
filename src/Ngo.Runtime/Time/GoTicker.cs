@@ -1,21 +1,4 @@
-// -----------------------------------------------------------------------
-// <copyright file="GoTicker.cs" company="Ziad">
-//  Copyright 2016 Ziad
-//
-//  Licensed under the Apache License, Version 2.0 (the "License");
-//  you may not use this file except in compliance with the License.
-//  You may obtain a copy of the License at
-//
-//  http://www.apache.org/licenses/LICENSE-2.0
-//
-//  Unless required by applicable law or agreed to in writing, software
-//  distributed under the License is distributed on an "AS IS" BASIS,
-//  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-//  See the License for the specific language governing permissions and
-//  limitations under the License.
-// </copyright>
-// -----------------------------------------------------------------------
-
+using System;
 using Ngo.Runtime.Discovery;
 
 namespace Ngo.Runtime.Time
@@ -25,23 +8,67 @@ namespace Ngo.Runtime.Time
     public sealed class GoTicker
     {
         [GoField(Name = "C")]
-        public object? C; // <-chan Time
+        public Channel<GoTimeValue> C_chan;
+
+        private System.Threading.Timer? _timer;
+        private readonly object _lock = new object();
+        private bool _stopped;
+
+        public GoTicker(long durationNanoseconds)
+        {
+            C_chan = new Channel<GoTimeValue>(1);
+            var ms = durationNanoseconds / 1_000_000;
+            if (ms < 1)
+            {
+                ms = 1;
+            }
+            _timer = new System.Threading.Timer(OnTick, null, (long)ms, (long)ms);
+        }
+
+        private void OnTick(object? state)
+        {
+            lock (_lock)
+            {
+                if (_stopped)
+                {
+                    return;
+                }
+            }
+            C_chan.TrySend(GoTime.Now());
+        }
 
         [GoMethod]
         public void Stop()
         {
-            // Stub
+            lock (_lock)
+            {
+                _stopped = true;
+                _timer?.Change(System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite);
+                _timer?.Dispose();
+                _timer = null;
+            }
         }
 
         [GoMethod]
         public void Reset([GoParam("Duration")] long d)
         {
-            // Stub
-        }
-
-        public GoTicker(long duration)
-        {
-            // Stub: ticker with given duration in nanoseconds
+            lock (_lock)
+            {
+                _stopped = false;
+                var ms = d / 1_000_000;
+                if (ms < 1)
+                {
+                    ms = 1;
+                }
+                if (_timer != null)
+                {
+                    _timer.Change((long)ms, (long)ms);
+                }
+                else
+                {
+                    _timer = new System.Threading.Timer(OnTick, null, (long)ms, (long)ms);
+                }
+            }
         }
     }
 }

@@ -48,6 +48,10 @@ namespace Ngo.Runtime.Encoding.Gob
         [GoMethod]
         [return: GoReturn("error")]
         public object? Encode(object? e) => null;
+
+        [GoMethod]
+        [return: GoReturn("error")]
+        public object? EncodeValue([GoParam("reflect.Value")] object? value) => null;
     }
 
     [GoType("struct", Name = "Decoder", Package = "encoding/gob")]
@@ -56,5 +60,9 @@ namespace Ngo.Runtime.Encoding.Gob
         [GoMethod]
         [return: GoReturn("error")]
         public object? Decode(object? e) => null;
+
+        [GoMethod]
+        [return: GoReturn("error")]
+        public object? DecodeValue([GoParam("reflect.Value")] object? value) => null;
     }
 }

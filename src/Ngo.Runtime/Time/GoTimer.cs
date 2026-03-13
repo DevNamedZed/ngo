@@ -1,21 +1,4 @@
-// -----------------------------------------------------------------------
-// <copyright file="GoTimer.cs" company="Ziad">
-//  Copyright 2016 Ziad
-//
-//  Licensed under the Apache License, Version 2.0 (the "License");
-//  you may not use this file except in compliance with the License.
-//  You may obtain a copy of the License at
-//
-//  http://www.apache.org/licenses/LICENSE-2.0
-//
-//  Unless required by applicable law or agreed to in writing, software
-//  distributed under the License is distributed on an "AS IS" BASIS,
-//  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-//  See the License for the specific language governing permissions and
-//  limitations under the License.
-// </copyright>
-// -----------------------------------------------------------------------
-
+using System;
 using Ngo.Runtime.Discovery;
 
 namespace Ngo.Runtime.Time
@@ -27,23 +10,71 @@ namespace Ngo.Runtime.Time
         [GoField(Name = "C", Type = "<-chan Time")]
         public Channel<GoTimeValue> C { get; set; } = new Channel<GoTimeValue>(1);
 
+        private System.Threading.Timer? _timer;
+        private readonly object _lock = new object();
+        private bool _stopped;
+
+        public GoTimer(long durationNanoseconds)
+        {
+            var ms = durationNanoseconds / 1_000_000;
+            if (ms < 1)
+            {
+                ms = 1;
+            }
+            _timer = new System.Threading.Timer(OnFired, null, (long)ms, System.Threading.Timeout.Infinite);
+        }
+
+        private void OnFired(object? state)
+        {
+            lock (_lock)
+            {
+                if (_stopped)
+                {
+                    return;
+                }
+            }
+            C.TrySend(GoTime.Now());
+        }
+
         [GoMethod]
         public bool Stop()
         {
-            // Stub
-            return false;
+            lock (_lock)
+            {
+                if (_stopped)
+                {
+                    return false;
+                }
+                _stopped = true;
+                _timer?.Change(System.Threading.Timeout.Infinite, System.Threading.Timeout.Infinite);
+                _timer?.Dispose();
+                _timer = null;
+                return true;
+            }
         }
 
         [GoMethod]
         public bool Reset([GoParam("Duration")] long d)
         {
-            // Stub
-            return false;
-        }
-
-        public GoTimer(long duration)
-        {
-            // Stub: timer with given duration in nanoseconds
+            lock (_lock)
+            {
+                bool wasActive = !_stopped;
+                _stopped = false;
+                var ms = d / 1_000_000;
+                if (ms < 1)
+                {
+                    ms = 1;
+                }
+                if (_timer != null)
+                {
+                    _timer.Change((long)ms, System.Threading.Timeout.Infinite);
+                }
+                else
+                {
+                    _timer = new System.Threading.Timer(OnFired, null, (long)ms, System.Threading.Timeout.Infinite);
+                }
+                return wasActive;
+            }
         }
     }
 }

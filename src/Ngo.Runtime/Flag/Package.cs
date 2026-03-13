@@ -233,6 +233,33 @@ namespace Ngo.Runtime.Flag
         [GoConst] public static readonly long ExitOnError = 1;
         [GoConst] public static readonly long PanicOnError = 2;
 
+        // flag.Value interface
+        [GoType("interface", Name = "Value", Package = "flag")]
+        public interface IValue
+        {
+            [GoMethod]
+            string String();
+
+            [GoMethod]
+            [return: GoReturn("error")]
+            string Set(string s);
+        }
+
+        // flag.Getter interface
+        [GoType("interface", Name = "Getter", Package = "flag")]
+        public interface IGetter
+        {
+            [GoMethod]
+            string String();
+
+            [GoMethod]
+            [return: GoReturn("error")]
+            string Set(string s);
+
+            [GoMethod]
+            object? Get();
+        }
+
         private enum FlagType { String, Int, Bool, Float64 }
 
         private class FlagEntry

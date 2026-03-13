@@ -56,5 +56,93 @@ namespace Ngo.Runtime.Flag
         {
             // Stub: registers a flag with a Value interface
         }
+
+        [GoField(Name = "Usage")]
+        public Action? Usage;
+
+        [GoMethod]
+        public void StringVar(object p, string name, string value, string usage)
+        {
+            // Stub: string pointers are reference types
+        }
+
+        [GoMethod]
+        public void IntVar(Ptr<long> p, string name, long value, string usage)
+        {
+            p.Value = value;
+        }
+
+        [GoMethod]
+        public void BoolVar2(Ptr<bool> p, string name, bool value, string usage)
+        {
+            p.Value = value;
+        }
+
+        [GoMethod]
+        public void Int64Var(Ptr<long> p, string name, long value, string usage)
+        {
+            p.Value = value;
+        }
+
+        [GoMethod]
+        public void Float64Var(Ptr<double> p, string name, double value, string usage)
+        {
+            p.Value = value;
+        }
+
+        [GoMethod]
+        public void DurationVar(Ptr<long> p, string name, long value, string usage)
+        {
+            p.Value = value;
+        }
+
+        [GoMethod]
+        [return: GoReturn("*bool")]
+        public Ptr<bool> Bool(string name, bool value, string usage)
+        {
+            return new Ptr<bool>(value);
+        }
+
+        [GoMethod]
+        [return: GoReturn("*int")]
+        public Ptr<long> Int(string name, long value, string usage)
+        {
+            return new Ptr<long>(value);
+        }
+
+        [GoMethod]
+        [return: GoReturn("*int64")]
+        public Ptr<long> Int64(string name, long value, string usage)
+        {
+            return new Ptr<long>(value);
+        }
+
+        [GoMethod]
+        [return: GoReturn("*float64")]
+        public Ptr<double> Float64(string name, double value, string usage)
+        {
+            return new Ptr<double>(value);
+        }
+
+        [GoMethod]
+        public bool Parsed() => false;
+
+        [GoMethod]
+        public string Name() => _name;
+
+        [GoMethod]
+        public long NFlag() => 0;
+
+        [GoMethod]
+        public string Arg(long i) => "";
+
+        [GoMethod]
+        public void PrintDefaults() { }
+
+        [GoMethod]
+        public void SetOutput(object? w) { }
+
+        [GoMethod]
+        public object? Output() => null;
     }
 }

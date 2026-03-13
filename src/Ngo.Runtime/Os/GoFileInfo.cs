@@ -20,7 +20,7 @@ using Ngo.Runtime.Discovery;
 
 namespace Ngo.Runtime.Os
 {
-    [GoType("struct", Name = "FileInfo", Package = "os")]
+    [GoType("interface", Name = "FileInfo", Package = "os")]
     public sealed class GoFileInfo
     {
         public static readonly GoFileInfo Empty = new GoFileInfo("", 0, false);

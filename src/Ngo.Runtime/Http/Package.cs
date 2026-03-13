@@ -221,6 +221,15 @@ namespace Ngo.Runtime.Http
         [GoConst] public static readonly long StateClosed = 4;
 
         [GoFunc]
+        public static string Dir(string name) => name;
+
+        [GoFunc]
+        public static void ServeContent(object w, object r, string name, object modtime, object content) { }
+
+        [GoFunc]
+        public static void ServeFile(object w, object r, string name) { }
+
+        [GoFunc]
         public static object FileServer(object root) => new object();
 
         [GoFunc]

@@ -11,5 +11,11 @@ namespace Ngo.Runtime.Log.Slog
 
         [GoField(Name = "Value")]
         public GoValue Value;
+
+        [GoMethod]
+        public bool Equal(GoAttr other) => Key == other.Key && Value.Equal(other.Value);
+
+        [GoMethod]
+        public string String() => $"{Key}={Value.String()}";
     }
 }

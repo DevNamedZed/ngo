@@ -68,10 +68,24 @@ namespace Ngo.Runtime.Json
         }
 
         // json.NewDecoder(r io.Reader) *Decoder
-        public static Decoder NewDecoder(object? r) { return new Decoder(); }
+        public static Decoder NewDecoder(object? r)
+        {
+            if (r is Io.IGoReader reader)
+            {
+                return new Decoder(reader);
+            }
+            return new Decoder();
+        }
 
         // json.NewEncoder(w io.Writer) *Encoder
-        public static Encoder NewEncoder(object? w) { return new Encoder(); }
+        public static Encoder NewEncoder(object? w)
+        {
+            if (w is Io.IGoWriter writer)
+            {
+                return new Encoder(writer);
+            }
+            return new Encoder();
+        }
 
         // json.HTMLEscape(dst *bytes.Buffer, src []byte)
         public static void HTMLEscape(object? dst, Slice<byte> src) { }
