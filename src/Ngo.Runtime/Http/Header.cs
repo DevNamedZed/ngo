@@ -6,7 +6,7 @@ namespace Ngo.Runtime.Http
     [GoType("named", Name = "Header", Package = "net/http", Underlying = "map[string][]string")]
     public class Header
     {
-        private readonly Map<string, Slice<string>> _values = new Map<string, Slice<string>>();
+        internal readonly Map<string, Slice<string>> _values = new Map<string, Slice<string>>();
 
         [GoMethod]
         public string Get(string key)

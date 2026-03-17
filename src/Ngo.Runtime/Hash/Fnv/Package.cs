@@ -74,7 +74,7 @@ namespace Ngo.Runtime.Hash.Fnv
             _hash = Offset32;
         }
 
-        public (long, object?) Write(Slice<byte> p)
+        public (int, string) Write(Slice<byte> p)
         {
             for (int i = 0; i < p.Len; i++)
             {
@@ -89,7 +89,7 @@ namespace Ngo.Runtime.Hash.Fnv
                     _hash ^= p[i];
                 }
             }
-            return (p.Len, null);
+            return (p.Len, null!);
         }
 
         public Slice<byte> Sum(Slice<byte> b)
@@ -120,7 +120,7 @@ namespace Ngo.Runtime.Hash.Fnv
             _hash = Offset64;
         }
 
-        public (long, object?) Write(Slice<byte> p)
+        public (int, string) Write(Slice<byte> p)
         {
             for (int i = 0; i < p.Len; i++)
             {
@@ -135,7 +135,7 @@ namespace Ngo.Runtime.Hash.Fnv
                     _hash ^= p[i];
                 }
             }
-            return (p.Len, null);
+            return (p.Len, null!);
         }
 
         public Slice<byte> Sum(Slice<byte> b)
@@ -175,7 +175,7 @@ namespace Ngo.Runtime.Hash.Fnv
             _hashLo = OffsetLo128;
         }
 
-        public (long, object?) Write(Slice<byte> p)
+        public (int, string) Write(Slice<byte> p)
         {
             for (int i = 0; i < p.Len; i++)
             {
@@ -194,7 +194,7 @@ namespace Ngo.Runtime.Hash.Fnv
                     _hashLo ^= p[i];
                 }
             }
-            return (p.Len, null);
+            return (p.Len, null!);
         }
 
         private void Multiply128()

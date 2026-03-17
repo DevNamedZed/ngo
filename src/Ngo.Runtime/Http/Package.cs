@@ -134,18 +134,40 @@ namespace Ngo.Runtime.Http
         }
 
         [GoFunc]
-        public static void Handle(string pattern, object handler) { }
+        public static void Handle(string pattern, object handler)
+        {
+            DefaultServeMux.Handle(pattern, handler);
+        }
 
         [GoFunc]
-        public static void HandleFunc(string pattern, Action<ResponseWriter, Request> handler) { }
+        public static void HandleFunc(string pattern, Action<ResponseWriter, Request> handler)
+        {
+            DefaultServeMux.HandleFunc(pattern, handler);
+        }
 
         [GoFunc]
         [return: GoReturn("error")]
-        public static object? ListenAndServe(string addr, object? handler) => null;
+        public static object? ListenAndServe(string addr, object? handler)
+        {
+            var server = new Server
+            {
+                Addr = addr,
+                Handler = handler,
+            };
+            return server.ListenAndServe();
+        }
 
         [GoFunc]
         [return: GoReturn("error")]
-        public static object? ListenAndServeTLS(string addr, string certFile, string keyFile, object? handler) => null;
+        public static object? ListenAndServeTLS(string addr, string certFile, string keyFile, object? handler)
+        {
+            var server = new Server
+            {
+                Addr = addr,
+                Handler = handler,
+            };
+            return server.ListenAndServeTLS(certFile, keyFile);
+        }
 
         [GoFunc]
         [return: GoReturn("*Request", "error")]
@@ -155,13 +177,31 @@ namespace Ngo.Runtime.Http
         }
 
         [GoFunc]
-        public static void Error(ResponseWriter w, string error, long code) { }
+        public static void Error(ResponseWriter w, string error, long code)
+        {
+            w.Header().Set("Content-Type", "text/plain; charset=utf-8");
+            w.Header().Set("X-Content-Type-Options", "nosniff");
+            w.WriteHeader(code);
+            var bytes = System.Text.Encoding.UTF8.GetBytes(error + "\n");
+            w.Write(new Slice<byte>(bytes));
+        }
 
         [GoFunc]
-        public static void Redirect(ResponseWriter w, Request r, string url, long code) { }
+        public static void Redirect(ResponseWriter w, Request r, string url, long code)
+        {
+            w.Header().Set("Location", url);
+            if (code < 300 || code > 399)
+            {
+                code = 302;
+            }
+            w.WriteHeader(code);
+        }
 
         [GoFunc]
-        public static void NotFound(ResponseWriter w, Request r) { }
+        public static void NotFound(ResponseWriter w, Request r)
+        {
+            Error(w, "404 page not found", 404);
+        }
 
         [GoFunc]
         [return: GoReturn("Handler")]
@@ -181,7 +221,13 @@ namespace Ngo.Runtime.Http
         public static string CanonicalHeaderKey(string s) => s;
 
         [GoFunc]
-        public static void SetCookie(ResponseWriter w, Cookie cookie) { }
+        public static void SetCookie(ResponseWriter w, Cookie cookie)
+        {
+            if (cookie != null && !string.IsNullOrEmpty(cookie.Name))
+            {
+                w.Header().Add("Set-Cookie", cookie.String());
+            }
+        }
 
         [GoVar] public static ServeMux DefaultServeMux = new ServeMux();
         [GoConst] public static readonly string TimeFormat = "Mon, 02 Jan 2006 15:04:05 GMT";

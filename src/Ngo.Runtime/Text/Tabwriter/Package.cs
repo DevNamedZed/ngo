@@ -59,7 +59,7 @@ namespace Ngo.Runtime.Text.Tabwriter
 
         [GoMethod]
         [return: GoReturn("int", "error")]
-        public (long, object?) Write(Slice<byte> buf)
+        public (int, string) Write(Slice<byte> buf)
         {
             int totalWritten = 0;
             for (int i = 0; i < buf.Len; i++)
@@ -83,7 +83,7 @@ namespace Ngo.Runtime.Text.Tabwriter
                 }
                 totalWritten++;
             }
-            return (totalWritten, null);
+            return (totalWritten, null!);
         }
 
         [GoMethod]
@@ -186,7 +186,7 @@ namespace Ngo.Runtime.Text.Tabwriter
                 }
                 sb.Append('\n');
 
-                var bytes = Encoding.UTF8.GetBytes(sb.ToString());
+                var bytes = System.Text.Encoding.UTF8.GetBytes(sb.ToString());
                 _output.Write(new Slice<byte>(bytes));
             }
 

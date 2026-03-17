@@ -108,13 +108,13 @@ namespace Ngo.Runtime.Hash.Crc64
             _crc = 0xFFFFFFFFFFFFFFFF;
         }
 
-        public (long, object?) Write(Slice<byte> p)
+        public (int, string) Write(Slice<byte> p)
         {
             for (int i = 0; i < p.Len; i++)
             {
                 _crc = _table.Entries[(byte)(_crc ^ p[i])] ^ (_crc >> 8);
             }
-            return (p.Len, null);
+            return (p.Len, null!);
         }
 
         public Slice<byte> Sum(Slice<byte> b)
