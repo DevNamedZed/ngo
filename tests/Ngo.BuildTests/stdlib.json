@@ -12,12 +12,11 @@
     {
       "path": "arena",
       "impl": "csharp",
-      "reason": "Go runtime memory arena \u2014 not applicable"
+      "reason": "Go runtime memory arena — not applicable"
     },
     {
       "path": "bufio",
-      "impl": "csharp",
-      "reason": "I/O interfaces bridge to .NET streams"
+      "impl": "go"
     },
     {
       "path": "builtin",
@@ -26,8 +25,7 @@
     },
     {
       "path": "bytes",
-      "impl": "csharp",
-      "reason": "UTF-16 string bridge \u2014 core ops depend on .NET string representation"
+      "impl": "go"
     },
     {
       "path": "cmp",
@@ -67,8 +65,7 @@
     },
     {
       "path": "context",
-      "impl": "csharp",
-      "reason": "maps to .NET CancellationToken"
+      "impl": "go"
     },
     {
       "path": "crypto",
@@ -81,7 +78,7 @@
     {
       "path": "crypto/boring",
       "impl": "csharp",
-      "reason": "BoringCrypto build variant \u2014 not applicable"
+      "reason": "BoringCrypto build variant — not applicable"
     },
     {
       "path": "crypto/cipher",
@@ -121,8 +118,7 @@
     },
     {
       "path": "crypto/rand",
-      "impl": "csharp",
-      "reason": "OS entropy source via .NET RandomNumberGenerator"
+      "impl": "go"
     },
     {
       "path": "crypto/rc4",
@@ -150,33 +146,28 @@
     },
     {
       "path": "crypto/tls",
-      "impl": "csharp",
-      "reason": "TLS via .NET SslStream"
+      "impl": "go"
     },
     {
       "path": "crypto/tls/fipsonly",
       "impl": "csharp",
-      "reason": "FIPS build variant \u2014 not applicable"
+      "reason": "FIPS build variant — not applicable"
     },
     {
       "path": "crypto/x509",
-      "impl": "csharp",
-      "reason": "X.509 via .NET X509Certificate2"
+      "impl": "go"
     },
     {
       "path": "crypto/x509/pkix",
-      "impl": "csharp",
-      "reason": "depends on crypto/x509 bridge"
+      "impl": "go"
     },
     {
       "path": "database/sql",
-      "impl": "csharp",
-      "reason": "database driver bridge to .NET"
+      "impl": "go"
     },
     {
       "path": "database/sql/driver",
-      "impl": "csharp",
-      "reason": "database driver bridge to .NET"
+      "impl": "go"
     },
     {
       "path": "debug/buildinfo",
@@ -208,8 +199,7 @@
     },
     {
       "path": "embed",
-      "impl": "csharp",
-      "reason": "compiler-integrated embedding"
+      "impl": "go"
     },
     {
       "path": "encoding",
@@ -265,88 +255,71 @@
     },
     {
       "path": "expvar",
-      "impl": "csharp",
-      "reason": "HTTP handler bridge"
+      "impl": "go"
     },
     {
       "path": "flag",
-      "impl": "csharp",
-      "reason": "os.Args bridge"
+      "impl": "go"
     },
     {
       "path": "fmt",
-      "impl": "csharp",
-      "reason": "format verbs need reflect + .NET console I/O"
+      "impl": "go"
     },
     {
       "path": "go/ast",
-      "impl": "csharp",
-      "reason": "Go tooling \u2014 Go's own AST"
+      "impl": "go"
     },
     {
       "path": "go/build",
-      "impl": "csharp",
-      "reason": "Go tooling \u2014 build system"
+      "impl": "go"
     },
     {
       "path": "go/build/constraint",
-      "impl": "csharp",
-      "reason": "Go tooling \u2014 build constraints"
+      "impl": "go"
     },
     {
       "path": "go/constant",
-      "impl": "csharp",
-      "reason": "Go tooling \u2014 constant evaluation"
+      "impl": "go"
     },
     {
       "path": "go/doc",
-      "impl": "csharp",
-      "reason": "Go tooling \u2014 documentation"
+      "impl": "go"
     },
     {
       "path": "go/doc/comment",
-      "impl": "csharp",
-      "reason": "Go tooling \u2014 doc comments"
+      "impl": "go"
     },
     {
       "path": "go/format",
-      "impl": "csharp",
-      "reason": "Go tooling \u2014 source formatting"
+      "impl": "go"
     },
     {
       "path": "go/importer",
-      "impl": "csharp",
-      "reason": "Go tooling \u2014 import resolution"
+      "impl": "go"
     },
     {
       "path": "go/parser",
-      "impl": "csharp",
-      "reason": "Go tooling \u2014 parser"
+      "impl": "go"
     },
     {
       "path": "go/printer",
-      "impl": "csharp",
-      "reason": "Go tooling \u2014 source printing"
+      "impl": "go"
     },
     {
       "path": "go/scanner",
-      "impl": "csharp",
-      "reason": "Go tooling \u2014 lexer"
+      "impl": "go"
     },
     {
       "path": "go/token",
-      "impl": "csharp",
-      "reason": "Go tooling \u2014 token types"
+      "impl": "go"
     },
     {
       "path": "go/types",
-      "impl": "csharp",
-      "reason": "Go tooling \u2014 type checker"
+      "impl": "go"
     },
     {
       "path": "go/version",
-      "impl": "csharp",
-      "reason": "Go tooling \u2014 version comparison"
+      "impl": "go"
     },
     {
       "path": "hash",
@@ -414,18 +387,15 @@
     },
     {
       "path": "io",
-      "impl": "csharp",
-      "reason": "I/O interfaces bridge to .NET streams"
+      "impl": "go"
     },
     {
       "path": "io/fs",
-      "impl": "csharp",
-      "reason": "filesystem interfaces bridge to .NET"
+      "impl": "go"
     },
     {
       "path": "io/ioutil",
-      "impl": "csharp",
-      "reason": "delegates to io/os bridges"
+      "impl": "go"
     },
     {
       "path": "iter",
@@ -433,18 +403,15 @@
     },
     {
       "path": "log",
-      "impl": "csharp",
-      "reason": "console I/O bridge"
+      "impl": "go"
     },
     {
       "path": "log/slog",
-      "impl": "csharp",
-      "reason": "console I/O bridge"
+      "impl": "go"
     },
     {
       "path": "log/syslog",
-      "impl": "csharp",
-      "reason": "OS syslog bridge"
+      "impl": "go"
     },
     {
       "path": "maps",
@@ -452,8 +419,7 @@
     },
     {
       "path": "math",
-      "impl": "csharp",
-      "reason": "math intrinsics via System.Math"
+      "impl": "go"
     },
     {
       "path": "math/big",
@@ -489,48 +455,39 @@
     },
     {
       "path": "net",
-      "impl": "csharp",
-      "reason": "networking via .NET System.Net.Sockets"
+      "impl": "go"
     },
     {
       "path": "net/http",
-      "impl": "csharp",
-      "reason": "HTTP via .NET HttpClient/HttpListener"
+      "impl": "go"
     },
     {
       "path": "net/http/cgi",
-      "impl": "csharp",
-      "reason": "depends on net/http bridge"
+      "impl": "go"
     },
     {
       "path": "net/http/cookiejar",
-      "impl": "csharp",
-      "reason": "depends on net/http bridge"
+      "impl": "go"
     },
     {
       "path": "net/http/fcgi",
-      "impl": "csharp",
-      "reason": "depends on net/http bridge"
+      "impl": "go"
     },
     {
       "path": "net/http/httptest",
-      "impl": "csharp",
-      "reason": "depends on net/http bridge"
+      "impl": "go"
     },
     {
       "path": "net/http/httptrace",
-      "impl": "csharp",
-      "reason": "depends on net/http bridge"
+      "impl": "go"
     },
     {
       "path": "net/http/httputil",
-      "impl": "csharp",
-      "reason": "depends on net/http bridge"
+      "impl": "go"
     },
     {
       "path": "net/http/pprof",
-      "impl": "csharp",
-      "reason": "depends on net/http + runtime bridge"
+      "impl": "go"
     },
     {
       "path": "net/mail",
@@ -542,23 +499,19 @@
     },
     {
       "path": "net/rpc",
-      "impl": "csharp",
-      "reason": "networking bridge"
+      "impl": "go"
     },
     {
       "path": "net/rpc/jsonrpc",
-      "impl": "csharp",
-      "reason": "networking bridge"
+      "impl": "go"
     },
     {
       "path": "net/smtp",
-      "impl": "csharp",
-      "reason": "networking bridge"
+      "impl": "go"
     },
     {
       "path": "net/textproto",
-      "impl": "csharp",
-      "reason": "networking bridge"
+      "impl": "go"
     },
     {
       "path": "net/url",
@@ -566,23 +519,19 @@
     },
     {
       "path": "os",
-      "impl": "csharp",
-      "reason": "file I/O, process, env via .NET System.IO/Environment"
+      "impl": "go"
     },
     {
       "path": "os/exec",
-      "impl": "csharp",
-      "reason": "process execution via .NET Process"
+      "impl": "go"
     },
     {
       "path": "os/signal",
-      "impl": "csharp",
-      "reason": "signal handling via .NET"
+      "impl": "go"
     },
     {
       "path": "os/user",
-      "impl": "csharp",
-      "reason": "user info via .NET Environment"
+      "impl": "go"
     },
     {
       "path": "path",
@@ -590,18 +539,16 @@
     },
     {
       "path": "path/filepath",
-      "impl": "csharp",
-      "reason": "OS path separator via .NET Path"
+      "impl": "go"
     },
     {
       "path": "plugin",
       "impl": "csharp",
-      "reason": "Go plugin system \u2014 not applicable to .NET"
+      "reason": "Go plugin system — not applicable to .NET"
     },
     {
       "path": "reflect",
-      "impl": "csharp",
-      "reason": "runtime type metadata via .NET reflection"
+      "impl": "go"
     },
     {
       "path": "regexp",
@@ -613,53 +560,49 @@
     },
     {
       "path": "runtime",
-      "impl": "csharp",
-      "reason": "runtime internals via .NET CLR"
+      "impl": "go"
     },
     {
       "path": "runtime/asan",
       "impl": "csharp",
-      "reason": "address sanitizer \u2014 not applicable"
+      "reason": "address sanitizer — not applicable"
     },
     {
       "path": "runtime/cgo",
-      "impl": "csharp",
-      "reason": "C interop \u2014 replaced by .NET interop"
+      "impl": "go"
     },
     {
       "path": "runtime/coverage",
       "impl": "csharp",
-      "reason": "coverage \u2014 runtime internal"
+      "reason": "coverage — runtime internal"
     },
     {
       "path": "runtime/debug",
-      "impl": "csharp",
-      "reason": "runtime debug internals"
+      "impl": "go"
     },
     {
       "path": "runtime/metrics",
       "impl": "csharp",
-      "reason": "runtime metrics \u2014 .NET specific"
+      "reason": "runtime metrics — .NET specific"
     },
     {
       "path": "runtime/msan",
       "impl": "csharp",
-      "reason": "memory sanitizer \u2014 not applicable"
+      "reason": "memory sanitizer — not applicable"
     },
     {
       "path": "runtime/pprof",
-      "impl": "csharp",
-      "reason": "profiling \u2014 .NET specific"
+      "impl": "go"
     },
     {
       "path": "runtime/race",
       "impl": "csharp",
-      "reason": "race detector \u2014 not applicable"
+      "reason": "race detector — not applicable"
     },
     {
       "path": "runtime/trace",
       "impl": "csharp",
-      "reason": "tracing \u2014 .NET specific"
+      "reason": "tracing — .NET specific"
     },
     {
       "path": "slices",
@@ -671,58 +614,48 @@
     },
     {
       "path": "strconv",
-      "impl": "csharp",
-      "reason": "UTF-16 string bridge"
+      "impl": "go"
     },
     {
       "path": "strings",
-      "impl": "csharp",
-      "reason": "UTF-16 string bridge \u2014 core ops depend on .NET string representation"
+      "impl": "go"
     },
     {
       "path": "sync",
-      "impl": "csharp",
-      "reason": "threading primitives via .NET Monitor/Mutex/etc"
+      "impl": "go"
     },
     {
       "path": "sync/atomic",
-      "impl": "csharp",
-      "reason": "atomic ops via .NET Interlocked"
+      "impl": "go"
     },
     {
       "path": "syscall",
-      "impl": "csharp",
-      "reason": "system calls via .NET P/Invoke"
+      "impl": "go"
     },
     {
       "path": "syscall/js",
       "impl": "csharp",
-      "reason": "WebAssembly JS interop \u2014 not applicable"
+      "reason": "WebAssembly JS interop — not applicable"
     },
     {
       "path": "testing",
-      "impl": "csharp",
-      "reason": "test framework bridge"
+      "impl": "go"
     },
     {
       "path": "testing/fstest",
-      "impl": "csharp",
-      "reason": "depends on testing bridge"
+      "impl": "go"
     },
     {
       "path": "testing/iotest",
-      "impl": "csharp",
-      "reason": "depends on testing/io bridges"
+      "impl": "go"
     },
     {
       "path": "testing/quick",
-      "impl": "csharp",
-      "reason": "depends on testing/reflect bridges"
+      "impl": "go"
     },
     {
       "path": "testing/slogtest",
-      "impl": "csharp",
-      "reason": "depends on testing/slog bridges"
+      "impl": "go"
     },
     {
       "path": "text/scanner",
@@ -742,8 +675,7 @@
     },
     {
       "path": "time",
-      "impl": "csharp",
-      "reason": "system clock via .NET DateTime/TimeSpan"
+      "impl": "go"
     },
     {
       "path": "time/tzdata",
@@ -764,7 +696,7 @@
     {
       "path": "unsafe",
       "impl": "csharp",
-      "reason": "language primitive \u2014 compiler intrinsic"
+      "reason": "language primitive — compiler intrinsic"
     }
   ]
 }

@@ -29,11 +29,17 @@ namespace Ngo.Runtime.Os
         public long SizeValue { get; }
         public bool IsDirValue { get; }
 
+        private readonly System.DateTimeOffset _modTime;
+
         public GoFileInfo(string name, long size, bool isDir)
+            : this(name, size, isDir, System.DateTimeOffset.MinValue) { }
+
+        public GoFileInfo(string name, long size, bool isDir, System.DateTimeOffset modTime)
         {
             NameValue = name;
             SizeValue = size;
             IsDirValue = isDir;
+            _modTime = modTime;
         }
 
         [GoMethod]
@@ -54,11 +60,44 @@ namespace Ngo.Runtime.Os
         }
 
         [GoMethod]
-        public object ModTime() => new object(); // stub: returns time.Time
+        public object ModTime() => new Time.GoTimeValue(_modTime);
 
         [GoMethod]
-        public object Sys() => new object(); // stub
+        public object? Sys() => null;
 
         public override string ToString() => NameValue;
+
+        internal static GoFileInfo FromPath(string path)
+        {
+            bool isDir = System.IO.Directory.Exists(path);
+            long size = 0;
+            System.DateTimeOffset modTime = System.DateTimeOffset.MinValue;
+            if (!isDir && System.IO.File.Exists(path))
+            {
+                try
+                {
+                    var info = new System.IO.FileInfo(path);
+                    size = info.Length;
+                    modTime = new System.DateTimeOffset(info.LastWriteTimeUtc, System.TimeSpan.Zero);
+                }
+                catch
+                {
+                    // Ignore errors reading metadata
+                }
+            }
+            else if (isDir)
+            {
+                try
+                {
+                    var info = new System.IO.DirectoryInfo(path);
+                    modTime = new System.DateTimeOffset(info.LastWriteTimeUtc, System.TimeSpan.Zero);
+                }
+                catch
+                {
+                    // Ignore errors reading metadata
+                }
+            }
+            return new GoFileInfo(System.IO.Path.GetFileName(path), size, isDir, modTime);
+        }
     }
 }

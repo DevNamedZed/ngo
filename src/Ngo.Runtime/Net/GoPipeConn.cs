@@ -1,33 +1,126 @@
-// -----------------------------------------------------------------------
-// <copyright file="GoPipeConn.cs" company="Ziad">
-//  Copyright 2016 Ziad
-//
-//  Licensed under the Apache License, Version 2.0 (the "License");
-//  you may not use this file except in compliance with the License.
-//  You may obtain a copy of the License at
-//
-//  http://www.apache.org/licenses/LICENSE-2.0
-//
-//  Unless required by applicable law or agreed to in writing, software
-//  distributed under the License is distributed on an "AS IS" BASIS,
-//  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-//  See the License for the specific language governing permissions and
-//  limitations under the License.
-// </copyright>
-// -----------------------------------------------------------------------
+using System;
+using System.Collections.Concurrent;
+using System.Threading;
 
 namespace Ngo.Runtime.Net
 {
-    // Pipe connection stub
     internal class GoPipeConn : IGoNetConn
     {
-        public (int, string) Read(Slice<byte> b) => (0, "EOF");
-        public (int, string) Write(Slice<byte> b) => (b.Len, null!);
-        public string Close() => null!;
-        public IGoNetAddr LocalAddr() => new GoTCPAddr();
-        public IGoNetAddr RemoteAddr() => new GoTCPAddr();
+        private readonly BlockingCollection<byte[]> _readQueue;
+        private readonly BlockingCollection<byte[]> _writeQueue;
+        private byte[]? _currentChunk;
+        private int _currentOffset;
+        private volatile bool _closed;
+        private readonly string _name;
+
+        internal GoPipeConn(BlockingCollection<byte[]> readQueue, BlockingCollection<byte[]> writeQueue, string name)
+        {
+            _readQueue = readQueue;
+            _writeQueue = writeQueue;
+            _name = name;
+        }
+
+        public (int, string) Read(Slice<byte> b)
+        {
+            if (_closed)
+            {
+                return (0, "EOF");
+            }
+
+            int totalRead = 0;
+            while (totalRead < b.Len)
+            {
+                if (_currentChunk == null || _currentOffset >= _currentChunk.Length)
+                {
+                    try
+                    {
+                        if (!_readQueue.TryTake(out _currentChunk, 100))
+                        {
+                            if (_closed)
+                            {
+                                return totalRead > 0 ? (totalRead, null!) : (0, "EOF");
+                            }
+                            if (totalRead > 0)
+                            {
+                                return (totalRead, null!);
+                            }
+                            // Block waiting
+                            _currentChunk = _readQueue.Take();
+                        }
+                        _currentOffset = 0;
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        return totalRead > 0 ? (totalRead, null!) : (0, "EOF");
+                    }
+                }
+
+                if (_currentChunk != null)
+                {
+                    int available = _currentChunk.Length - _currentOffset;
+                    int toCopy = global::System.Math.Min(available, b.Len - totalRead);
+                    for (int i = 0; i < toCopy; i++)
+                    {
+                        b[totalRead + i] = _currentChunk[_currentOffset + i];
+                    }
+                    _currentOffset += toCopy;
+                    totalRead += toCopy;
+                }
+            }
+            return (totalRead, null!);
+        }
+
+        public (int, string) Write(Slice<byte> b)
+        {
+            if (_closed)
+            {
+                return (0, "io: write on closed pipe");
+            }
+
+            var chunk = new byte[b.Len];
+            for (int i = 0; i < b.Len; i++)
+            {
+                chunk[i] = b[i];
+            }
+
+            try
+            {
+                _writeQueue.Add(chunk);
+                return (b.Len, null!);
+            }
+            catch (InvalidOperationException)
+            {
+                return (0, "io: write on closed pipe");
+            }
+        }
+
+        public string Close()
+        {
+            _closed = true;
+            _readQueue.CompleteAdding();
+            _writeQueue.CompleteAdding();
+            return null!;
+        }
+
+        public IGoNetAddr LocalAddr() => new PipeAddr();
+        public IGoNetAddr RemoteAddr() => new PipeAddr();
         public string SetDeadline(object t) => null!;
         public string SetReadDeadline(object t) => null!;
         public string SetWriteDeadline(object t) => null!;
+
+        internal static (GoPipeConn, GoPipeConn) CreatePair()
+        {
+            var queueA = new BlockingCollection<byte[]>(64);
+            var queueB = new BlockingCollection<byte[]>(64);
+            var connA = new GoPipeConn(queueB, queueA, "pipe-a");
+            var connB = new GoPipeConn(queueA, queueB, "pipe-b");
+            return (connA, connB);
+        }
+    }
+
+    internal class PipeAddr : IGoNetAddr
+    {
+        public string Network() => "pipe";
+        public string String() => "pipe";
     }
 }

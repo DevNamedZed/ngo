@@ -1,5 +1,4 @@
 using System;
-using System.Security.Cryptography;
 using Ngo.Runtime.Discovery;
 
 namespace Ngo.Runtime.Crypto.Ed25519
@@ -30,7 +29,8 @@ namespace Ngo.Runtime.Crypto.Ed25519
         [return: GoReturn("ed25519.PublicKey", "ed25519.PrivateKey", "error")]
         public static (Slice<byte>, Slice<byte>, string) GenerateKey(object? rand)
         {
-            throw new NotImplementedException("crypto/ed25519: Ed25519 not yet available in this .NET version");
+            throw new PlatformNotSupportedException(
+                "crypto/ed25519: Ed25519 is not available in this .NET runtime — requires EdDSA API");
         }
 
         // ed25519.Sign(privateKey PrivateKey, message []byte) []byte
@@ -38,14 +38,16 @@ namespace Ngo.Runtime.Crypto.Ed25519
         [return: GoReturn("[]byte")]
         public static Slice<byte> Sign([GoParam("ed25519.PrivateKey")] Slice<byte> privateKey, Slice<byte> message)
         {
-            throw new NotImplementedException("crypto/ed25519: Ed25519 not yet available in this .NET version");
+            throw new PlatformNotSupportedException(
+                "crypto/ed25519: Ed25519 is not available in this .NET runtime — requires EdDSA API");
         }
 
         // ed25519.Verify(publicKey PublicKey, message, sig []byte) bool
         [GoFunc]
         public static bool Verify([GoParam("ed25519.PublicKey")] Slice<byte> publicKey, Slice<byte> message, Slice<byte> sig)
         {
-            throw new NotImplementedException("crypto/ed25519: Ed25519 not yet available in this .NET version");
+            throw new PlatformNotSupportedException(
+                "crypto/ed25519: Ed25519 is not available in this .NET runtime — requires EdDSA API");
         }
 
         // ed25519.NewKeyFromSeed(seed []byte) PrivateKey
@@ -53,7 +55,8 @@ namespace Ngo.Runtime.Crypto.Ed25519
         [return: GoReturn("ed25519.PrivateKey")]
         public static Slice<byte> NewKeyFromSeed(Slice<byte> seed)
         {
-            throw new NotImplementedException("crypto/ed25519: Ed25519 not yet available in this .NET version");
+            throw new PlatformNotSupportedException(
+                "crypto/ed25519: Ed25519 is not available in this .NET runtime — requires EdDSA API");
         }
     }
 }

@@ -33,6 +33,16 @@ namespace Ngo.Compiler.Emit.Builder
         Type CreateType();
 
         /// <summary>
+        /// Define a P/Invoke method (extern function imported from a native library).
+        /// The CLR handles the native transition — no IL body needed.
+        /// </summary>
+        MethodInfo DefinePInvokeMethod(string name, string dllName, string entryPoint,
+            MethodAttributes attrs, CallingConventions callingConvention,
+            Type returnType, Type[] paramTypes,
+            System.Runtime.InteropServices.CallingConvention nativeCallConv,
+            System.Runtime.InteropServices.CharSet charset);
+
+        /// <summary>
         /// Returns this type as a System.Type for use in TypeMapper, CilWriter.Emit, etc.
         /// Live: returns the wrapped TypeBuilder. Ngo: returns a named proxy type.
         /// </summary>

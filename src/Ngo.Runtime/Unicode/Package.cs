@@ -103,7 +103,17 @@ namespace Ngo.Runtime.Unicode
         [return: GoReturn("bool")]
         public static bool In([GoParam("rune")] long r, params object[] ranges)
         {
-            // stub: unicode.In(r rune, ranges ...*RangeTable) bool
+            if (ranges == null)
+            {
+                return false;
+            }
+            foreach (var range in ranges)
+            {
+                if (Is(range, r))
+                {
+                    return true;
+                }
+            }
             return false;
         }
 
@@ -111,7 +121,37 @@ namespace Ngo.Runtime.Unicode
         [return: GoReturn("bool")]
         public static bool Is(object? rangeTab, [GoParam("rune")] long r)
         {
-            // stub: unicode.Is(rangeTab *RangeTable, r rune) bool
+            if (rangeTab is RangeTable table)
+            {
+                if (!table.R16.IsNil)
+                {
+                    for (int i = 0; i < table.R16.Len; i++)
+                    {
+                        var range = table.R16[i];
+                        if (r >= range.Lo && r <= range.Hi)
+                        {
+                            if (range.Stride == 1 || (r - range.Lo) % range.Stride == 0)
+                            {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                if (!table.R32.IsNil)
+                {
+                    for (int i = 0; i < table.R32.Len; i++)
+                    {
+                        var range = table.R32[i];
+                        if (r >= range.Lo && r <= range.Hi)
+                        {
+                            if (range.Stride == 1 || (r - range.Lo) % range.Stride == 0)
+                            {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
             return false;
         }
 
@@ -119,7 +159,16 @@ namespace Ngo.Runtime.Unicode
         [return: GoReturn("bool")]
         public static bool IsOneOf(object? ranges, [GoParam("rune")] long r)
         {
-            // stub: unicode.IsOneOf(ranges []*RangeTable, r rune) bool
+            if (ranges is Slice<object?> rangeSlice)
+            {
+                for (int i = 0; i < rangeSlice.Len; i++)
+                {
+                    if (Is(rangeSlice[i], r))
+                    {
+                        return true;
+                    }
+                }
+            }
             return false;
         }
 
@@ -127,7 +176,23 @@ namespace Ngo.Runtime.Unicode
         [return: GoReturn("rune")]
         public static long SimpleFold([GoParam("rune")] long r)
         {
-            // stub: unicode.SimpleFold(r rune) rune
+            char c = (char)r;
+            if (char.IsUpper(c))
+            {
+                char lower = char.ToLowerInvariant(c);
+                if (lower != c)
+                {
+                    return lower;
+                }
+            }
+            else if (char.IsLower(c))
+            {
+                char upper = char.ToUpperInvariant(c);
+                if (upper != c)
+                {
+                    return upper;
+                }
+            }
             return r;
         }
 

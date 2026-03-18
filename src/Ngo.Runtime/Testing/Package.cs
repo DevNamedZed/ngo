@@ -24,11 +24,60 @@ namespace Ngo.Runtime.Testing
     [GoPackage("testing")]
     public static class Package
     {
-        [GoFunc]
-        public static bool Verbose() => false;
+        private static bool? _verbose;
+        private static bool? _short;
 
         [GoFunc]
-        public static bool Short() => false;
+        public static bool Verbose()
+        {
+            if (_verbose.HasValue)
+            {
+                return _verbose.Value;
+            }
+            // Check environment variable (set by test runner)
+            string? envVerbose = System.Environment.GetEnvironmentVariable("NGO_TEST_VERBOSE");
+            if (envVerbose == "1" || envVerbose == "true")
+            {
+                _verbose = true;
+                return true;
+            }
+            // Check command line args for -test.v
+            foreach (var arg in System.Environment.GetCommandLineArgs())
+            {
+                if (arg == "-test.v" || arg == "-v")
+                {
+                    _verbose = true;
+                    return true;
+                }
+            }
+            _verbose = false;
+            return false;
+        }
+
+        [GoFunc]
+        public static bool Short()
+        {
+            if (_short.HasValue)
+            {
+                return _short.Value;
+            }
+            string? envShort = System.Environment.GetEnvironmentVariable("NGO_TEST_SHORT");
+            if (envShort == "1" || envShort == "true")
+            {
+                _short = true;
+                return true;
+            }
+            foreach (var arg in System.Environment.GetCommandLineArgs())
+            {
+                if (arg == "-test.short" || arg == "-short")
+                {
+                    _short = true;
+                    return true;
+                }
+            }
+            _short = false;
+            return false;
+        }
 
         [GoFunc]
         [return: GoReturn("*testing.M")]

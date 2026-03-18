@@ -88,15 +88,93 @@ namespace Ngo.Runtime.Json
         }
 
         // json.HTMLEscape(dst *bytes.Buffer, src []byte)
-        public static void HTMLEscape(object? dst, Slice<byte> src) { }
+        public static void HTMLEscape(object? dst, Slice<byte> src)
+        {
+            if (dst is Bytes.Buffer buf)
+            {
+                for (int i = 0; i < src.Len; i++)
+                {
+                    byte b = src[i];
+                    switch (b)
+                    {
+                        case (byte)'<':
+                            buf.WriteString("\\u003c");
+                            break;
+                        case (byte)'>':
+                            buf.WriteString("\\u003e");
+                            break;
+                        case (byte)'&':
+                            buf.WriteString("\\u0026");
+                            break;
+                        case 0xE2:
+                            if (i + 2 < src.Len && src[i + 1] == 0x80 && (src[i + 2] == 0xA8 || src[i + 2] == 0xA9))
+                            {
+                                string escape = src[i + 2] == 0xA8 ? "\\u2028" : "\\u2029";
+                                buf.WriteString(escape);
+                                i += 2;
+                            }
+                            else
+                            {
+                                buf.WriteByte(b);
+                            }
+                            break;
+                        default:
+                            buf.WriteByte(b);
+                            break;
+                    }
+                }
+            }
+        }
 
         // json.Compact(dst *bytes.Buffer, src []byte) error
         [return: GoReturn("error")]
-        public static object? Compact(object? dst, Slice<byte> src) { return null; }
+        public static object? Compact(object? dst, Slice<byte> src)
+        {
+            if (dst is not Bytes.Buffer buf)
+            {
+                return "json: invalid buffer";
+            }
+            var json = global::System.Text.Encoding.UTF8.GetString(src.AsSpan());
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(json);
+                var compacted = System.Text.Json.JsonSerializer.Serialize(doc);
+                buf.WriteString(compacted);
+                return null;
+            }
+            catch (Exception ex)
+            {
+                return ex.Message;
+            }
+        }
 
         // json.Indent(dst *bytes.Buffer, src []byte, prefix, indent string) error
         [return: GoReturn("error")]
-        public static object? Indent(object? dst, Slice<byte> src, string prefix, string indent) { return null; }
+        public static object? Indent(object? dst, Slice<byte> src, string prefix, string indent)
+        {
+            if (dst is not Bytes.Buffer buf)
+            {
+                return "json: invalid buffer";
+            }
+            var json = global::System.Text.Encoding.UTF8.GetString(src.AsSpan());
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(json);
+                var options = new System.Text.Json.JsonWriterOptions { Indented = true };
+                using var stream = new System.IO.MemoryStream();
+                using (var writer = new System.Text.Json.Utf8JsonWriter(stream, options))
+                {
+                    doc.WriteTo(writer);
+                }
+                var indented = global::System.Text.Encoding.UTF8.GetString(stream.ToArray());
+                buf.WriteString(indented);
+                return null;
+            }
+            catch (Exception ex)
+            {
+                return ex.Message;
+            }
+        }
 
         // json.Unmarshal(data []byte, v interface{}) error
         public static object? Unmarshal(Slice<byte> data, object v)

@@ -44,8 +44,26 @@ namespace Ngo.Runtime.Log.Slog
         [GoMethod]
         public void Add([GoParam("any")] params object[] args)
         {
-            // Stub: in Go this converts key-value pairs to Attrs
             _attrs ??= new System.Collections.Generic.List<GoAttr>();
+            // Convert key-value pairs to Attrs: Add("key1", value1, "key2", value2, ...)
+            int i = 0;
+            while (i < args.Length)
+            {
+                if (args[i] is GoAttr attr)
+                {
+                    _attrs.Add(attr);
+                    i++;
+                }
+                else if (args[i] is string key && i + 1 < args.Length)
+                {
+                    _attrs.Add(new GoAttr { Key = key, Value = new GoValue(args[i + 1]) });
+                    i += 2;
+                }
+                else
+                {
+                    i++;
+                }
+            }
         }
     }
 }

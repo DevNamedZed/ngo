@@ -18,11 +18,21 @@ namespace Ngo.Runtime.Net
         {
             try
             {
+                if (network == "unix" || network == "unixpacket")
+                {
+                    var (listener, err) = GoUnixConn.Listen(address);
+                    if (err != null)
+                    {
+                        return (null, err);
+                    }
+                    return (listener, null);
+                }
+
                 var parts = address.Split(':');
                 int port = parts.Length > 1 ? int.Parse(parts[^1]) : 0;
-                var listener = new TcpListener(IPAddress.Any, port);
-                listener.Start();
-                return (new GoTCPListener(listener), null);
+                var listener2 = new TcpListener(IPAddress.Any, port);
+                listener2.Start();
+                return (new GoTCPListener(listener2), null);
             }
             catch (Exception ex)
             {
@@ -36,6 +46,16 @@ namespace Ngo.Runtime.Net
         {
             try
             {
+                if (network == "unix" || network == "unixpacket")
+                {
+                    var (conn, err) = GoUnixConn.Dial(address);
+                    if (err != null)
+                    {
+                        return (null, err);
+                    }
+                    return (conn, null);
+                }
+
                 var parts = address.Split(':');
                 string host = parts.Length > 1 ? string.Join(":", parts[..^1]) : "localhost";
                 int port = parts.Length > 1 ? int.Parse(parts[^1]) : 0;
@@ -112,7 +132,8 @@ namespace Ngo.Runtime.Net
         [return: GoReturn("Conn", "Conn")]
         public static (object, object) Pipe()
         {
-            return (new GoPipeConn(), new GoPipeConn());
+            var (connA, connB) = GoPipeConn.CreatePair();
+            return (connA, connB);
         }
 
         [GoFunc]

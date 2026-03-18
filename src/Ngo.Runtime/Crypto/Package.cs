@@ -105,14 +105,47 @@ namespace Ngo.Runtime.Crypto
 
         [GoMethod]
         [return: GoReturn("hash.Hash")]
-        public object? New() => null;
+        public object? New()
+        {
+            return Value switch
+            {
+                Package.SHA1 => Ngo.Runtime.Crypto.Sha1.Package.New(),
+                Package.SHA256 => Ngo.Runtime.Sha256.Package.New(),
+                Package.SHA512 => Ngo.Runtime.Crypto.Sha512.Package.New(),
+                Package.SHA384 => Ngo.Runtime.Crypto.Sha512.Package.New384(),
+                Package.MD5 => Ngo.Runtime.Md5.Package.New(),
+                _ => null,
+            };
+        }
 
         [GoMethod]
         [return: GoReturn("int")]
-        public long Size() => 0;
+        public long Size()
+        {
+            return Value switch
+            {
+                Package.MD5 => 16,
+                Package.SHA1 => 20,
+                Package.SHA224 => 28,
+                Package.SHA256 => 32,
+                Package.SHA384 => 48,
+                Package.SHA512 => 64,
+                Package.SHA512_224 => 28,
+                Package.SHA512_256 => 32,
+                _ => 0,
+            };
+        }
 
         [GoMethod]
-        public bool Available() => false;
+        public bool Available()
+        {
+            return Value switch
+            {
+                Package.MD5 or Package.SHA1 or Package.SHA224 or Package.SHA256 or
+                Package.SHA384 or Package.SHA512 or Package.SHA512_224 or Package.SHA512_256 => true,
+                _ => false,
+            };
+        }
 
         [GoMethod]
         [return: GoReturn("int")]

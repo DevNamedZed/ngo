@@ -100,5 +100,16 @@ namespace Ngo.Compiler.Emit.Builder
             var declName = declaration.Name;
             _overrides.Add(new NgoMethodOverride(bodyName, declType, declName));
         }
+
+        public MethodInfo DefinePInvokeMethod(string name, string dllName, string entryPoint,
+            MethodAttributes attrs, CallingConventions callingConvention,
+            Type returnType, Type[] paramTypes,
+            System.Runtime.InteropServices.CallingConvention nativeCallConv,
+            System.Runtime.InteropServices.CharSet charset)
+        {
+            // NgoTypeBuilder is for archive serialization — P/Invoke is not serialized
+            // Return a proxy MethodInfo
+            return new NgoProxyMethodInfo(_proxyType, name);
+        }
     }
 }

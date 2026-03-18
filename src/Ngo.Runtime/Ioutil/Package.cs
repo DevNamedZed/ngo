@@ -70,9 +70,12 @@ namespace Ngo.Runtime.Ioutil
             try
             {
                 var entries = Directory.GetFileSystemEntries(dirname);
+                Array.Sort(entries, StringComparer.Ordinal);
                 var infos = new object[entries.Length];
                 for (int i = 0; i < entries.Length; i++)
-                    infos[i] = new object(); // stub FileInfo
+                {
+                    infos[i] = Os.GoFileInfo.FromPath(entries[i]);
+                }
                 return (new Slice<object>(infos), null);
             }
             catch (Exception ex)

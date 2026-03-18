@@ -32,19 +32,14 @@ namespace Ngo.Runtime.Strings
         public (long, object?) WriteString([GoParam("io.Writer")] object w, string s)
         {
             var replaced = Replace(s);
-            // Stub: write to the writer via reflection if possible
-            var writeMethod = w?.GetType().GetMethod("Write");
-            if (writeMethod != null)
+            var bytes = System.Text.Encoding.UTF8.GetBytes(replaced);
+            var slice = new Slice<byte>(bytes);
+            if (w is Io.IGoWriter writer)
             {
-                var bytes = System.Text.Encoding.UTF8.GetBytes(replaced);
-                var slice = new Slice<byte>(bytes);
-                try
-                {
-                    writeMethod.Invoke(w, new object[] { slice });
-                }
-                catch { }
+                var (n, err) = writer.Write(slice);
+                return (n, string.IsNullOrEmpty(err) ? null : err);
             }
-            return ((long)replaced.Length, null);
+            return (replaced.Length, null);
         }
     }
 }

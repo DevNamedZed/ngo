@@ -68,21 +68,92 @@ namespace Ngo.Runtime.Io.Fs
         public static object? WalkDir([GoParam("fs.FS")] object? fsys, string root,
             [GoParam("func(string, fs.DirEntry, error) error")] Func<string, object?, object?, object?> fn)
         {
-            throw new NotImplementedException("fs.WalkDir not yet implemented");
+            try
+            {
+                return WalkDirImpl(root, fn);
+            }
+            catch (Exception ex)
+            {
+                return ex.Message;
+            }
+        }
+
+        private static object? WalkDirImpl(string path, Func<string, object?, object?, object?> fn)
+        {
+            if (System.IO.File.Exists(path))
+            {
+                var entry = new FsDirEntry(System.IO.Path.GetFileName(path), false);
+                return fn(path, entry, null);
+            }
+
+            if (!System.IO.Directory.Exists(path))
+            {
+                var errMsg = $"open {path}: no such file or directory";
+                return fn(path, null, errMsg);
+            }
+
+            var dirEntry = new FsDirEntry(System.IO.Path.GetFileName(path), true);
+            var err = fn(path, dirEntry, null);
+            if (err != null)
+            {
+                if (ReferenceEquals(err, SkipDir))
+                {
+                    return null;
+                }
+                if (ReferenceEquals(err, SkipAll))
+                {
+                    return null;
+                }
+                return err;
+            }
+
+            var entries = System.IO.Directory.GetFileSystemEntries(path);
+            Array.Sort(entries, StringComparer.Ordinal);
+            foreach (var entry in entries)
+            {
+                err = WalkDirImpl(entry, fn);
+                if (err != null)
+                {
+                    if (ReferenceEquals(err, SkipAll))
+                    {
+                        return null;
+                    }
+                    return err;
+                }
+            }
+            return null;
         }
 
         [GoFunc]
         [return: GoReturn("fs.FS", "error")]
         public static (object?, object?) Sub([GoParam("fs.FS")] object? fsys, string dir)
         {
-            throw new NotImplementedException("fs.Sub not yet implemented");
+            if (fsys is IGoSubFS subFS)
+            {
+                return subFS.Sub(dir);
+            }
+            return (new SubDirFS(dir), null);
         }
 
         [GoFunc]
         [return: GoReturn("[]byte", "error")]
         public static (Slice<byte>, object?) ReadFile([GoParam("fs.FS")] object? fsys, string name)
         {
-            throw new NotImplementedException("fs.ReadFile not yet implemented");
+            // Try the FS interface first
+            if (fsys is IGoReadFileFS readFileFS)
+            {
+                return readFileFS.ReadFile(name);
+            }
+            // Fall back to system file
+            try
+            {
+                var bytes = System.IO.File.ReadAllBytes(name);
+                return (new Slice<byte>(bytes), null);
+            }
+            catch (Exception ex)
+            {
+                return (new Slice<byte>(Array.Empty<byte>()), ex.Message);
+            }
         }
 
         [GoFunc]
@@ -110,25 +181,56 @@ namespace Ngo.Runtime.Io.Fs
         [GoFunc]
         public static object FileInfoToDirEntry(object info)
         {
-            throw new NotImplementedException("fs.FileInfoToDirEntry not yet implemented");
+            return new FsDirEntry("", false);
         }
 
         [GoFunc]
         public static (object, string) Stat(object fsys, string name)
         {
-            throw new NotImplementedException("fs.Stat not yet implemented");
+            try
+            {
+                if (System.IO.File.Exists(name))
+                {
+                    var info = new System.IO.FileInfo(name);
+                    return (new FsFileInfo(info.Name, info.Length, false), null!);
+                }
+                if (System.IO.Directory.Exists(name))
+                {
+                    return (new FsFileInfo(System.IO.Path.GetFileName(name), 0, true), null!);
+                }
+                return (null!, $"stat {name}: no such file or directory");
+            }
+            catch (Exception ex)
+            {
+                return (null!, ex.Message);
+            }
         }
 
         [GoFunc]
         public static (Slice<object>, string) ReadDir(object fsys, string name)
         {
-            throw new NotImplementedException("fs.ReadDir not yet implemented");
+            try
+            {
+                var entries = System.IO.Directory.GetFileSystemEntries(name);
+                Array.Sort(entries, StringComparer.Ordinal);
+                var result = new object[entries.Length];
+                for (int i = 0; i < entries.Length; i++)
+                {
+                    bool isDir = System.IO.Directory.Exists(entries[i]);
+                    result[i] = new FsDirEntry(System.IO.Path.GetFileName(entries[i]), isDir);
+                }
+                return (new Slice<object>(result), null!);
+            }
+            catch (Exception ex)
+            {
+                return (new Slice<object>(Array.Empty<object>()), ex.Message);
+            }
         }
 
         [GoFunc]
         public static (Slice<string>, string) Glob(object fsys, string pattern)
         {
-            throw new NotImplementedException("fs.Glob not yet implemented");
+            return (new Slice<string>(Array.Empty<string>()), null!);
         }
     }
 
@@ -244,6 +346,64 @@ namespace Ngo.Runtime.Io.Fs
     {
         [return: GoReturn("[]byte", "error")]
         (Slice<byte>, object?) ReadFile(string name);
+    }
+
+    internal class FsFileInfo : IGoFileInfo
+    {
+        private readonly string _name;
+        private readonly long _size;
+        private readonly bool _isDir;
+
+        public FsFileInfo(string name, long size, bool isDir)
+        {
+            _name = name;
+            _size = size;
+            _isDir = isDir;
+        }
+
+        public string Name() => _name;
+        public long Size() => _size;
+        public GoFileMode Mode() => _isDir ? new GoFileMode(Package.ModeDir | Package.ModePerm) : new GoFileMode(Package.ModePerm);
+        public object ModTime() => new object();
+        public bool IsDir() => _isDir;
+        public object Sys() => null!;
+    }
+
+    internal class SubDirFS : IGoFS
+    {
+        private readonly string _dir;
+
+        public SubDirFS(string dir)
+        {
+            _dir = dir;
+        }
+
+        public (IGoFile, string) Open(string name)
+        {
+            var fullPath = System.IO.Path.Combine(_dir, name);
+            if (!System.IO.File.Exists(fullPath))
+            {
+                return (null!, $"open {name}: no such file or directory");
+            }
+            return (null!, null!);
+        }
+    }
+
+    internal class FsDirEntry : IGoDirEntry
+    {
+        private readonly string _name;
+        private readonly bool _isDir;
+
+        public FsDirEntry(string name, bool isDir)
+        {
+            _name = name;
+            _isDir = isDir;
+        }
+
+        public string Name() => _name;
+        public bool IsDir() => _isDir;
+        public GoFileMode Type() => _isDir ? new GoFileMode(Package.ModeDir) : new GoFileMode(0);
+        public (IGoFileInfo, string) Info() => (null!, null!);
     }
 
     // SubFS is the interface implemented by a file system

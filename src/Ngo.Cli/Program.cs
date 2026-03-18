@@ -218,6 +218,30 @@ class Program
             return 2;
         }
 
+        // Register native library resolver for CGo shared libraries
+        if (compilation.CgoResult?.NativeLibraryPath != null)
+        {
+            var nativeLibDir = Path.GetDirectoryName(compilation.CgoResult.NativeLibraryPath) ?? "";
+            System.Runtime.Loader.AssemblyLoadContext.Default.ResolvingUnmanagedDll += (asm, libraryName) =>
+            {
+                string[] candidates = new[]
+                {
+                    Path.Combine(nativeLibDir, $"lib{libraryName}.so"),
+                    Path.Combine(nativeLibDir, $"{libraryName}.so"),
+                    Path.Combine(nativeLibDir, $"lib{libraryName}.dylib"),
+                    Path.Combine(nativeLibDir, $"{libraryName}.dll"),
+                };
+                foreach (var candidate in candidates)
+                {
+                    if (System.Runtime.InteropServices.NativeLibrary.TryLoad(candidate, out var handle))
+                    {
+                        return handle;
+                    }
+                }
+                return IntPtr.Zero;
+            };
+        }
+
         var entryPoint = AssemblyEmitter.FindEntryPoint(assembly);
         if (entryPoint == null)
         {

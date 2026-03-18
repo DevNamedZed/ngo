@@ -40,9 +40,9 @@ namespace Ngo.Compiler.Emit
         private const int MagicSize = 4;
         private const int VersionSize = 2;
         private const int SectionEntrySize = 4 + 4; // offset(uint32) + length(uint32)
-        private const int SectionCount = 3; // Go metadata, IL metadata, IL bytecode
+        private const int SectionCount = 4; // Go metadata, IL metadata, IL bytecode, CGo native lib
         private const int HeaderSize = MagicSize + VersionSize + (SectionEntrySize * SectionCount);
-        internal const ushort CurrentVersion = 2;
+        internal const ushort CurrentVersion = 3;
 
         /// <summary>
         /// Gets the archive path for a package in the cache directory.
@@ -79,31 +79,39 @@ namespace Ngo.Compiler.Emit
             var headerPos = stream.Position;
             writer.Write(Magic);
             writer.Write(CurrentVersion);
-            // Placeholder offsets (6 uint32s)
-            for (int i = 0; i < 6; i++)
+            // Placeholder offsets (8 uint32s = 4 sections * 2)
+            for (int i = 0; i < SectionCount * 2; i++)
+            {
                 writer.Write((uint)0);
+            }
 
             // Section 1: Go metadata
             var goMetaOffset = (uint)stream.Position;
             WriteGoMetadata(writer, pkg, importPath);
             var goMetaLen = (uint)(stream.Position - goMetaOffset);
 
-            // Section 2: IL metadata (reserved)
+            // Section 2: IL metadata (reserved — filled by ILSerializer)
             var ilMetaOffset = (uint)stream.Position;
             uint ilMetaLen = 0;
 
-            // Section 3: IL bytecode (reserved)
+            // Section 3: IL bytecode (reserved — filled by ILSerializer)
             var ilCodeOffset = (uint)stream.Position;
             uint ilCodeLen = 0;
 
+            // Section 4: CGo native library metadata (empty for non-CGo packages)
+            var cgoOffset = (uint)stream.Position;
+            uint cgoLen = 0;
+
             // Seek back and write real header
-            stream.Seek(headerPos + 4 + 2, SeekOrigin.Begin);
+            stream.Seek(headerPos + MagicSize + VersionSize, SeekOrigin.Begin);
             writer.Write(goMetaOffset);
             writer.Write(goMetaLen);
             writer.Write(ilMetaOffset);
             writer.Write(ilMetaLen);
             writer.Write(ilCodeOffset);
             writer.Write(ilCodeLen);
+            writer.Write(cgoOffset);
+            writer.Write(cgoLen);
         }
 
         /// <summary>
@@ -128,19 +136,115 @@ namespace Ngo.Compiler.Emit
 
                 var version = reader.ReadUInt16();
                 if (version != CurrentVersion)
+                {
                     return null;
+                }
 
                 var goMetaOffset = reader.ReadUInt32();
                 var goMetaLen = reader.ReadUInt32();
-                // Skip IL offsets
                 reader.ReadUInt32(); reader.ReadUInt32(); // ilMeta
                 reader.ReadUInt32(); reader.ReadUInt32(); // ilCode
+                reader.ReadUInt32(); reader.ReadUInt32(); // cgo
 
                 if (goMetaLen == 0)
                     return null;
 
                 stream.Seek(goMetaOffset, SeekOrigin.Begin);
                 return ReadGoMetadataSection(reader, crossPkgResolver);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Write CGo metadata into an existing .ngo archive's Section 4.
+        /// Called after C compilation to store the native library path and probe results.
+        /// </summary>
+        public static void WriteCgoSection(string archivePath, Cgo.CgoCompilationResult cgoResult)
+        {
+            if (!File.Exists(archivePath) || cgoResult == null || !cgoResult.Success)
+            {
+                return;
+            }
+
+            // Read current archive, append CGo section, update header
+            var data = File.ReadAllBytes(archivePath);
+            using var stream = new FileStream(archivePath, FileMode.Create, FileAccess.Write);
+            using var writer = new BinaryWriter(stream);
+
+            // Copy existing data
+            writer.Write(data);
+
+            // Write CGo section at the end
+            var cgoOffset = (uint)stream.Position;
+            writer.Write(cgoResult.NativeLibraryPath ?? "");
+            if (cgoResult.ProbeResult != null)
+            {
+                writer.Write(cgoResult.ProbeResult.TypeSizes.Count);
+                foreach (var kv in cgoResult.ProbeResult.TypeSizes)
+                {
+                    writer.Write(kv.Key);
+                    writer.Write(kv.Value);
+                }
+            }
+            else
+            {
+                writer.Write(0);
+            }
+            var cgoLen = (uint)(stream.Position - cgoOffset);
+
+            // Update Section 4 offset/length in header
+            stream.Seek(MagicSize + VersionSize + (3 * SectionEntrySize), SeekOrigin.Begin);
+            writer.Write(cgoOffset);
+            writer.Write(cgoLen);
+        }
+
+        /// <summary>
+        /// Read CGo native library path from a .ngo archive's Section 4.
+        /// </summary>
+        public static string? ReadCgoNativeLibraryPath(string archivePath)
+        {
+            if (!File.Exists(archivePath))
+            {
+                return null;
+            }
+
+            try
+            {
+                using var stream = new FileStream(archivePath, FileMode.Open, FileAccess.Read);
+                using var reader = new BinaryReader(stream);
+
+                var magic = reader.ReadBytes(4);
+                if (magic.Length < 4 || magic[0] != 'N' || magic[1] != 'G' || magic[2] != 'O')
+                {
+                    return null;
+                }
+
+                var version = reader.ReadUInt16();
+                if (version < 3)
+                {
+                    return null; // No CGo section in version 2
+                }
+
+                // Skip sections 1-3
+                for (int i = 0; i < 3; i++)
+                {
+                    reader.ReadUInt32(); // offset
+                    reader.ReadUInt32(); // length
+                }
+
+                var cgoOffset = reader.ReadUInt32();
+                var cgoLen = reader.ReadUInt32();
+
+                if (cgoLen == 0)
+                {
+                    return null;
+                }
+
+                stream.Seek(cgoOffset, SeekOrigin.Begin);
+                return reader.ReadString();
             }
             catch
             {

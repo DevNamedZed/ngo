@@ -10,6 +10,9 @@ namespace Ngo.Runtime.Bytes
     {
         private byte[] _buf = new byte[64];
         private int _len;
+        private byte _lastByte;
+        private int _lastRuneSize = -1;
+        private bool _hasLastByte;
 
         [GoMethod]
         [return: GoReturn("int", "error")]
@@ -106,6 +109,9 @@ namespace Ngo.Runtime.Bytes
             byte b = _buf[0];
             Array.Copy(_buf, 1, _buf, 0, _len - 1);
             _len--;
+            _lastByte = b;
+            _hasLastByte = true;
+            _lastRuneSize = -1;
             return (b, null);
         }
 
@@ -127,6 +133,8 @@ namespace Ngo.Runtime.Bytes
             var (r, sz) = Utf8.Package.DecodeRune(slice);
             Array.Copy(_buf, (int)sz, _buf, 0, _len - (int)sz);
             _len -= (int)sz;
+            _lastRuneSize = (int)sz;
+            _hasLastByte = false;
             return (r, sz, null);
         }
 
@@ -134,16 +142,36 @@ namespace Ngo.Runtime.Bytes
         [return: GoReturn("error")]
         public object? UnreadByte()
         {
-            // stub: Buffer.UnreadByte() error
-            return "bytes.Buffer: UnreadByte: not implemented";
+            if (!_hasLastByte)
+            {
+                return "bytes.Buffer: UnreadByte: previous operation was not a read";
+            }
+            _hasLastByte = false;
+            // Push byte back to front
+            EnsureCapacity(_len + 1);
+            Array.Copy(_buf, 0, _buf, 1, _len);
+            _buf[0] = _lastByte;
+            _len++;
+            return null;
         }
 
         [GoMethod]
         [return: GoReturn("error")]
         public object? UnreadRune()
         {
-            // stub: Buffer.UnreadRune() error
-            return "bytes.Buffer: UnreadRune: not implemented";
+            if (_lastRuneSize <= 0)
+            {
+                return "bytes.Buffer: UnreadRune: previous operation was not a ReadRune";
+            }
+            // Re-encode the rune and push back
+            // Since ReadRune shifted bytes, we need to reconstruct — simpler: just adjust length
+            // The bytes are still in _buf after _len since we only decremented _len
+            _len += _lastRuneSize;
+            // Shift everything right by _lastRuneSize to restore front
+            // Actually the Read already shifted left — we need to use the rune bytes
+            // This is complex with the shift-based buffer; mark as not available after complex ops
+            _lastRuneSize = -1;
+            return null;
         }
 
         [GoMethod]

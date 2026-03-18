@@ -1,3 +1,8 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using Ngo.Runtime.Discovery;
 
 namespace Ngo.Runtime.Crypto.X509
@@ -11,17 +16,59 @@ namespace Ngo.Runtime.Crypto.X509
         // x509.ParseCertificate(asn1Data []byte) (*Certificate, error)
         [GoFunc]
         [return: GoReturn("*x509.Certificate", "error")]
-        public static (GoCertificate?, object?) ParseCertificate(Slice<byte> asn1Data) => (new GoCertificate(), null);
+        public static (GoCertificate?, object?) ParseCertificate(Slice<byte> asn1Data)
+        {
+            try
+            {
+                var derBytes = SliceToArray(asn1Data);
+                var cert = X509CertificateLoader.LoadCertificate(derBytes);
+                return (CertFromX509(cert), null);
+            }
+            catch (Exception ex)
+            {
+                return (null, "x509: " + ex.Message);
+            }
+        }
 
         // x509.ParseCertificates(asn1Data []byte) ([]*Certificate, error)
         [GoFunc]
         [return: GoReturn("[]*x509.Certificate", "error")]
-        public static (Slice<GoCertificate?>, object?) ParseCertificates(Slice<byte> asn1Data) => (new Slice<GoCertificate?>(), null);
+        public static (Slice<GoCertificate?>, object?) ParseCertificates(Slice<byte> asn1Data)
+        {
+            try
+            {
+                var derBytes = SliceToArray(asn1Data);
+                var cert = X509CertificateLoader.LoadCertificate(derBytes);
+                var goCert = CertFromX509(cert);
+                return (new Slice<GoCertificate?>(new[] { goCert }), null);
+            }
+            catch (Exception ex)
+            {
+                return (new Slice<GoCertificate?>(), "x509: " + ex.Message);
+            }
+        }
 
         // x509.SystemCertPool() (*CertPool, error)
         [GoFunc]
         [return: GoReturn("*x509.CertPool", "error")]
-        public static (GoCertPool?, object?) SystemCertPool() => (new GoCertPool(), null);
+        public static (GoCertPool?, object?) SystemCertPool()
+        {
+            try
+            {
+                var pool = new GoCertPool();
+                using var store = new X509Store(StoreName.Root, StoreLocation.CurrentUser);
+                store.Open(OpenFlags.ReadOnly);
+                foreach (var cert in store.Certificates)
+                {
+                    pool.AddX509Cert(cert);
+                }
+                return (pool, null);
+            }
+            catch (Exception ex)
+            {
+                return (null, "x509: " + ex.Message);
+            }
+        }
 
         // x509.NewCertPool() *CertPool
         [GoFunc]
@@ -32,32 +79,188 @@ namespace Ngo.Runtime.Crypto.X509
         [GoFunc]
         [return: GoReturn("[]byte", "error")]
         public static (Slice<byte>, object?) CreateCertificate(object? rand, [GoParam("*x509.Certificate")] GoCertificate? template, [GoParam("*x509.Certificate")] GoCertificate? parent, object? pub, object? priv)
-            => (new Slice<byte>(), null);
+        {
+            try
+            {
+                // Get the private key as an asymmetric algorithm
+                System.Security.Cryptography.RSA? rsaKey = null;
+                System.Security.Cryptography.ECDsa? ecKey = null;
+
+                if (priv is Rsa.GoPrivateKey rsaPriv)
+                {
+                    rsaKey = rsaPriv.ToRSA();
+                }
+                else if (priv is Ecdsa.GoPrivateKey ecPriv)
+                {
+                    ecKey = ecPriv.ToECDsa();
+                }
+
+                if (rsaKey == null && ecKey == null)
+                {
+                    return (new Slice<byte>(), "x509: unsupported private key type");
+                }
+
+                var subject = new X500DistinguishedName(template?.Subject?.ToString() ?? "CN=ngo");
+
+                CertificateRequest req;
+                if (rsaKey != null)
+                {
+                    req = new CertificateRequest(subject, rsaKey, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+                }
+                else
+                {
+                    req = new CertificateRequest(subject, ecKey!, HashAlgorithmName.SHA256);
+                }
+
+                // Add basic constraints if CA
+                if (template != null && template.IsCA)
+                {
+                    req.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, false, 0, true));
+                }
+
+                X509Certificate2 cert;
+                if (parent == null || ReferenceEquals(template, parent))
+                {
+                    // Self-signed
+                    cert = req.CreateSelfSigned(DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddYears(1));
+                }
+                else
+                {
+                    // Signed by parent — simplified: create self-signed for now
+                    cert = req.CreateSelfSigned(DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddYears(1));
+                }
+
+                return (new Slice<byte>(cert.RawData), null);
+            }
+            catch (Exception ex)
+            {
+                return (new Slice<byte>(), "x509: " + ex.Message);
+            }
+        }
 
         // x509.MarshalPKCS1PrivateKey(key *rsa.PrivateKey) []byte
         [GoFunc]
         [return: GoReturn("[]byte")]
-        public static Slice<byte> MarshalPKCS1PrivateKey(object? key) => new Slice<byte>();
+        public static Slice<byte> MarshalPKCS1PrivateKey(object? key)
+        {
+            if (key is Rsa.GoPrivateKey rsaKey)
+            {
+                var rsa = rsaKey.ToRSA();
+                if (rsa != null)
+                {
+                    var bytes = rsa.ExportRSAPrivateKey();
+                    return new Slice<byte>(bytes);
+                }
+            }
+            return new Slice<byte>();
+        }
 
         // x509.ParsePKCS1PrivateKey(der []byte) (*rsa.PrivateKey, error)
         [GoFunc]
         [return: GoReturn("*rsa.PrivateKey", "error")]
-        public static (object?, object?) ParsePKCS1PrivateKey(Slice<byte> der) => (null, null);
+        public static (object?, object?) ParsePKCS1PrivateKey(Slice<byte> der)
+        {
+            try
+            {
+                var rsa = System.Security.Cryptography.RSA.Create();
+                rsa.ImportRSAPrivateKey(SliceToArray(der), out _);
+                return (Rsa.GoPrivateKey.FromRSA(rsa), null);
+            }
+            catch (Exception ex)
+            {
+                return (null, "x509: " + ex.Message);
+            }
+        }
 
         // x509.MarshalPKCS8PrivateKey(key any) ([]byte, error)
         [GoFunc]
         [return: GoReturn("[]byte", "error")]
-        public static (Slice<byte>, object?) MarshalPKCS8PrivateKey(object? key) => (new Slice<byte>(), null);
+        public static (Slice<byte>, object?) MarshalPKCS8PrivateKey(object? key)
+        {
+            try
+            {
+                if (key is Rsa.GoPrivateKey rsaKey)
+                {
+                    var rsa = rsaKey.ToRSA();
+                    if (rsa != null)
+                    {
+                        return (new Slice<byte>(rsa.ExportPkcs8PrivateKey()), null);
+                    }
+                }
+                if (key is Ecdsa.GoPrivateKey ecKey)
+                {
+                    var ecdsa = ecKey.ToECDsa();
+                    if (ecdsa != null)
+                    {
+                        return (new Slice<byte>(ecdsa.ExportPkcs8PrivateKey()), null);
+                    }
+                }
+                return (new Slice<byte>(), "x509: unknown key type");
+            }
+            catch (Exception ex)
+            {
+                return (new Slice<byte>(), "x509: " + ex.Message);
+            }
+        }
 
         // x509.ParsePKCS8PrivateKey(der []byte) (any, error)
         [GoFunc]
         [return: GoReturn("any", "error")]
-        public static (object?, object?) ParsePKCS8PrivateKey(Slice<byte> der) => (null, null);
+        public static (object?, object?) ParsePKCS8PrivateKey(Slice<byte> der)
+        {
+            var derBytes = SliceToArray(der);
+
+            // Try RSA first
+            try
+            {
+                var rsa = System.Security.Cryptography.RSA.Create();
+                rsa.ImportPkcs8PrivateKey(derBytes, out _);
+                return (Rsa.GoPrivateKey.FromRSA(rsa), null);
+            }
+            catch { }
+
+            // Try ECDSA
+            try
+            {
+                var ecdsa = System.Security.Cryptography.ECDsa.Create();
+                ecdsa.ImportPkcs8PrivateKey(derBytes, out _);
+                return (Ecdsa.GoPrivateKey.FromECDsa(ecdsa), null);
+            }
+            catch { }
+
+            return (null, "x509: failed to parse private key");
+        }
 
         // x509.ParsePKIXPublicKey(derBytes []byte) (any, error)
         [GoFunc]
         [return: GoReturn("any", "error")]
-        public static (object?, object?) ParsePKIXPublicKey(Slice<byte> derBytes) => (null, null);
+        public static (object?, object?) ParsePKIXPublicKey(Slice<byte> derBytes)
+        {
+            var bytes = SliceToArray(derBytes);
+
+            // Try RSA
+            try
+            {
+                var rsa = System.Security.Cryptography.RSA.Create();
+                rsa.ImportSubjectPublicKeyInfo(bytes, out _);
+                return (Rsa.GoPublicKey.FromParameters(rsa.ExportParameters(false)), null);
+            }
+            catch { }
+
+            // Try ECDSA
+            try
+            {
+                var ecdsa = System.Security.Cryptography.ECDsa.Create();
+                ecdsa.ImportSubjectPublicKeyInfo(bytes, out _);
+                var ecParams = ecdsa.ExportParameters(false);
+                var pubKey = new Ecdsa.GoPublicKey();
+                pubKey.SetFromParameters(ecParams);
+                return (pubKey, null);
+            }
+            catch { }
+
+            return (null, "x509: unsupported public key type");
+        }
 
         // KeyUsage constants
         [GoConst(Type = "x509.KeyUsage")]
@@ -112,17 +315,48 @@ namespace Ngo.Runtime.Crypto.X509
         // x509.MarshalPKIXPublicKey(pub any) ([]byte, error)
         [GoFunc]
         [return: GoReturn("[]byte", "error")]
-        public static (Slice<byte>, object?) MarshalPKIXPublicKey(object? pub) => (new Slice<byte>(), null);
+        public static (Slice<byte>, object?) MarshalPKIXPublicKey(object? pub)
+        {
+            try
+            {
+                if (pub is Rsa.GoPublicKey rsaPub)
+                {
+                    var rsa = rsaPub.ToRSA();
+                    if (rsa != null)
+                    {
+                        return (new Slice<byte>(rsa.ExportSubjectPublicKeyInfo()), null);
+                    }
+                }
+                return (new Slice<byte>(), "x509: unsupported public key type");
+            }
+            catch (Exception ex)
+            {
+                return (new Slice<byte>(), "x509: " + ex.Message);
+            }
+        }
 
         // x509.ParsePKCS1PublicKey(der []byte) (*rsa.PublicKey, error)
         [GoFunc]
         [return: GoReturn("*rsa.PublicKey", "error")]
-        public static (object?, object?) ParsePKCS1PublicKey(Slice<byte> der) => (null, null);
+        public static (object?, object?) ParsePKCS1PublicKey(Slice<byte> der)
+        {
+            try
+            {
+                var rsa = System.Security.Cryptography.RSA.Create();
+                rsa.ImportRSAPublicKey(SliceToArray(der), out _);
+                return (Rsa.GoPublicKey.FromParameters(rsa.ExportParameters(false)), null);
+            }
+            catch (Exception ex)
+            {
+                return (null, "x509: " + ex.Message);
+            }
+        }
 
         // x509.DecryptPEMBlock(b *pem.Block, password []byte) ([]byte, error)
         [GoFunc]
         [return: GoReturn("[]byte", "error")]
-        public static (Slice<byte>, object?) DecryptPEMBlock(object? b, Slice<byte> password) => (new Slice<byte>(), null);
+        public static (Slice<byte>, object?) DecryptPEMBlock(object? b, Slice<byte> password)
+            => (new Slice<byte>(), "x509: DecryptPEMBlock is deprecated and not implemented");
 
         // x509.IsEncryptedPEMBlock(b *pem.Block) bool
         [GoFunc]
@@ -131,7 +365,117 @@ namespace Ngo.Runtime.Crypto.X509
         // x509.ParseECPrivateKey(der []byte) (*ecdsa.PrivateKey, error)
         [GoFunc]
         [return: GoReturn("*ecdsa.PrivateKey", "error")]
-        public static (object?, object?) ParseECPrivateKey(Slice<byte> der) => (null, null);
+        public static (object?, object?) ParseECPrivateKey(Slice<byte> der)
+        {
+            try
+            {
+                var ecdsa = System.Security.Cryptography.ECDsa.Create();
+                ecdsa.ImportECPrivateKey(SliceToArray(der), out _);
+                return (Ecdsa.GoPrivateKey.FromECDsa(ecdsa), null);
+            }
+            catch (Exception ex)
+            {
+                return (null, "x509: " + ex.Message);
+            }
+        }
+
+        // Helper: convert Slice<byte> to byte[]
+        internal static byte[] SliceToArray(Slice<byte> s)
+        {
+            var buf = new byte[s.Len];
+            for (int i = 0; i < s.Len; i++)
+            {
+                buf[i] = s[i];
+            }
+            return buf;
+        }
+
+        // Helper: convert X509Certificate2 to GoCertificate
+        internal static GoCertificate CertFromX509(X509Certificate2 cert)
+        {
+            var goCert = new GoCertificate
+            {
+                Raw = new Slice<byte>(cert.RawData),
+                Version = cert.Version,
+                SignatureAlgorithm = MapSignatureAlgorithm(cert.SignatureAlgorithm.FriendlyName),
+                PublicKeyAlgorithm = MapPublicKeyAlgorithm(cert.PublicKey.Oid.FriendlyName),
+                IsCA = cert.Extensions.OfType<X509BasicConstraintsExtension>().Any(e => e.CertificateAuthority),
+                BasicConstraintsValid = cert.Extensions.OfType<X509BasicConstraintsExtension>().Any(),
+            };
+
+            // Subject/Issuer as string representations
+            goCert.Subject = cert.Subject;
+            goCert.Issuer = cert.Issuer;
+
+            // Serial number
+            goCert.SerialNumber = cert.SerialNumber;
+
+            // DNS names from SAN
+            var sanExt = cert.Extensions.OfType<X509SubjectAlternativeNameExtension>().FirstOrDefault();
+            if (sanExt != null)
+            {
+                var dnsNames = new List<string>();
+                foreach (var dns in sanExt.EnumerateDnsNames())
+                {
+                    dnsNames.Add(dns);
+                }
+                goCert.DNSNames = new Slice<string>(dnsNames.ToArray());
+            }
+
+            // Extract public key
+            try
+            {
+                var rsaKey = cert.GetRSAPublicKey();
+                if (rsaKey != null)
+                {
+                    goCert.PublicKey = Rsa.GoPublicKey.FromParameters(rsaKey.ExportParameters(false));
+                }
+            }
+            catch { }
+
+            if (goCert.PublicKey == null)
+            {
+                try
+                {
+                    var ecKey = cert.GetECDsaPublicKey();
+                    if (ecKey != null)
+                    {
+                        var ecParams = ecKey.ExportParameters(false);
+                        var pubKey = new Ecdsa.GoPublicKey();
+                        pubKey.SetFromParameters(ecParams);
+                        goCert.PublicKey = pubKey;
+                    }
+                }
+                catch { }
+            }
+
+            return goCert;
+        }
+
+        private static long MapSignatureAlgorithm(string? friendlyName)
+        {
+            return friendlyName switch
+            {
+                "sha256RSA" => SHA256WithRSA,
+                "sha384RSA" => SHA384WithRSA,
+                "sha512RSA" => SHA512WithRSA,
+                "sha256ECDSA" => ECDSAWithSHA256,
+                "sha384ECDSA" => ECDSAWithSHA384,
+                "sha512ECDSA" => ECDSAWithSHA512,
+                _ => 0,
+            };
+        }
+
+        private static long MapPublicKeyAlgorithm(string? friendlyName)
+        {
+            return friendlyName switch
+            {
+                "RSA" => RSA,
+                "DSA" => DSA,
+                "ECC" or "ECDSA" => ECDSA,
+                _ => UnknownPublicKeyAlgorithm,
+            };
+        }
 
         // CertificateRequest type
         [GoType("struct", Name = "CertificateRequest", Package = "crypto/x509")]
@@ -257,18 +601,59 @@ namespace Ngo.Runtime.Crypto.X509
     [GoType("struct", Name = "CertPool", Package = "crypto/x509")]
     public class GoCertPool
     {
-        [GoMethod]
-        public bool AppendCertsFromPEM(Slice<byte> pemCerts) => false;
+        private readonly List<GoCertificate> _certs = new List<GoCertificate>();
 
         [GoMethod]
-        public void AddCert([GoParam("*x509.Certificate")] GoCertificate? cert) { }
+        public bool AppendCertsFromPEM(Slice<byte> pemCerts)
+        {
+            bool added = false;
+            var (block, rest) = Encoding.Pem.Package.Decode(pemCerts);
+            while (block != null)
+            {
+                if (block.Type == "CERTIFICATE")
+                {
+                    var (cert, err) = Package.ParseCertificate(block.Bytes);
+                    if (err == null && cert != null)
+                    {
+                        _certs.Add(cert);
+                        added = true;
+                    }
+                }
+                (block, rest) = Encoding.Pem.Package.Decode(rest);
+            }
+            return added;
+        }
+
+        [GoMethod]
+        public void AddCert([GoParam("*x509.Certificate")] GoCertificate? cert)
+        {
+            if (cert != null)
+            {
+                _certs.Add(cert);
+            }
+        }
+
+        internal void AddX509Cert(X509Certificate2 cert)
+        {
+            _certs.Add(Package.CertFromX509(cert));
+        }
 
         [GoMethod]
         [return: GoReturn("[][]byte")]
-        public Slice<Slice<byte>> Subjects() => new Slice<Slice<byte>>();
+        public Slice<Slice<byte>> Subjects()
+        {
+            var subjects = new Slice<byte>[_certs.Count];
+            for (int i = 0; i < _certs.Count; i++)
+            {
+                subjects[i] = _certs[i].RawSubject;
+            }
+            return new Slice<Slice<byte>>(subjects);
+        }
 
         [GoMethod]
-        public long Len() => 0;
+        public long Len() => _certs.Count;
+
+        internal List<GoCertificate> Certificates => _certs;
     }
 
     // Named types

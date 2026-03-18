@@ -217,12 +217,130 @@ namespace Ngo.Runtime.Math
             return sign * y;
         }
         public static double Erfc(double x) => 1.0 - Erf(x);
-        public static double J0(double x) => 0; // Bessel stub
-        public static double J1(double x) => 0; // Bessel stub
-        public static double Jn(long n, double x) => 0; // Bessel stub
-        public static double Y0(double x) => 0; // Bessel stub
-        public static double Y1(double x) => 0; // Bessel stub
-        public static double Yn(long n, double x) => 0; // Bessel stub
+        public static double J0(double x)
+        {
+            // Bessel J0 via power series: J0(x) = sum_{k=0}^{inf} (-1)^k * (x/2)^{2k} / (k!)^2
+            if (x == 0)
+            {
+                return 1.0;
+            }
+            double result = 0;
+            double term = 1;
+            double xHalf = x / 2;
+            double xHalfSq = xHalf * xHalf;
+            for (int k = 0; k < 25; k++)
+            {
+                result += term;
+                term *= -xHalfSq / ((k + 1.0) * (k + 1.0));
+            }
+            return result;
+        }
+
+        public static double J1(double x)
+        {
+            // Bessel J1 via power series: J1(x) = sum_{k=0}^{inf} (-1)^k * (x/2)^{2k+1} / (k! * (k+1)!)
+            if (x == 0)
+            {
+                return 0.0;
+            }
+            double xHalf = x / 2;
+            double xHalfSq = xHalf * xHalf;
+            double result = 0;
+            double term = xHalf;
+            for (int k = 0; k < 25; k++)
+            {
+                result += term;
+                term *= -xHalfSq / ((k + 1.0) * (k + 2.0));
+            }
+            return result;
+        }
+
+        public static double Jn(long n, double x)
+        {
+            if (n == 0)
+            {
+                return J0(x);
+            }
+            if (n == 1)
+            {
+                return J1(x);
+            }
+            if (n < 0)
+            {
+                // J_{-n}(x) = (-1)^n * J_n(x)
+                return (n % 2 == 0 ? 1 : -1) * Jn(-n, x);
+            }
+            // Upward recurrence: J_{n+1}(x) = (2n/x)*J_n(x) - J_{n-1}(x)
+            double jPrev = J0(x);
+            double jCurr = J1(x);
+            for (long k = 1; k < n; k++)
+            {
+                double jNext = (2.0 * k / x) * jCurr - jPrev;
+                jPrev = jCurr;
+                jCurr = jNext;
+            }
+            return jCurr;
+        }
+
+        public static double Y0(double x)
+        {
+            if (x <= 0)
+            {
+                return double.NegativeInfinity;
+            }
+            // Y0(x) = (2/pi) * (J0(x) * (ln(x/2) + EulerGamma) + series correction)
+            // Simplified: use relation Y0(x) ≈ (2/π)(J0(x)(ln(x/2) + γ) + S(x))
+            double gamma = 0.5772156649015329;
+            double logXHalf = System.Math.Log(x / 2);
+            double sum = 0;
+            double xHalfSq = (x / 2) * (x / 2);
+            double harmonic = 0;
+            double factSq = 1;
+            double power = 1;
+            for (int k = 1; k < 25; k++)
+            {
+                harmonic += 1.0 / k;
+                factSq *= k;
+                power *= -xHalfSq;
+                sum += harmonic * power / (factSq * factSq);
+            }
+            return (2.0 / System.Math.PI) * ((logXHalf + gamma) * J0(x) + sum);
+        }
+
+        public static double Y1(double x)
+        {
+            if (x <= 0)
+            {
+                return double.NegativeInfinity;
+            }
+            // Approximation using recurrence Y1(x) ≈ (2/(πx)) - (2/π)*J1(x)*ln(x/2) ...
+            // Use recurrence from Y0 and J values for reasonable accuracy
+            double gamma = 0.5772156649015329;
+            double logXHalf = System.Math.Log(x / 2);
+            return (2.0 / System.Math.PI) * (J1(x) * (logXHalf + gamma) - 1.0 / x);
+        }
+
+        public static double Yn(long n, double x)
+        {
+            if (n == 0)
+            {
+                return Y0(x);
+            }
+            if (n == 1)
+            {
+                return Y1(x);
+            }
+            // Upward recurrence: Y_{n+1}(x) = (2n/x)*Y_n(x) - Y_{n-1}(x)
+            double yPrev = Y0(x);
+            double yCurr = Y1(x);
+            for (long k = 1; k < n; k++)
+            {
+                double yNext = (2.0 * k / x) * yCurr - yPrev;
+                yPrev = yCurr;
+                yCurr = yNext;
+            }
+            return yCurr;
+        }
         public static double Gamma(double x) => System.Math.Exp(LogGamma(x));
         public static double Lgamma(double x) { var (r, _) = LgammaFull(x); return r; }
         private static (double, long) LgammaFull(double x)

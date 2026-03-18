@@ -50,5 +50,20 @@ namespace Ngo.Compiler.Emit.Builder
             => _tb.DefineMethodOverride(((LiveMethodBuilder)body).Inner, declaration);
 
         public Type CreateType() => _tb.CreateType()!;
+
+        public MethodInfo DefinePInvokeMethod(string name, string dllName, string entryPoint,
+            MethodAttributes attrs, CallingConventions callingConvention,
+            Type returnType, Type[] paramTypes,
+            System.Runtime.InteropServices.CallingConvention nativeCallConv,
+            System.Runtime.InteropServices.CharSet charset)
+        {
+            var method = _tb.DefinePInvokeMethod(
+                name, dllName, entryPoint,
+                attrs, callingConvention,
+                returnType, paramTypes,
+                nativeCallConv, charset);
+            method.SetImplementationFlags(MethodImplAttributes.PreserveSig);
+            return method;
+        }
     }
 }

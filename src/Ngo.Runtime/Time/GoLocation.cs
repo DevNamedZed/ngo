@@ -27,11 +27,19 @@ namespace Ngo.Runtime.Time
     {
         public string Name { get; }
         public TimeSpan Offset { get; }
+        public TimeZoneInfo? TimeZone { get; }
 
         public GoLocation(string name, TimeSpan offset)
         {
             Name = name;
             Offset = offset;
+        }
+
+        public GoLocation(string name, TimeZoneInfo timeZone)
+        {
+            Name = name;
+            TimeZone = timeZone;
+            Offset = timeZone.BaseUtcOffset;
         }
 
         [GoMethod]

@@ -9,6 +9,7 @@ namespace Ngo.Runtime.Bytes
     {
         private byte[] _data;
         private int _pos;
+        private int _prevRune = -1;
 
         public Reader(Slice<byte> b)
         {
@@ -130,6 +131,7 @@ namespace Ngo.Runtime.Bytes
             }
             var slice = new Slice<byte>(_data, _pos, size);
             var (r, sz) = Utf8.Package.DecodeRune(slice);
+            _prevRune = _pos;
             _pos += (int)sz;
             return (r, sz, null);
         }
@@ -138,8 +140,13 @@ namespace Ngo.Runtime.Bytes
         [return: GoReturn("error")]
         public object? UnreadRune()
         {
-            // stub
-            return "bytes.Reader.UnreadRune: not implemented";
+            if (_prevRune < 0)
+            {
+                return "bytes.Reader.UnreadRune: previous operation was not ReadRune";
+            }
+            _pos = _prevRune;
+            _prevRune = -1;
+            return null;
         }
     }
 }

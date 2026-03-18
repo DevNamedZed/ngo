@@ -214,8 +214,28 @@ namespace Ngo.Runtime.Time
         [return: GoReturn("Time", "error")]
         public static (GoTimeValue, object?) ParseInLocation(string layout, string value, [GoParam("*Location")] object? loc)
         {
-            // Stub: delegates to Parse (ignores location)
-            return Parse(layout, value);
+            // Parse the time, then apply location
+            var (result, err) = Parse(layout, value);
+            if (err != null)
+            {
+                return (result, err);
+            }
+
+            // If a location is provided, apply its timezone
+            if (loc is GoLocation goLoc && goLoc.TimeZone != null)
+            {
+                try
+                {
+                    var converted = TimeZoneInfo.ConvertTime(result.Value, goLoc.TimeZone);
+                    return (new GoTimeValue(converted), null);
+                }
+                catch
+                {
+                    // Fall back to parsed time if timezone conversion fails
+                }
+            }
+
+            return (result, null);
         }
 
         // time.ParseDuration(s string) (Duration, error)
@@ -324,8 +344,18 @@ namespace Ngo.Runtime.Time
         [return: GoReturn("<-chan Time")]
         public static object After([GoParam("Duration")] long d)
         {
-            // Stub: returns null channel placeholder
-            return null!;
+            var ch = new Channel<GoTimeValue>(1);
+            var durationMs = d / Millisecond;
+            if (durationMs < 1)
+            {
+                durationMs = 1;
+            }
+            System.Threading.ThreadPool.QueueUserWorkItem(_ =>
+            {
+                System.Threading.Thread.Sleep((int)durationMs);
+                ch.TrySend(GoTime.Now());
+            });
+            return ch;
         }
 
         // time.Tick(d Duration) <-chan Time
@@ -333,8 +363,12 @@ namespace Ngo.Runtime.Time
         [return: GoReturn("<-chan Time")]
         public static object Tick([GoParam("Duration")] long d)
         {
-            // Stub: returns null channel placeholder
-            return null!;
+            if (d <= 0)
+            {
+                return null!;
+            }
+            var ticker = NewTicker(d);
+            return ticker.C_chan;
         }
 
         // time.AfterFunc(d Duration, f func()) *Timer
@@ -342,8 +376,17 @@ namespace Ngo.Runtime.Time
         [return: GoReturn("*Timer")]
         public static GoTimer AfterFunc([GoParam("Duration")] long d, [GoParam("func()")] Action f)
         {
+            var durationMs = d / Millisecond;
+            if (durationMs < 1)
+            {
+                durationMs = 1;
+            }
             var timer = new GoTimer(d);
-            // Stub: in a real impl, would call f after d
+            System.Threading.ThreadPool.QueueUserWorkItem(_ =>
+            {
+                System.Threading.Thread.Sleep((int)durationMs);
+                f();
+            });
             return timer;
         }
 
@@ -356,14 +399,14 @@ namespace Ngo.Runtime.Time
             {
                 if (name == "UTC" || name == "")
                 {
-                    return (new GoLocation("UTC", TimeSpan.Zero), null);
+                    return (new GoLocation("UTC", TimeZoneInfo.Utc), null);
                 }
                 if (name == "Local")
                 {
-                    return (new GoLocation("Local", TimeZoneInfo.Local.BaseUtcOffset), null);
+                    return (new GoLocation("Local", TimeZoneInfo.Local), null);
                 }
                 var tz = TimeZoneInfo.FindSystemTimeZoneById(name);
-                return (new GoLocation(name, tz.BaseUtcOffset), null);
+                return (new GoLocation(name, tz), null);
             }
             catch
             {

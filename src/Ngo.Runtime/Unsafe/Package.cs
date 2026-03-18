@@ -53,12 +53,26 @@ namespace Ngo.Runtime.Unsafe
 
         public static string String(Ptr<byte> ptr, long len)
         {
-            return "";
+            if (len <= 0)
+            {
+                return "";
+            }
+            // Ptr<byte> wraps a single byte — this is a simplified model
+            // In real Go, unsafe.String creates a string from a byte pointer + length
+            // In our model, we construct from available data
+            var bytes = new byte[(int)len];
+            bytes[0] = ptr.Value;
+            return System.Text.Encoding.UTF8.GetString(bytes, 0, (int)len);
         }
 
         public static Slice<T> Slice<T>(Ptr<T> ptr, long len) where T : struct
         {
-            return new Slice<T>(new T[(int)len]);
+            var arr = new T[(int)len];
+            if (len > 0)
+            {
+                arr[0] = ptr.Value;
+            }
+            return new Slice<T>(arr);
         }
 
         public static nuint Alignof(object? x)

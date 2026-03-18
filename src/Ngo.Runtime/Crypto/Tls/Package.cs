@@ -1,3 +1,9 @@
+using System;
+using System.IO;
+using System.Net.Security;
+using System.Net.Sockets;
+using System.Security.Authentication;
+using System.Security.Cryptography.X509Certificates;
 using Ngo.Runtime.Discovery;
 
 namespace Ngo.Runtime.Crypto.Tls
@@ -53,29 +59,149 @@ namespace Ngo.Runtime.Crypto.Tls
         [GoConst(Type = "tls.ClientAuthType")]
         public const long RequireAndVerifyClientCert = 4;
 
+        // Renegotiation constants
+        [GoConst(Type = "tls.RenegotiationSupport")]
+        public const long RenegotiateNever = 0;
+        [GoConst(Type = "tls.RenegotiationSupport")]
+        public const long RenegotiateOnceAsClient = 1;
+        [GoConst(Type = "tls.RenegotiationSupport")]
+        public const long RenegotiateFreelyAsClient = 2;
+
+        // CurveID constants
+        [GoConst(Type = "tls.CurveID")]
+        public const long CurveP256 = 23;
+        [GoConst(Type = "tls.CurveID")]
+        public const long CurveP384 = 24;
+        [GoConst(Type = "tls.CurveID")]
+        public const long CurveP521 = 25;
+        [GoConst(Type = "tls.CurveID")]
+        public const long X25519 = 29;
+
         // tls.Dial(network, addr string, config *Config) (*Conn, error)
         [GoFunc]
         [return: GoReturn("*tls.Conn", "error")]
         public static (object?, object?) Dial(string network, string addr, [GoParam("*tls.Config")] GoConfig? config)
-            => (null, null);
+        {
+            try
+            {
+                // Parse host:port
+                string host;
+                int port;
+                int lastColon = addr.LastIndexOf(':');
+                if (lastColon >= 0)
+                {
+                    host = addr.Substring(0, lastColon);
+                    if (!int.TryParse(addr.Substring(lastColon + 1), out port))
+                    {
+                        port = 443;
+                    }
+                }
+                else
+                {
+                    host = addr;
+                    port = 443;
+                }
+
+                string serverName = config?.ServerName ?? host;
+                if (string.IsNullOrEmpty(serverName))
+                {
+                    serverName = host;
+                }
+
+                var tcpClient = new TcpClient();
+                tcpClient.Connect(host, port);
+
+                bool skipVerify = config?.InsecureSkipVerify ?? false;
+                RemoteCertificateValidationCallback? validationCallback = null;
+                if (skipVerify)
+                {
+                    validationCallback = (sender, certificate, chain, errors) => true;
+                }
+
+                var sslStream = new SslStream(tcpClient.GetStream(), false, validationCallback);
+
+                var sslOptions = new SslClientAuthenticationOptions
+                {
+                    TargetHost = serverName,
+                    EnabledSslProtocols = MapTlsVersion(config),
+                };
+
+                sslStream.AuthenticateAsClient(sslOptions);
+
+                var conn = new GoConn(tcpClient, sslStream, serverName);
+                return (conn, null);
+            }
+            catch (Exception ex)
+            {
+                return (null, "tls: " + ex.Message);
+            }
+        }
+
+        // tls.DialWithDialer(dialer *net.Dialer, network, addr string, config *Config) (*Conn, error)
+        [GoFunc]
+        [return: GoReturn("*tls.Conn", "error")]
+        public static (object?, object?) DialWithDialer(object? dialer, string network, string addr, [GoParam("*tls.Config")] GoConfig? config)
+        {
+            return Dial(network, addr, config);
+        }
 
         // tls.X509KeyPair(certPEMBlock, keyPEMBlock []byte) (Certificate, error)
         [GoFunc]
         [return: GoReturn("tls.Certificate", "error")]
         public static (GoCertificate, object?) X509KeyPair(Slice<byte> certPEMBlock, Slice<byte> keyPEMBlock)
-            => (new GoCertificate(), null);
+        {
+            try
+            {
+                var certBytes = X509.Package.SliceToArray(certPEMBlock);
+                var keyBytes = X509.Package.SliceToArray(keyPEMBlock);
+
+                var certPem = System.Text.Encoding.ASCII.GetString(certBytes);
+                var keyPem = System.Text.Encoding.ASCII.GetString(keyBytes);
+
+                var x509Cert = X509Certificate2.CreateFromPem(certPem, keyPem);
+                var tlsCert = new GoCertificate
+                {
+                    Certificate_ = new Slice<Slice<byte>>(new[] { new Slice<byte>(x509Cert.RawData) }),
+                };
+
+                return (tlsCert, null);
+            }
+            catch (Exception ex)
+            {
+                return (new GoCertificate(), "tls: " + ex.Message);
+            }
+        }
 
         // tls.LoadX509KeyPair(certFile, keyFile string) (Certificate, error)
         [GoFunc]
         [return: GoReturn("tls.Certificate", "error")]
         public static (GoCertificate, object?) LoadX509KeyPair(string certFile, string keyFile)
-            => (new GoCertificate(), null);
+        {
+            try
+            {
+                var certPem = File.ReadAllBytes(certFile);
+                var keyPem = File.ReadAllBytes(keyFile);
+                return X509KeyPair(new Slice<byte>(certPem), new Slice<byte>(keyPem));
+            }
+            catch (Exception ex)
+            {
+                return (new GoCertificate(), "tls: " + ex.Message);
+            }
+        }
 
         // tls.Listen(network, laddr string, config *Config) (net.Listener, error)
         [GoFunc]
         [return: GoReturn("net.Listener", "error")]
         public static (object?, object?) Listen(string network, string laddr, [GoParam("*tls.Config")] GoConfig? config)
-            => (null, null);
+        {
+            // For TLS server listeners, delegate to net.Listen — TLS wrapping happens per-connection
+            var (listener, err) = Ngo.Runtime.Net.GoNet.Listen(network, laddr);
+            if (err != null)
+            {
+                return (null, err);
+            }
+            return (listener, null);
+        }
 
         // tls.Client(conn net.Conn, config *Config) *Conn
         [GoFunc]
@@ -94,5 +220,53 @@ namespace Ngo.Runtime.Crypto.Tls
         [return: GoReturn("net.Listener")]
         public static object? NewListener([GoParam("net.Listener")] object? inner, [GoParam("*tls.Config")] GoConfig? config)
             => inner;
+
+        // tls.CipherSuiteName(id uint16) string
+        [GoFunc]
+        public static string CipherSuiteName(long id)
+        {
+            return id switch
+            {
+                0x002F => "TLS_RSA_WITH_AES_128_CBC_SHA",
+                0x0035 => "TLS_RSA_WITH_AES_256_CBC_SHA",
+                0x009C => "TLS_RSA_WITH_AES_128_GCM_SHA256",
+                0x009D => "TLS_RSA_WITH_AES_256_GCM_SHA384",
+                0xC02F => "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+                0xC030 => "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+                0xC02B => "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+                0xC02C => "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+                0x1301 => "TLS_AES_128_GCM_SHA256",
+                0x1302 => "TLS_AES_256_GCM_SHA384",
+                0x1303 => "TLS_CHACHA20_POLY1305_SHA256",
+                _ => $"0x{id:X4}",
+            };
+        }
+
+        private static SslProtocols MapTlsVersion(GoConfig? config)
+        {
+            if (config == null)
+            {
+                return SslProtocols.None; // Let OS decide
+            }
+
+            SslProtocols protocols = SslProtocols.None;
+            if (config.MinVersion > 0 || config.MaxVersion > 0)
+            {
+                ushort min = config.MinVersion > 0 ? config.MinVersion : (ushort)0x0303;
+                ushort max = config.MaxVersion > 0 ? config.MaxVersion : (ushort)0x0304;
+
+                // TLS 1.0 and 1.1 are obsolete in .NET — only support 1.2+
+                if (min <= 0x0303 && max >= 0x0303)
+                {
+                    protocols |= SslProtocols.Tls12;
+                }
+                if (min <= 0x0304 && max >= 0x0304)
+                {
+                    protocols |= SslProtocols.Tls13;
+                }
+            }
+
+            return protocols == 0 ? SslProtocols.None : protocols;
+        }
     }
 }

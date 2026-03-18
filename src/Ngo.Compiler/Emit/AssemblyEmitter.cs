@@ -50,6 +50,23 @@ namespace Ngo.Compiler.Emit
 
             EmitCore(result, moduleBuilder, options, compilationContext);
 
+            // For ngo run: compile CGo native library to temp directory
+            if (compilationContext.CgoPreamble != null && compilationContext.CgoPreamble.HasCSource)
+            {
+                string tempDir = Path.Combine(Path.GetTempPath(), "ngo", "run");
+                Directory.CreateDirectory(tempDir);
+                CompileCgoNativeLibrary(compilationContext, Path.Combine(tempDir, "dummy.dll"));
+
+                // Add temp dir to native library search path
+                var nativeLibDir = compilationContext.CgoResult?.NativeLibraryPath != null
+                    ? Path.GetDirectoryName(compilationContext.CgoResult.NativeLibraryPath) ?? tempDir
+                    : tempDir;
+                Environment.SetEnvironmentVariable("LD_LIBRARY_PATH",
+                    nativeLibDir + ":" + (Environment.GetEnvironmentVariable("LD_LIBRARY_PATH") ?? ""));
+                Environment.SetEnvironmentVariable("PATH",
+                    nativeLibDir + Path.PathSeparator + (Environment.GetEnvironmentVariable("PATH") ?? ""));
+            }
+
             return asmBuilder;
         }
 
@@ -105,6 +122,64 @@ namespace Ngo.Compiler.Emit
 
             using var fileStream = new FileStream(outputPath, FileMode.Create, FileAccess.Write);
             peBlob.WriteContentTo(fileStream);
+
+            // If CGo is in use, compile C code and copy native library to output directory
+            if (compilationContext.CgoPreamble != null && compilationContext.CgoPreamble.HasCSource)
+            {
+                CompileCgoNativeLibrary(compilationContext, outputPath);
+            }
+        }
+
+        /// <summary>
+        /// Compile CGo C preamble to a native shared library and place it next to the output assembly.
+        /// </summary>
+        private static void CompileCgoNativeLibrary(Semantics.CompilationContext compilation, string outputPath)
+        {
+            var preamble = compilation.CgoPreamble;
+            if (preamble == null || !preamble.HasCSource)
+            {
+                return;
+            }
+
+            try
+            {
+                var cacheDir = Path.Combine(Path.GetTempPath(), "ngo", "cache");
+                var cgoCompiler = new Cgo.CgoCompiler(cacheDir);
+
+                var probeRequest = new Cgo.CgoProbeRequest();
+                probeRequest.TypeSizes.Add("int");
+                probeRequest.TypeSizes.Add("long");
+                probeRequest.TypeSizes.Add("unsigned long");
+
+                var result = cgoCompiler.Compile(preamble, probeRequest, "main");
+
+                if (result.Success && result.NativeLibraryPath != null)
+                {
+                    // Copy native library to output directory
+                    string outputDir = Path.GetDirectoryName(outputPath) ?? ".";
+                    string libFileName = Path.GetFileName(result.NativeLibraryPath);
+                    string targetPath = Path.Combine(outputDir, libFileName);
+
+                    if (result.NativeLibraryPath != targetPath)
+                    {
+                        File.Copy(result.NativeLibraryPath, targetPath, overwrite: true);
+                    }
+
+                    compilation.CgoResult = result;
+
+                    // Save CGo metadata for cache
+                    if (compilation.ProjectRoot != null)
+                    {
+                        var pkgCacheDir = NgoArchive.GetCacheDir(compilation.ProjectRoot);
+                        Cgo.CgoArchiveManager.SaveCgoMetadata(
+                            NgoArchive.GetArchivePath(pkgCacheDir, "main"), result);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"cgo: warning: failed to compile C code: {ex.Message}");
+            }
         }
 
         /// <summary>
@@ -120,6 +195,13 @@ namespace Ngo.Compiler.Emit
             {
                 var linked = new HashSet<string>();
                 LinkDependencies(result.Root, ctx, compilationContext, linked);
+            }
+
+            // Emit CGo P/Invoke stubs BEFORE package emission
+            // so method bodies can resolve C.funcname() calls
+            if (compilationContext.CgoPreamble != null)
+            {
+                Cgo.CgoPInvokeEmitter.Emit(ctx, compilationContext);
             }
 
             // Emit the main package
@@ -146,6 +228,12 @@ namespace Ngo.Compiler.Emit
 
                 // Skip runtime packages — they're in Ngo.Runtime.dll
                 if (RuntimePackageResolver.Instance.Resolve(importPath) != null)
+                {
+                    continue;
+                }
+
+                // Skip the C pseudo-package — handled by CGo P/Invoke emission
+                if (importPath == "C")
                 {
                     continue;
                 }

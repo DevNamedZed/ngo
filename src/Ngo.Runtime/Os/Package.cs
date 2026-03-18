@@ -573,8 +573,22 @@ namespace Ngo.Runtime.Os
         [return: GoReturn("error")]
         public static object? Chtimes(string name, [GoParam("interface{}")] object atime, [GoParam("interface{}")] object mtime)
         {
-            // Stub: time.Time not fully modeled
-            return null;
+            try
+            {
+                if (atime is Time.GoTimeValue atv)
+                {
+                    File.SetLastAccessTimeUtc(name, atv.Value.UtcDateTime);
+                }
+                if (mtime is Time.GoTimeValue mtv)
+                {
+                    File.SetLastWriteTimeUtc(name, mtv.Value.UtcDateTime);
+                }
+                return null;
+            }
+            catch (Exception ex)
+            {
+                return ex.Message;
+            }
         }
 
         // os.Link(oldname, newname string) error
@@ -812,7 +826,9 @@ namespace Ngo.Runtime.Os
         [return: GoReturn("interface{}")]
         public static object DirFS(string dir)
         {
-            return dir; // Stub
+            var fs = new Embed.FS();
+            fs.SetBasePath(dir);
+            return fs;
         }
     }
 }

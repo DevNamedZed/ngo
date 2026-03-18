@@ -10,6 +10,11 @@ namespace Ngo.Runtime.Log.Internal
         // output function. It allows slog.defaultHandler to call into an
         // unexported function of the log package.
         [GoVar(Type = "func(uintptr, []byte) error")]
-        public static Func<nuint, Slice<byte>, object?>? DefaultOutput;
+        public static Func<nuint, Slice<byte>, object?>? DefaultOutput = (calldepth, buf) =>
+        {
+            var text = System.Text.Encoding.UTF8.GetString(buf.AsSpan());
+            Console.Error.Write(text);
+            return null;
+        };
     }
 }

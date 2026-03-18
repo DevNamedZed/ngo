@@ -1,4 +1,5 @@
 using Ngo.Runtime.Discovery;
+using Ngo.Runtime.Io;
 
 namespace Ngo.Runtime.Archive.Tar
 {
@@ -34,6 +35,12 @@ namespace Ngo.Runtime.Archive.Tar
         // Format constants
         [GoConst(Type = "tar.Format")]
         public const long FormatUnknown = 0;
+        [GoConst(Type = "tar.Format")]
+        public const long FormatUSTAR = 1;
+        [GoConst(Type = "tar.Format")]
+        public const long FormatPAX = 2;
+        [GoConst(Type = "tar.Format")]
+        public const long FormatGNU = 3;
 
         // Error variables
         [GoVar] public static readonly object? ErrHeader = "archive/tar: invalid tar header";
@@ -45,16 +52,25 @@ namespace Ngo.Runtime.Archive.Tar
         // tar.NewReader(r io.Reader) *Reader
         [GoFunc]
         [return: GoReturn("*tar.Reader")]
-        public static GoReader NewReader([GoParam("io.Reader")] object? r) => new GoReader();
+        public static GoReader NewReader([GoParam("io.Reader")] object? r)
+        {
+            return new GoReader(r as IGoReader);
+        }
 
         // tar.NewWriter(w io.Writer) *Writer
         [GoFunc]
         [return: GoReturn("*tar.Writer")]
-        public static GoWriter NewWriter([GoParam("io.Writer")] object? w) => new GoWriter();
+        public static GoWriter NewWriter([GoParam("io.Writer")] object? w)
+        {
+            return new GoWriter(w as IGoWriter);
+        }
 
         // tar.FileInfoHeader(fi fs.FileInfo, link string) (*Header, error)
         [GoFunc]
         [return: GoReturn("*tar.Header", "error")]
-        public static (GoHeader?, object?) FileInfoHeader([GoParam("fs.FileInfo")] object? fi, string link) => (new GoHeader(), null);
+        public static (GoHeader?, object?) FileInfoHeader([GoParam("fs.FileInfo")] object? fi, string link)
+        {
+            return (new GoHeader(), null);
+        }
     }
 }

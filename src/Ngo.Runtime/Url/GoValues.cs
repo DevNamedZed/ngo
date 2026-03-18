@@ -44,6 +44,25 @@ namespace Ngo.Runtime.Url
         public bool Has(string key) => _values.ContainsKey(key);
 
         [GoMethod]
-        public string Encode() => "";
+        public string Encode()
+        {
+            var sb = new System.Text.StringBuilder();
+            bool first = true;
+            foreach (var kv in _values)
+            {
+                for (int i = 0; i < kv.Value.Len; i++)
+                {
+                    if (!first)
+                    {
+                        sb.Append('&');
+                    }
+                    sb.Append(System.Uri.EscapeDataString(kv.Key));
+                    sb.Append('=');
+                    sb.Append(System.Uri.EscapeDataString(kv.Value[i]));
+                    first = false;
+                }
+            }
+            return sb.ToString();
+        }
     }
 }

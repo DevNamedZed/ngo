@@ -173,7 +173,25 @@ namespace Ngo.Runtime.Http
         [return: GoReturn("*Request", "error")]
         public static (Request, object?) NewRequest(string method, string url, object? body)
         {
-            return (new Request { Method = method, URLPath = url }, null);
+            var request = new Request
+            {
+                Method = method,
+                URLPath = url,
+                Body = body,
+                Header = new Header(),
+                Proto = "HTTP/1.1",
+                ProtoMajor = 1,
+                ProtoMinor = 1,
+            };
+
+            var (parsedUrl, _) = Url.Package.Parse(url);
+            if (parsedUrl != null)
+            {
+                request.URL = parsedUrl;
+                request.Host = parsedUrl.Host;
+            }
+
+            return (request, null);
         }
 
         [GoFunc]
@@ -205,7 +223,10 @@ namespace Ngo.Runtime.Http
 
         [GoFunc]
         [return: GoReturn("Handler")]
-        public static object NotFoundHandler() => new object();
+        public static object NotFoundHandler()
+        {
+            return new HandlerFuncWrapper((w, r) => NotFound(w, r));
+        }
 
         [GoFunc]
         public static object MaxBytesReader(object w, object r, long n) => r;
@@ -218,7 +239,7 @@ namespace Ngo.Runtime.Http
         public static (object?, object?) ProxyFromEnvironment(Request req) => (null, null);
 
         [GoFunc]
-        public static string CanonicalHeaderKey(string s) => s;
+        public static string CanonicalHeaderKey(string s) => Net.Textproto.Package.CanonicalMIMEHeaderKey(s);
 
         [GoFunc]
         public static void SetCookie(ResponseWriter w, Cookie cookie)
@@ -270,16 +291,76 @@ namespace Ngo.Runtime.Http
         public static string Dir(string name) => name;
 
         [GoFunc]
-        public static void ServeContent(object w, object r, string name, object modtime, object content) { }
+        public static void ServeContent(object w, object r, string name, object modtime, object content)
+        {
+            if (w is ResponseWriter rw && content is Io.IGoReader reader)
+            {
+                string contentType = DetectContentTypeFromName(name);
+                rw.Header().Set("Content-Type", contentType);
+                var buf = new byte[32768];
+                while (true)
+                {
+                    var slice = new Slice<byte>(buf);
+                    var (n, err) = reader.Read(slice);
+                    if (n > 0)
+                    {
+                        rw.Write(new Slice<byte>(buf, 0, n));
+                    }
+                    if (err != null)
+                    {
+                        break;
+                    }
+                }
+            }
+        }
 
         [GoFunc]
-        public static void ServeFile(object w, object r, string name) { }
+        public static void ServeFile(object w, object r, string name)
+        {
+            if (w is ResponseWriter rw)
+            {
+                try
+                {
+                    if (!System.IO.File.Exists(name))
+                    {
+                        NotFound(rw, r as Request ?? new Request());
+                        return;
+                    }
+                    var bytes = System.IO.File.ReadAllBytes(name);
+                    string contentType = DetectContentTypeFromName(name);
+                    rw.Header().Set("Content-Type", contentType);
+                    rw.Write(new Slice<byte>(bytes));
+                }
+                catch
+                {
+                    Error(rw, "500 Internal Server Error", 500);
+                }
+            }
+        }
 
         [GoFunc]
-        public static object FileServer(object root) => new object();
+        public static object FileServer(object root)
+        {
+            string dir = root as string ?? ".";
+            return new FileServerHandler(dir);
+        }
 
         [GoFunc]
-        public static object StripPrefix(string prefix, object h) => h;
+        public static object StripPrefix(string prefix, object h)
+        {
+            return new StripPrefixHandler(prefix, h);
+        }
+
+        private static string DetectContentTypeFromName(string name)
+        {
+            string ext = System.IO.Path.GetExtension(name);
+            string mimeType = Mime.Package.TypeByExtension(ext);
+            if (!string.IsNullOrEmpty(mimeType))
+            {
+                return mimeType;
+            }
+            return "application/octet-stream";
+        }
 
         [GoFunc]
         public static object TimeoutHandler(object h, long dt, string msg) => h;
@@ -329,13 +410,16 @@ namespace Ngo.Runtime.Http
         [return: GoReturn("*Request", "error")]
         public static (Request, object?) NewRequestWithContext(object? ctx, string method, string url, object? body)
         {
-            return (new Request { Method = method, URLPath = url }, null);
+            return NewRequest(method, url, body);
         }
 
         // RedirectHandler(url string, code int) Handler
         [GoFunc]
         [return: GoReturn("Handler")]
-        public static object RedirectHandler(string url, long code) => new object();
+        public static object RedirectHandler(string url, long code)
+        {
+            return new RedirectHandlerImpl(url, code);
+        }
 
         // ErrUseLastResponse
         [GoVar] public static readonly object? ErrUseLastResponse = "net/http: use last response";
@@ -347,5 +431,118 @@ namespace Ngo.Runtime.Http
     {
         [GoField(Name = "Method")] public string Method { get; set; } = "";
         [GoField(Name = "Header")] public Header Header { get; set; } = new Header();
+    }
+
+    internal class RedirectHandlerImpl : IHandler
+    {
+        private readonly string _url;
+        private readonly long _code;
+
+        public RedirectHandlerImpl(string url, long code)
+        {
+            _url = url;
+            _code = code;
+        }
+
+        public void ServeHTTP(ResponseWriter w, Request r)
+        {
+            Package.Redirect(w, r, _url, _code);
+        }
+    }
+
+    internal class FileServerHandler : IHandler
+    {
+        private readonly string _root;
+
+        public FileServerHandler(string root)
+        {
+            _root = root;
+        }
+
+        public void ServeHTTP(ResponseWriter w, Request r)
+        {
+            string urlPath = r.URLPath;
+            if (r.URL is Url.GoURL goUrl)
+            {
+                urlPath = goUrl.Path;
+            }
+            if (string.IsNullOrEmpty(urlPath))
+            {
+                urlPath = "/";
+            }
+
+            // Clean path and resolve against root
+            string filePath = urlPath.TrimStart('/').Replace('/', System.IO.Path.DirectorySeparatorChar);
+            string fullPath = System.IO.Path.Combine(_root, filePath);
+
+            // Directory listing
+            if (System.IO.Directory.Exists(fullPath))
+            {
+                string indexPath = System.IO.Path.Combine(fullPath, "index.html");
+                if (System.IO.File.Exists(indexPath))
+                {
+                    fullPath = indexPath;
+                }
+                else
+                {
+                    Package.NotFound(w, r);
+                    return;
+                }
+            }
+
+            if (!System.IO.File.Exists(fullPath))
+            {
+                Package.NotFound(w, r);
+                return;
+            }
+
+            Package.ServeFile(w, r, fullPath);
+        }
+    }
+
+    internal class StripPrefixHandler : IHandler
+    {
+        private readonly string _prefix;
+        private readonly object _handler;
+
+        public StripPrefixHandler(string prefix, object handler)
+        {
+            _prefix = prefix;
+            _handler = handler;
+        }
+
+        public void ServeHTTP(ResponseWriter w, Request r)
+        {
+            string path = r.URLPath;
+            if (r.URL is Url.GoURL goUrl)
+            {
+                path = goUrl.Path;
+            }
+
+            if (!string.IsNullOrEmpty(path) && path.StartsWith(_prefix))
+            {
+                var newRequest = r.Clone(null);
+                string newPath = path.Substring(_prefix.Length);
+                if (!newPath.StartsWith("/"))
+                {
+                    newPath = "/" + newPath;
+                }
+                newRequest.URLPath = newPath;
+                if (newRequest.URL is Url.GoURL newUrl)
+                {
+                    newUrl.Path = newPath;
+                }
+                r = newRequest;
+            }
+
+            if (_handler is IHandler h)
+            {
+                h.ServeHTTP(w, r);
+            }
+            else if (_handler is ServeMux mux)
+            {
+                mux.ServeHTTP(w, r);
+            }
+        }
     }
 }

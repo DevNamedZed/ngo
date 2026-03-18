@@ -23,6 +23,24 @@ namespace Ngo.Runtime.Http
             _response = response;
             StatusCode = (long)response.StatusCode;
             Status = $"{(int)response.StatusCode} {response.ReasonPhrase}";
+            ContentLength = response.Content.Headers.ContentLength ?? -1;
+            Body = new ResponseBody(response);
+
+            // Copy headers
+            foreach (var header in response.Headers)
+            {
+                foreach (var value in header.Value)
+                {
+                    Header.Add(header.Key, value);
+                }
+            }
+            foreach (var header in response.Content.Headers)
+            {
+                foreach (var value in header.Value)
+                {
+                    Header.Add(header.Key, value);
+                }
+            }
         }
 
         [GoField(Name = "StatusCode")] public long StatusCode { get; set; }

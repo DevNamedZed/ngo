@@ -558,7 +558,16 @@ namespace Ngo.Runtime.Syscall
         [GoFunc]
         public static long ByteSliceToString(Slice<byte> s)
         {
-            return 0; // stub
+            // In Go, this converts a NUL-terminated byte slice to a string
+            // Returns the length of the string (up to first NUL byte)
+            for (int i = 0; i < s.Len; i++)
+            {
+                if (s[i] == 0)
+                {
+                    return i;
+                }
+            }
+            return s.Len;
         }
 
         [GoFunc]

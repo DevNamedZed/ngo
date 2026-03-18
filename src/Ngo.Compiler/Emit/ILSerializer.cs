@@ -87,6 +87,10 @@ namespace Ngo.Compiler.Emit
             codeStream.CopyTo(stream);
             var ilCodeLen = (uint)(stream.Position - ilCodeOffset);
 
+            // Section 4: CGo (empty — filled by CgoArchiveManager if needed)
+            var cgoOffset = (uint)stream.Position;
+            uint cgoLen = 0;
+
             // Write real header offsets
             stream.Seek(6, SeekOrigin.Begin);
             writer.Write(goMetaOffset);
@@ -95,6 +99,8 @@ namespace Ngo.Compiler.Emit
             writer.Write(ilMetaLen);
             writer.Write(ilCodeOffset);
             writer.Write(ilCodeLen);
+            writer.Write(cgoOffset);
+            writer.Write(cgoLen);
         }
 
         /// <summary>
@@ -125,6 +131,7 @@ namespace Ngo.Compiler.Emit
             var ilMetaLen = reader.ReadUInt32();
             var ilCodeOffset = reader.ReadUInt32();
             var ilCodeLen = reader.ReadUInt32();
+            reader.ReadUInt32(); reader.ReadUInt32(); // cgo
 
             if (ilMetaLen == 0 || ilCodeLen == 0)
             {

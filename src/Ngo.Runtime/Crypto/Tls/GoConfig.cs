@@ -29,6 +29,31 @@ namespace Ngo.Runtime.Crypto.Tls
 
         [GoMethod]
         [return: GoReturn("*tls.Config")]
-        public GoConfig Clone() => new GoConfig();
+        public GoConfig Clone()
+        {
+            return new GoConfig
+            {
+                Certificates = Certificates,
+                InsecureSkipVerify = InsecureSkipVerify,
+                MinVersion = MinVersion,
+                MaxVersion = MaxVersion,
+                ServerName = ServerName,
+                RootCAs = RootCAs,
+                ClientCAs = ClientCAs,
+                ClientAuth = ClientAuth,
+                CipherSuites = CipherSuites,
+                NextProtos = NextProtos,
+                CurvePreferences = CurvePreferences,
+                PreferServerCipherSuites = PreferServerCipherSuites,
+                GetCertificate = GetCertificate,
+                GetConfigForClient = GetConfigForClient,
+                VerifyPeerCertificate = VerifyPeerCertificate,
+                VerifyConnection = VerifyConnection,
+                SessionTicketsDisabled = SessionTicketsDisabled,
+                Renegotiation = Renegotiation,
+                KeyLogWriter = KeyLogWriter,
+                Time = Time,
+            };
+        }
     }
 }

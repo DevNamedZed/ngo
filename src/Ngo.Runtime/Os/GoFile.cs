@@ -217,7 +217,11 @@ namespace Ngo.Runtime.Os
         [return: GoReturn("uintptr")]
         public long Fd()
         {
-            return 0; // Stub
+            if (_stream is FileStream fs)
+            {
+                return fs.SafeFileHandle.DangerousGetHandle().ToInt64();
+            }
+            return unchecked((long)0xFFFFFFFFFFFFFFFF); // -1 for invalid fd
         }
 
         [GoMethod]
@@ -266,28 +270,109 @@ namespace Ngo.Runtime.Os
         [return: GoReturn("[]FileInfo", "error")]
         public (Slice<GoFileInfo>, object?) Readdir(long n)
         {
-            return (new Slice<GoFileInfo>(Array.Empty<GoFileInfo>()), null); // Stub
+            try
+            {
+                if (!Directory.Exists(_name))
+                {
+                    return (new Slice<GoFileInfo>(Array.Empty<GoFileInfo>()), $"readdir {_name}: not a directory");
+                }
+                var entries = Directory.GetFileSystemEntries(_name);
+                int count = n <= 0 ? entries.Length : (int)global::System.Math.Min(n, entries.Length);
+                var infos = new GoFileInfo[count];
+                for (int i = 0; i < count; i++)
+                {
+                    infos[i] = GoFileInfo.FromPath(entries[i]);
+                }
+                return (new Slice<GoFileInfo>(infos), null);
+            }
+            catch (Exception ex)
+            {
+                return (new Slice<GoFileInfo>(Array.Empty<GoFileInfo>()), ex.Message);
+            }
         }
 
         [GoMethod]
         [return: GoReturn("[]DirEntry", "error")]
         public (Slice<GoDirEntry>, object?) ReadDir(long n)
         {
-            return (new Slice<GoDirEntry>(Array.Empty<GoDirEntry>()), null); // Stub
+            try
+            {
+                if (!Directory.Exists(_name))
+                {
+                    return (new Slice<GoDirEntry>(Array.Empty<GoDirEntry>()), $"readdir {_name}: not a directory");
+                }
+                var entries = Directory.GetFileSystemEntries(_name);
+                Array.Sort(entries, StringComparer.Ordinal);
+                int count = n <= 0 ? entries.Length : (int)global::System.Math.Min(n, entries.Length);
+                var dirEntries = new GoDirEntry[count];
+                for (int i = 0; i < count; i++)
+                {
+                    string entryName = global::System.IO.Path.GetFileName(entries[i]);
+                    bool isDir = Directory.Exists(entries[i]);
+                    dirEntries[i] = new GoDirEntry(entryName, isDir);
+                }
+                return (new Slice<GoDirEntry>(dirEntries), null);
+            }
+            catch (Exception ex)
+            {
+                return (new Slice<GoDirEntry>(Array.Empty<GoDirEntry>()), ex.Message);
+            }
         }
 
         [GoMethod]
         [return: GoReturn("[]string", "error")]
         public (Slice<string>, object?) Readdirnames(long n)
         {
-            return (new Slice<string>(Array.Empty<string>()), null); // Stub
+            try
+            {
+                if (!Directory.Exists(_name))
+                {
+                    return (new Slice<string>(Array.Empty<string>()), $"readdir {_name}: not a directory");
+                }
+                var entries = Directory.GetFileSystemEntries(_name);
+                int count = n <= 0 ? entries.Length : (int)global::System.Math.Min(n, entries.Length);
+                var names = new string[count];
+                for (int i = 0; i < count; i++)
+                {
+                    names[i] = global::System.IO.Path.GetFileName(entries[i]);
+                }
+                return (new Slice<string>(names), null);
+            }
+            catch (Exception ex)
+            {
+                return (new Slice<string>(Array.Empty<string>()), ex.Message);
+            }
         }
 
         [GoMethod]
         [return: GoReturn("int64", "error")]
         public (long, object?) ReadFrom([GoParam("io.Reader")] object r)
         {
-            return (0, "not implemented"); // Stub
+            if (_stream == null)
+            {
+                return (0, "os: file not open");
+            }
+            if (r is IGoReader reader)
+            {
+                long total = 0;
+                var buf = new byte[32768];
+                while (true)
+                {
+                    var slice = new Slice<byte>(buf);
+                    var (n, err) = reader.Read(slice);
+                    if (n > 0)
+                    {
+                        _stream.Write(buf, 0, n);
+                        total += n;
+                    }
+                    if (err != null)
+                    {
+                        break;
+                    }
+                }
+                return (total, null);
+            }
+            return (0, "os: invalid reader");
         }
 
         [GoMethod]

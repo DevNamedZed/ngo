@@ -47,8 +47,7 @@ namespace Ngo.Runtime.Base64
         [return: GoReturn("io.WriteCloser")]
         public static object NewEncoder(Encoding enc, [GoParam("io.Writer")] object w)
         {
-            // Stub: return a writer-like object
-            return w;
+            return new Base64StreamEncoder(enc, w as Io.IGoWriter);
         }
 
         public static object NewDecoder(Encoding enc, [GoParam("io.Reader")] object r)

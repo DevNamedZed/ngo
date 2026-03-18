@@ -72,6 +72,28 @@ namespace Ngo.Compiler.Semantics
                 imports.AddRange(ResolveImports(file.Imports));
             }
 
+            // Scan for //export directives on functions (for CGo callbacks)
+            if (_context.Compilation?.CgoPreamble != null)
+            {
+                var exportScanner = new Cgo.CgoExportScanner();
+                var allFuncDecls = new List<Language.Syntax.FunctionDeclarationSyntax>();
+                foreach (var file in files)
+                {
+                    foreach (var member in file.Members)
+                    {
+                        if (member is Language.Syntax.FunctionDeclarationSyntax funcDecl)
+                        {
+                            allFuncDecls.Add(funcDecl);
+                        }
+                    }
+                }
+                var exports = exportScanner.Scan(allFuncDecls);
+                if (exports.Count > 0 && _context.Compilation != null)
+                {
+                    _context.Compilation.CgoExports = exports;
+                }
+            }
+
             // Pass 1: register all type, function, and method signatures from all files
             var functionSyntaxes = new List<FunctionDeclarationSyntax>();
             var methodSyntaxes = new List<MethodDeclarationSyntax>();
@@ -283,6 +305,18 @@ namespace Ngo.Compiler.Semantics
                 {
                     var path = spec.Path.Value as string ?? spec.Path.Text.Trim('"');
                     var span = _context.SpanOf(spec);
+
+                    // Handle import "C" — CGo pseudo-package
+                    if (path == "C")
+                    {
+                        var cgoPackage = BuildCgoPackage(importDecl, spec);
+                        if (cgoPackage != null)
+                        {
+                            _context.Scope.TryDeclare(cgoPackage);
+                            imports.Add(new ImportDeclaration(cgoPackage, "C", null, span));
+                        }
+                        continue;
+                    }
 
                     // Determine the local name for this import
                     string? alias = null;
@@ -1869,6 +1903,82 @@ namespace Ngo.Compiler.Semantics
                     return text.Substring(1, text.Length - 2);
             }
             return text;
+        }
+
+        /// <summary>
+        /// Build the C pseudo-package for import "C".
+        /// Extracts the preamble, runs the CGo probe, and builds typed symbols.
+        /// </summary>
+        private PackageSymbol? BuildCgoPackage(ImportDeclarationSyntax importDecl, ImportSpecSyntax spec)
+        {
+            // Extract preamble from the comment trivia before import "C"
+            var extractor = new Cgo.CgoPreambleExtractor();
+            var importToken = importDecl.ImportKeyword;
+            var preamble = extractor.Extract(spec, importToken, "");
+
+            // If import keyword didn't have the comments, try the path token
+            if (preamble == null || !preamble.HasCSource)
+            {
+                preamble = extractor.Extract(spec, spec.Path, "");
+            }
+
+            // Store preamble on the compilation for use by the emitter later
+            if (preamble != null && _context.Compilation != null)
+            {
+                _context.Compilation.SetCgoPreamble(preamble);
+            }
+
+            // Build the C pseudo-package with probe results
+            // The probe runs the C compiler to get exact type sizes for this platform
+            var probeResult = new Cgo.CgoProbeResult();
+
+            // If there's actual C source and a C compiler is available, run the probe
+            if (preamble != null && preamble.HasCSource)
+            {
+                try
+                {
+                    var cacheDir = System.IO.Path.Combine(
+                        System.IO.Path.GetTempPath(), "ngo", "cache");
+                    var cgoCompiler = new Cgo.CgoCompiler(cacheDir);
+                    var probeRequest = new Cgo.CgoProbeRequest();
+                    probeRequest.TypeSizes.Add("int");
+                    probeRequest.TypeSizes.Add("long");
+                    probeRequest.TypeSizes.Add("unsigned long");
+
+                    var result = cgoCompiler.Compile(preamble, probeRequest, "main");
+                    if (result.Success && result.ProbeResult != null)
+                    {
+                        probeResult = result.ProbeResult;
+                    }
+                }
+                catch
+                {
+                    // C compiler not available — proceed with default type sizes
+                }
+            }
+
+            // Extract function and struct declarations from the preamble
+            var functionExtractor = new Cgo.CgoPreambleFunctionExtractor();
+            var functions = new List<Cgo.CgoFunctionInfo>();
+            var structs = new List<Cgo.CgoStructInfo>();
+
+            if (preamble != null && preamble.HasCSource)
+            {
+                functions = functionExtractor.Extract(preamble.CSource);
+                structs = functionExtractor.ExtractStructs(preamble.CSource);
+            }
+
+            var symbolBuilder = new Cgo.CgoSymbolBuilder(probeResult);
+            var cgoPackage = symbolBuilder.BuildCPackage(functions, structs, "cgo_main");
+
+            // Store on compilation context for the emitter
+            if (_context.Compilation != null)
+            {
+                _context.Compilation.CgoPackage = cgoPackage;
+                _context.Compilation.CgoFunctions = functions;
+            }
+
+            return cgoPackage;
         }
     }
 }

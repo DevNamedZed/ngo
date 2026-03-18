@@ -171,6 +171,23 @@ namespace Ngo.Runtime.Crypto.Ecdsa
         [return: GoReturn("*ecdh.PublicKey", "error")]
         public (object?, object?) ECDH() => (null, null);
 
+        internal void SetFromParameters(ECParameters ecParams)
+        {
+            _ecParams = ecParams;
+            if (ecParams.Q.X != null)
+            {
+                var xInt = new Math.Big.GoInt();
+                xInt.SetBytes(new Slice<byte>(ecParams.Q.X));
+                X = xInt;
+            }
+            if (ecParams.Q.Y != null)
+            {
+                var yInt = new Math.Big.GoInt();
+                yInt.SetBytes(new Slice<byte>(ecParams.Q.Y));
+                Y = yInt;
+            }
+        }
+
         internal ECDsa ToECDsa()
         {
             var ecdsa = ECDsa.Create();

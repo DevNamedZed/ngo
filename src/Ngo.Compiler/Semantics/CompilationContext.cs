@@ -112,5 +112,37 @@ namespace Ngo.Compiler.Semantics
             var lastSlash = importPath.LastIndexOf('/');
             return lastSlash >= 0 ? importPath.Substring(lastSlash + 1) : importPath;
         }
+
+        /// <summary>
+        /// The CGo preamble extracted from import "C", if any.
+        /// Stored here so the emitter can access it for C compilation and P/Invoke generation.
+        /// </summary>
+        public Cgo.CgoPreamble? CgoPreamble { get; private set; }
+
+        /// <summary>
+        /// The compiled CGo result (native library path, probe results).
+        /// </summary>
+        public Cgo.CgoCompilationResult? CgoResult { get; set; }
+
+        /// <summary>
+        /// The C pseudo-package symbol, if import "C" was used.
+        /// Stored so the emitter can match FunctionSymbols to P/Invoke methods.
+        /// </summary>
+        public Symbols.PackageSymbol? CgoPackage { get; set; }
+
+        /// <summary>
+        /// C function info extracted from the preamble.
+        /// </summary>
+        public List<Cgo.CgoFunctionInfo>? CgoFunctions { get; set; }
+
+        /// <summary>
+        /// Go function name → C export name from //export directives.
+        /// </summary>
+        public Dictionary<string, string>? CgoExports { get; set; }
+
+        public void SetCgoPreamble(Cgo.CgoPreamble preamble)
+        {
+            CgoPreamble = preamble;
+        }
     }
 }

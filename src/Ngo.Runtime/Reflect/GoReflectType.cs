@@ -126,7 +126,41 @@ namespace Ngo.Runtime.Reflect
         }
 
         public bool AssignableTo(GoReflectType u) => u._clrType.IsAssignableFrom(_clrType);
-        public bool ConvertibleTo(GoReflectType u) => true; // stub
+        public bool ConvertibleTo(GoReflectType u)
+        {
+            if (_clrType == u._clrType)
+            {
+                return true;
+            }
+            if (u._clrType.IsAssignableFrom(_clrType))
+            {
+                return true;
+            }
+            // Numeric conversions
+            bool srcNumeric = IsNumericType(_clrType);
+            bool dstNumeric = IsNumericType(u._clrType);
+            if (srcNumeric && dstNumeric)
+            {
+                return true;
+            }
+            // string <-> []byte
+            if (_clrType == typeof(string) && u._clrType == typeof(Slice<byte>))
+            {
+                return true;
+            }
+            if (_clrType == typeof(Slice<byte>) && u._clrType == typeof(string))
+            {
+                return true;
+            }
+            return false;
+        }
+
+        private static bool IsNumericType(System.Type t)
+        {
+            return t == typeof(byte) || t == typeof(sbyte) || t == typeof(short) || t == typeof(ushort) ||
+                   t == typeof(int) || t == typeof(uint) || t == typeof(long) || t == typeof(ulong) ||
+                   t == typeof(float) || t == typeof(double);
+        }
         public bool Implements(GoReflectType u) => u._clrType.IsAssignableFrom(_clrType);
 
         public long NumIn()
@@ -168,7 +202,21 @@ namespace Ngo.Runtime.Reflect
 
         public bool IsVariadic()
         {
-            return false; // stub
+            if (Kind() != GoReflectKinds.Func)
+            {
+                return false;
+            }
+            var invoke = _clrType.GetMethod("Invoke");
+            if (invoke != null)
+            {
+                var parameters = invoke.GetParameters();
+                if (parameters.Length > 0)
+                {
+                    var lastParam = parameters[parameters.Length - 1];
+                    return lastParam.IsDefined(typeof(ParamArrayAttribute), false);
+                }
+            }
+            return false;
         }
 
         public long Size()

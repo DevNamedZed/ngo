@@ -616,9 +616,53 @@ namespace Ngo.Runtime.Bytes
         [GoFunc]
         public static Slice<byte> ToValidUTF8(Slice<byte> s, Slice<byte> replacement)
         {
-            // stub: bytes.ToValidUTF8(s, replacement []byte) []byte
-            // For now, return s unchanged (assumes valid UTF-8)
-            return Clone(s);
+            var result = new System.Collections.Generic.List<byte>();
+            int pos = 0;
+            while (pos < s.Len)
+            {
+                byte b = s[pos];
+                if (b < 0x80)
+                {
+                    result.Add(b);
+                    pos++;
+                    continue;
+                }
+                int runeLen = b < 0xE0 ? 2 : b < 0xF0 ? 3 : 4;
+                if (pos + runeLen > s.Len)
+                {
+                    for (int r = 0; r < replacement.Len; r++)
+                    {
+                        result.Add(replacement[r]);
+                    }
+                    break;
+                }
+                bool valid = true;
+                for (int i = 1; i < runeLen; i++)
+                {
+                    if ((s[pos + i] & 0xC0) != 0x80)
+                    {
+                        valid = false;
+                        break;
+                    }
+                }
+                if (valid)
+                {
+                    for (int i = 0; i < runeLen; i++)
+                    {
+                        result.Add(s[pos + i]);
+                    }
+                    pos += runeLen;
+                }
+                else
+                {
+                    for (int r = 0; r < replacement.Len; r++)
+                    {
+                        result.Add(replacement[r]);
+                    }
+                    pos++;
+                }
+            }
+            return new Slice<byte>(result.ToArray());
         }
 
         [GoFunc]

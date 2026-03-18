@@ -986,12 +986,28 @@ namespace Ngo.Compiler.Semantics
                 return new MethodValueExpression(target, typeMethod, funcType, span);
             }
 
-            // Empty interface (interface{}) allows any selector — return interface{} type
-            // The concrete type is unknown at compile time, so assume the field exists.
-            if (targetType is InterfaceTypeSymbol)
+            // Interface types allow any selector — the concrete type is unknown at compile time.
+            if (IsInterfaceType(targetType) || IsInterfaceType(resolvedTargetType))
             {
                 var syntheticField = new FieldSymbol(fieldName, targetType, 0);
                 return new SelectorExpression(target, syntheticField, targetType, span);
+            }
+
+            // Named slice/map/channel types can have methods — check them
+            if (targetType.TypeKind == TypeKind.Slice || targetType.TypeKind == TypeKind.Map ||
+                targetType.TypeKind == TypeKind.Channel)
+            {
+                var namedMethod = targetType.LookupMethod(fieldName);
+                if (namedMethod != null)
+                {
+                    var paramTypes = new TypeSymbol[namedMethod.Parameters.Count];
+                    for (int i = 0; i < namedMethod.Parameters.Count; i++)
+                    {
+                        paramTypes[i] = namedMethod.Parameters[i].Type;
+                    }
+                    var funcType = new FunctionTypeSymbol(paramTypes, namedMethod.ReturnTypes);
+                    return new MethodValueExpression(target, namedMethod, funcType, span);
+                }
             }
 
             // Type parameter with structural constraint (e.g. ~struct{...}): look up fields
@@ -1064,6 +1080,37 @@ namespace Ngo.Compiler.Semantics
             _context.Errors.ReportError(span, ErrorCode.InvalidSelector,
                 $"Type '{target.Type.Name}' does not support field access");
             return new ErrorExpression("Invalid selector", span);
+        }
+
+        private static bool IsInterfaceType(TypeSymbol type)
+        {
+            if (type is InterfaceTypeSymbol)
+            {
+                return true;
+            }
+            if (type.TypeKind == TypeKind.Interface)
+            {
+                return true;
+            }
+            // Check underlying type (for type aliases like crypto.PrivateKey = any)
+            var underlying = type.UnderlyingType;
+            if (underlying != null && underlying != type)
+            {
+                if (underlying is InterfaceTypeSymbol || underlying.TypeKind == TypeKind.Interface)
+                {
+                    return true;
+                }
+            }
+            // Check if name suggests it's an interface alias (any, error, etc.)
+            var resolved = type.Resolved();
+            if (resolved != type && resolved != null)
+            {
+                if (resolved is InterfaceTypeSymbol || resolved.TypeKind == TypeKind.Interface)
+                {
+                    return true;
+                }
+            }
+            return false;
         }
 
         private static TypeSymbol SubstituteConstraintTypeParam(

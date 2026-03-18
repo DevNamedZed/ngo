@@ -357,23 +357,79 @@ namespace Ngo.Runtime.Reflect
         [GoMethod]
         public GoReflectValue Slice(long i, long j)
         {
-            return this; // stub
+            if (_value == null)
+            {
+                return InvalidValue;
+            }
+            var type = _value.GetType();
+            var resliceMethod = type.GetMethod("Reslice", new[] { typeof(int), typeof(int) });
+            if (resliceMethod != null)
+            {
+                var result = resliceMethod.Invoke(_value, new object[] { (int)i, (int)j });
+                if (result != null)
+                {
+                    return new GoReflectValue(result, _type, _canSet);
+                }
+            }
+            return this;
         }
 
         [GoMethod]
         public GoReflectValue Slice3(long i, long j, long k)
         {
-            return this; // stub
+            if (_value == null)
+            {
+                return InvalidValue;
+            }
+            var type = _value.GetType();
+            var resliceMethod = type.GetMethod("Reslice", new[] { typeof(int), typeof(int), typeof(int) });
+            if (resliceMethod != null)
+            {
+                var result = resliceMethod.Invoke(_value, new object[] { (int)i, (int)j, (int)k });
+                if (result != null)
+                {
+                    return new GoReflectValue(result, _type, _canSet);
+                }
+            }
+            return this;
         }
 
         [GoMethod]
         public (GoReflectValue, bool) Recv()
         {
-            return (GoReflectValue.InvalidValue, false); // stub
+            if (_value == null)
+            {
+                return (GoReflectValue.InvalidValue, false);
+            }
+            var receiveMethod = _value.GetType().GetMethod("Receive");
+            if (receiveMethod != null)
+            {
+                var result = receiveMethod.Invoke(_value, null);
+                if (result != null)
+                {
+                    var resultType = result.GetType();
+                    var item1 = resultType.GetField("Item1")?.GetValue(result);
+                    var item2 = resultType.GetField("Item2")?.GetValue(result);
+                    bool ok = item2 is bool b && b;
+                    return (item1 != null ? Reflect.GoReflect.ValueOf(item1) : GoReflectValue.InvalidValue, ok);
+                }
+            }
+            return (GoReflectValue.InvalidValue, false);
         }
 
         [GoMethod]
-        public void Send(GoReflectValue x) { } // stub
+        public void Send(GoReflectValue x)
+        {
+            if (_value == null)
+            {
+                return;
+            }
+            var sendMethod = _value.GetType().GetMethod("Send");
+            if (sendMethod != null)
+            {
+                sendMethod.Invoke(_value, new[] { x.Interface() });
+            }
+        }
 
         [GoMethod]
         public long NumMethod()
@@ -391,7 +447,37 @@ namespace Ngo.Runtime.Reflect
         public bool CanAddr() => _canSet;
 
         [GoMethod]
-        public bool CanConvert(GoReflectType t) => true; // stub
+        public bool CanConvert(GoReflectType t)
+        {
+            if (_value == null)
+            {
+                return false;
+            }
+            // Basic numeric conversions are always possible
+            var srcKind = Kind();
+            var dstKind = t.Kind();
+            bool srcNumeric = srcKind >= GoReflectKinds.Int && srcKind <= GoReflectKinds.Float64;
+            bool dstNumeric = dstKind >= GoReflectKinds.Int && dstKind <= GoReflectKinds.Float64;
+            if (srcNumeric && dstNumeric)
+            {
+                return true;
+            }
+            // String <-> []byte
+            if (srcKind == GoReflectKinds.String && dstKind == GoReflectKinds.Slice)
+            {
+                return true;
+            }
+            if (srcKind == GoReflectKinds.Slice && dstKind == GoReflectKinds.String)
+            {
+                return true;
+            }
+            // Same kind is always convertible
+            if (srcKind == dstKind)
+            {
+                return true;
+            }
+            return false;
+        }
 
         [GoMethod]
         public bool OverflowInt(long x) => false;
@@ -410,10 +496,26 @@ namespace Ngo.Runtime.Reflect
         public long Complex() => 0; // stub — complex numbers
 
         [GoMethod]
-        public void SetLen(long n) { } // stub
+        public void SetLen(long n)
+        {
+            if (_value == null)
+            {
+                return;
+            }
+            // Try to call Reslice(0, n) on slice types
+            var type = _value.GetType();
+            var reslice = type.GetMethod("Reslice", new[] { typeof(int), typeof(int) });
+            if (reslice != null)
+            {
+                _value = reslice.Invoke(_value, new object[] { 0, (int)n });
+            }
+        }
 
         [GoMethod]
-        public void SetCap(long n) { } // stub
+        public void SetCap(long n)
+        {
+            // SetCap is not directly supported — Slice<T> manages capacity internally
+        }
 
         [GoMethod]
         public Slice<byte> Bytes()
@@ -460,7 +562,32 @@ namespace Ngo.Runtime.Reflect
         [GoMethod]
         public GoReflectValue Method(long i)
         {
-            return GoReflectValue.InvalidValue; // stub
+            if (_value == null)
+            {
+                return GoReflectValue.InvalidValue;
+            }
+            var methods = _value.GetType().GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+            if (i < 0 || i >= methods.Length)
+            {
+                return GoReflectValue.InvalidValue;
+            }
+            var method = methods[(int)i];
+            Func<Slice<GoReflectValue>, Slice<GoReflectValue>> boundMethod = (args) =>
+            {
+                var paramInfos = method.GetParameters();
+                var callArgs = new object?[paramInfos.Length];
+                for (int idx = 0; idx < paramInfos.Length && idx < args.Len; idx++)
+                {
+                    callArgs[idx] = args[idx].Interface();
+                }
+                var result = method.Invoke(_value, callArgs);
+                if (result == null)
+                {
+                    return new Slice<GoReflectValue>(System.Array.Empty<GoReflectValue>());
+                }
+                return new Slice<GoReflectValue>(new[] { GoReflect.ValueOf(result) });
+            };
+            return new GoReflectValue(boundMethod, new GoReflectType(method.GetType()), false);
         }
 
         [GoMethod]
@@ -470,7 +597,11 @@ namespace Ngo.Runtime.Reflect
         }
 
         [GoMethod]
-        public void Grow(long n) { } // stub — pre-allocates slice capacity
+        public void Grow(long n)
+        {
+            // Grow ensures the slice has capacity for n more elements
+            // In .NET, Slice<T> grows automatically on Append, so this is a no-op
+        }
 
         [GoMethod]
         public bool CanFloat() => Kind() == GoReflectKinds.Float32 || Kind() == GoReflectKinds.Float64;

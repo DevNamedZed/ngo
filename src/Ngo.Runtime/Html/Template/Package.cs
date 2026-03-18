@@ -1,58 +1,101 @@
+using System;
+using System.Collections.Generic;
 using Ngo.Runtime.Discovery;
+using Ngo.Runtime.Io;
 
 namespace Ngo.Runtime.Html.Template
 {
     [GoPackage("html/template")]
     public static class Package
     {
-        // template.New(name string) *Template
         [GoFunc]
         [return: GoReturn("*template.Template")]
-        public static GoTemplate New(string name) => new GoTemplate();
+        public static GoTemplate New(string name) => new GoTemplate(name);
 
-        // template.Must(t *Template, err error) *Template
         [GoFunc]
         [return: GoReturn("*template.Template")]
-        public static GoTemplate Must(GoTemplate? t, object? err) => t ?? new GoTemplate();
+        public static GoTemplate Must(GoTemplate? t, object? err)
+        {
+            if (err != null)
+            {
+                throw new GoPanicException($"template: {err}");
+            }
+            return t ?? new GoTemplate("");
+        }
 
-        // template.HTMLEscapeString(s string) string
         [GoFunc]
         public static string HTMLEscapeString(string s) => System.Net.WebUtility.HtmlEncode(s) ?? s;
 
-        // template.HTMLEscaper(args ...interface{}) string
         [GoFunc(IsVariadic = true)]
-        public static string HTMLEscaper(params object?[] args) => "";
+        public static string HTMLEscaper(params object?[] args)
+        {
+            var sb = new System.Text.StringBuilder();
+            foreach (var arg in args)
+            {
+                sb.Append(System.Net.WebUtility.HtmlEncode(arg?.ToString() ?? ""));
+            }
+            return sb.ToString();
+        }
 
-        // template.JSEscapeString(s string) string
         [GoFunc]
         public static string JSEscapeString(string s) => s;
 
-        // template.URLQueryEscaper(args ...interface{}) string
         [GoFunc(IsVariadic = true)]
-        public static string URLQueryEscaper(params object?[] args) => "";
+        public static string URLQueryEscaper(params object?[] args)
+        {
+            var sb = new System.Text.StringBuilder();
+            foreach (var arg in args)
+            {
+                sb.Append(Uri.EscapeDataString(arg?.ToString() ?? ""));
+            }
+            return sb.ToString();
+        }
     }
 
     [GoType("struct", Name = "Template", Package = "html/template")]
     public class GoTemplate
     {
-        [GoMethod]
-        [return: GoReturn("error")]
-        public object? Execute(object? wr, object? data) => null;
+        private readonly Text.Template.GoTemplate _inner;
+
+        public GoTemplate() : this("") { }
+
+        internal GoTemplate(string name)
+        {
+            _inner = new Text.Template.GoTemplate(name);
+        }
 
         [GoMethod]
         [return: GoReturn("error")]
-        public object? ExecuteTemplate(object? wr, string name, object? data) => null;
+        public object? Execute(object? wr, object? data)
+        {
+            return _inner.Execute(wr, data);
+        }
+
+        [GoMethod]
+        [return: GoReturn("error")]
+        public object? ExecuteTemplate(object? wr, string name, object? data)
+        {
+            return _inner.ExecuteTemplate(wr, name, data);
+        }
 
         [GoMethod]
         [return: GoReturn("*template.Template", "error")]
-        public (GoTemplate, object?) Parse(string text) => (this, null);
+        public (GoTemplate, object?) Parse(string text)
+        {
+            _inner.Parse(text);
+            return (this, null);
+        }
 
         [GoMethod]
-        public string Name() => "";
+        public string Name() => _inner.Name();
 
         [GoMethod]
         [return: GoReturn("*template.Template")]
-        public GoTemplate Funcs(object? funcMap) => this;
+        public GoTemplate Funcs(object? funcMap)
+        {
+            _inner.Funcs(funcMap);
+            return this;
+        }
 
         [GoMethod]
         [return: GoReturn("*template.Template")]
@@ -60,7 +103,11 @@ namespace Ngo.Runtime.Html.Template
 
         [GoMethod]
         [return: GoReturn("*template.Template", "error")]
-        public (GoTemplate, object?) ParseFiles(Slice<string> filenames) => (this, null);
+        public (GoTemplate, object?) ParseFiles(Slice<string> filenames)
+        {
+            var (_, err) = _inner.ParseFiles(filenames);
+            return (this, err);
+        }
 
         [GoMethod]
         [return: GoReturn("*template.Template", "error")]
@@ -68,16 +115,36 @@ namespace Ngo.Runtime.Html.Template
 
         [GoMethod]
         [return: GoReturn("*template.Template")]
-        public GoTemplate? Lookup(string name) => null;
+        public GoTemplate? Lookup(string name)
+        {
+            var inner = _inner.Lookup(name);
+            if (inner == null)
+            {
+                return null;
+            }
+            var tmpl = new GoTemplate(name);
+            tmpl._inner._templateText = inner._templateText;
+            tmpl._inner._funcMap = inner._funcMap;
+            tmpl._inner._namedTemplates = inner._namedTemplates;
+            return tmpl;
+        }
 
         [GoMethod]
         [return: GoReturn("[]*template.Template")]
-        public Slice<GoTemplate> Templates() => new Slice<GoTemplate>(System.Array.Empty<GoTemplate>());
+        public Slice<GoTemplate> Templates()
+        {
+            var innerTemplates = _inner.Templates();
+            var result = new GoTemplate[innerTemplates.Len];
+            for (int i = 0; i < innerTemplates.Len; i++)
+            {
+                result[i] = new GoTemplate(innerTemplates[i].Name());
+            }
+            return new Slice<GoTemplate>(result);
+        }
 
         [GoField(Name = "Tree", Type = "*parse.Tree", Embedded = true)]
         public object? Tree;
 
-        // Promoted field from *parse.Tree (for html/template compatibility)
         [GoField(Name = "Root")] public object? Root;
         [GoField(Name = "Mode")] public long Mode;
 
@@ -86,22 +153,36 @@ namespace Ngo.Runtime.Html.Template
         public (GoTemplate, object?) AddParseTree(string name, object? tree) => (this, null);
 
         [GoMethod]
-        public string DefinedTemplates() => "";
+        public string DefinedTemplates() => _inner.DefinedTemplates();
 
         [GoMethod]
         [return: GoReturn("*template.Template", "error")]
-        public (GoTemplate, object?) Clone() => (new GoTemplate(), null);
+        public (GoTemplate, object?) Clone()
+        {
+            var (clonedInner, err) = _inner.Clone();
+            var clone = new GoTemplate(_inner._name);
+            return (clone, err);
+        }
 
         [GoMethod]
         [return: GoReturn("*template.Template")]
-        public GoTemplate New(string name) => new GoTemplate();
+        public GoTemplate New(string name)
+        {
+            var tmpl = new GoTemplate(name);
+            tmpl._inner._funcMap = _inner._funcMap;
+            tmpl._inner._namedTemplates = _inner._namedTemplates;
+            return tmpl;
+        }
 
         [GoMethod]
         [return: GoReturn("*template.Template")]
-        public GoTemplate Delims(string left, string right) => this;
+        public GoTemplate Delims(string left, string right)
+        {
+            _inner.Delims(left, right);
+            return this;
+        }
     }
 
-    // Named string types
     [GoType("named", Name = "HTML", Package = "html/template", Underlying = "string")]
     public struct GoHTML { public string Value; }
 

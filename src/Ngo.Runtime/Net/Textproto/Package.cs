@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+using System.Text;
 using Ngo.Runtime.Discovery;
 
 namespace Ngo.Runtime.Net.Textproto
@@ -9,13 +11,39 @@ namespace Ngo.Runtime.Net.Textproto
         [return: GoReturn("*textproto.Reader")]
         public static GoReader NewReader([GoParam("*bufio.Reader")] object? r)
         {
-            return new GoReader();
+            return new GoReader { R = r };
         }
 
         [GoFunc]
         public static string CanonicalMIMEHeaderKey(string s)
         {
-            return s; // stub
+            if (string.IsNullOrEmpty(s))
+            {
+                return s;
+            }
+
+            // Convert to canonical MIME header format: first letter and letters after '-' are uppercase
+            var sb = new StringBuilder(s.Length);
+            bool upper = true;
+            for (int i = 0; i < s.Length; i++)
+            {
+                char c = s[i];
+                if (c == '-')
+                {
+                    sb.Append('-');
+                    upper = true;
+                }
+                else if (upper)
+                {
+                    sb.Append(char.ToUpperInvariant(c));
+                    upper = false;
+                }
+                else
+                {
+                    sb.Append(char.ToLowerInvariant(c));
+                }
+            }
+            return sb.ToString();
         }
 
         [GoFunc]
@@ -47,34 +75,81 @@ namespace Ngo.Runtime.Net.Textproto
 
         public GoMIMEHeader(Map<string, Slice<string>> v) { Value = v; }
 
+        private void EnsureValue()
+        {
+            if (Value == null)
+            {
+                Value = new Map<string, Slice<string>>();
+            }
+        }
+
         [GoMethod]
         public void Add(string key, string value)
         {
-            // stub
+            EnsureValue();
+            key = Package.CanonicalMIMEHeaderKey(key);
+            var (existing, ok) = Value.Get(key);
+            if (ok)
+            {
+                var list = new List<string>();
+                for (int i = 0; i < existing.Len; i++)
+                {
+                    list.Add(existing[i]);
+                }
+                list.Add(value);
+                Value.Set(key, new Slice<string>(list.ToArray()));
+            }
+            else
+            {
+                Value.Set(key, new Slice<string>(new[] { value }));
+            }
         }
 
         [GoMethod]
         public void Set(string key, string value)
         {
-            // stub
+            EnsureValue();
+            key = Package.CanonicalMIMEHeaderKey(key);
+            Value.Set(key, new Slice<string>(new[] { value }));
         }
 
         [GoMethod]
         public string Get(string key)
         {
+            if (Value == null)
+            {
+                return "";
+            }
+            key = Package.CanonicalMIMEHeaderKey(key);
+            var (vals, ok) = Value.Get(key);
+            if (ok && vals.Len > 0)
+            {
+                return vals[0];
+            }
             return "";
         }
 
         [GoMethod]
         public Slice<string> Values(string key)
         {
-            return new Slice<string>();
+            if (Value == null)
+            {
+                return new Slice<string>();
+            }
+            key = Package.CanonicalMIMEHeaderKey(key);
+            var (vals, _) = Value.Get(key);
+            return vals;
         }
 
         [GoMethod]
         public void Del(string key)
         {
-            // stub
+            if (Value == null)
+            {
+                return;
+            }
+            key = Package.CanonicalMIMEHeaderKey(key);
+            Value.Delete(key);
         }
     }
 
@@ -93,7 +168,7 @@ namespace Ngo.Runtime.Net.Textproto
 
         [GoMethod]
         [return: GoReturn("textproto.MIMEHeader", "error")]
-        public (GoMIMEHeader, object?) ReadMIMEHeader() => (new GoMIMEHeader(), null);
+        public (GoMIMEHeader, object?) ReadMIMEHeader() => (new GoMIMEHeader(new Map<string, Slice<string>>()), null);
 
         [GoMethod]
         [return: GoReturn("[]byte", "error")]
@@ -130,7 +205,7 @@ namespace Ngo.Runtime.Net.Textproto
     public class GoError
     {
         [GoField] public long Code;
-        [GoField] public string Msg;
+        [GoField] public string Msg = "";
 
         [GoMethod]
         public string Error() => $"{Code} {Msg}";
@@ -139,8 +214,10 @@ namespace Ngo.Runtime.Net.Textproto
     [GoType("struct", Name = "Pipeline", Package = "net/textproto")]
     public class GoPipeline
     {
+        private ulong _nextId;
+
         [GoMethod]
-        public ulong Next() => 0;
+        public ulong Next() => _nextId++;
 
         [GoMethod]
         public void StartRequest(ulong id) { }

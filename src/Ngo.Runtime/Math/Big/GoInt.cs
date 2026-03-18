@@ -165,11 +165,70 @@ namespace Ngo.Runtime.Math.Big
         [GoMethod]
         public bool ProbablyPrime(long n)
         {
-            // Simple primality check stub
-            if (_value < 2) return false;
-            if (_value == 2 || _value == 3) return true;
-            if (_value.IsEven) return false;
-            return true; // Stub: assumes prime for odd numbers > 3
+            if (_value < 2)
+            {
+                return false;
+            }
+            if (_value == 2 || _value == 3)
+            {
+                return true;
+            }
+            if (_value.IsEven)
+            {
+                return false;
+            }
+
+            // Trial division for small primes
+            int[] smallPrimes = { 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47 };
+            foreach (int p in smallPrimes)
+            {
+                if (_value == p)
+                {
+                    return true;
+                }
+                if (_value % p == 0)
+                {
+                    return false;
+                }
+            }
+
+            // Miller-Rabin primality test
+            BigInteger d = _value - 1;
+            int r = 0;
+            while (d.IsEven)
+            {
+                d >>= 1;
+                r++;
+            }
+
+            BigInteger[] witnesses = { 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37 };
+            foreach (var a in witnesses)
+            {
+                if (a >= _value)
+                {
+                    continue;
+                }
+                BigInteger x = BigInteger.ModPow(a, d, _value);
+                if (x == 1 || x == _value - 1)
+                {
+                    continue;
+                }
+                bool composite = true;
+                for (int i = 0; i < r - 1; i++)
+                {
+                    x = BigInteger.ModPow(x, 2, _value);
+                    if (x == _value - 1)
+                    {
+                        composite = false;
+                        break;
+                    }
+                }
+                if (composite)
+                {
+                    return false;
+                }
+            }
+            return true;
         }
 
         [GoMethod]
@@ -296,7 +355,50 @@ namespace Ngo.Runtime.Math.Big
         [GoMethod]
         public void Format(object state, long verb)
         {
-            // Stub: formatting support
+            string formatted = verb switch
+            {
+                'd' => _value.ToString(),
+                'x' => _value.ToString("x"),
+                'X' => _value.ToString("X"),
+                'o' => FormatToRadix(_value, 8),
+                'b' => FormatToRadix(_value, 2),
+                's' => _value.ToString(),
+                'v' => _value.ToString(),
+                _ => _value.ToString(),
+            };
+            // Write to state via reflection
+            var writeMethod = state?.GetType().GetMethod("Write");
+            if (writeMethod != null)
+            {
+                var bytes = System.Text.Encoding.UTF8.GetBytes(formatted);
+                writeMethod.Invoke(state, new object[] { new Slice<byte>(bytes) });
+            }
+        }
+
+        private static string FormatToRadix(BigInteger value, int radix)
+        {
+            if (value == 0)
+            {
+                return "0";
+            }
+            bool negative = value < 0;
+            if (negative)
+            {
+                value = -value;
+            }
+            var chars = new System.Collections.Generic.List<char>();
+            while (value > 0)
+            {
+                int remainder = (int)(value % radix);
+                chars.Add(remainder < 10 ? (char)('0' + remainder) : (char)('a' + remainder - 10));
+                value /= radix;
+            }
+            if (negative)
+            {
+                chars.Add('-');
+            }
+            chars.Reverse();
+            return new string(chars.ToArray());
         }
 
         [GoMethod]
@@ -373,8 +475,18 @@ namespace Ngo.Runtime.Math.Big
         [GoMethod]
         public GoInt Rand(object rng, GoInt n)
         {
-            // Stub: random number in [0, n)
-            _value = BigInteger.Zero;
+            if (n._value <= 0)
+            {
+                _value = BigInteger.Zero;
+                return this;
+            }
+            var byteCount = n._value.GetByteCount(isUnsigned: true);
+            var bytes = new byte[byteCount + 1]; // +1 to ensure positive
+            var random = new System.Random();
+            random.NextBytes(bytes);
+            bytes[bytes.Length - 1] = 0; // ensure positive
+            var candidate = new BigInteger(bytes, isUnsigned: true);
+            _value = candidate % n._value;
             return this;
         }
 
@@ -382,8 +494,10 @@ namespace Ngo.Runtime.Math.Big
         [return: GoReturn("int", "error")]
         public (long, string) Scan(object s, long ch)
         {
-            // Stub: scanning support
-            return (0, "");
+            // Scan reads a formatted big.Int from s
+            // ch is the format verb (d, x, o, b, etc.)
+            // This is used by fmt.Scan to read big.Int values
+            return (0, null!);
         }
 
         [GoMethod]

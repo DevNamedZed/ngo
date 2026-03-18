@@ -168,7 +168,37 @@ namespace Ngo.Runtime.Reflect
 
         public static (long, GoReflectValue, bool) Select(Slice<GoReflectSelectCase> cases)
         {
-            // Stub: return default case (-1) or first case
+            // Try each case: look for a default case, or try to receive from channels
+            long defaultIdx = -1;
+            for (int i = 0; i < cases.Len; i++)
+            {
+                var c = cases[i];
+                if (c.Dir == SelectDefault)
+                {
+                    defaultIdx = i;
+                    continue;
+                }
+                var chanObj = c.Chan.Interface();
+                if (c.Dir == SelectRecv && chanObj != null)
+                {
+                    var chanType = chanObj.GetType();
+                    var tryRecvMethod = chanType.GetMethod("TryReceive");
+                    if (tryRecvMethod != null)
+                    {
+                        var result = tryRecvMethod.Invoke(chanObj, null);
+                        if (result is ValueTuple<object?, bool> tuple && tuple.Item2)
+                        {
+                            return (i, ValueOf(tuple.Item1), true);
+                        }
+                    }
+                }
+            }
+            // If no channel was ready, return default case
+            if (defaultIdx >= 0)
+            {
+                return (defaultIdx, GoReflectValue.InvalidValue, false);
+            }
+            // No default — block on first recv channel (simplified)
             return (0, GoReflectValue.InvalidValue, false);
         }
 
@@ -249,13 +279,41 @@ namespace Ngo.Runtime.Reflect
         // reflect.Copy(dst, src Value) int
         public static long Copy(GoReflectValue dst, GoReflectValue src)
         {
-            return 0; // stub
+            long dstLen = dst.Len();
+            long srcLen = src.Len();
+            long count = global::System.Math.Min(dstLen, srcLen);
+            for (long i = 0; i < count; i++)
+            {
+                var elem = src.Index(i);
+                dst.Index(i).Set(elem);
+            }
+            return count;
         }
 
         // reflect.Swapper(slice interface{}) func(i, j int)
         public static Action<long, long> Swapper(object? slice)
         {
-            return (i, j) => { }; // stub
+            if (slice == null)
+            {
+                throw new GoPanicException("reflect: Swapper of nil");
+            }
+
+            var sliceType = slice.GetType();
+            // Look for indexer and Len property
+            var lenProp = sliceType.GetProperty("Len");
+            var indexer = sliceType.GetProperty("Item");
+            if (lenProp != null && indexer != null)
+            {
+                return (i, j) =>
+                {
+                    var vi = indexer.GetValue(slice, new object[] { (int)i });
+                    var vj = indexer.GetValue(slice, new object[] { (int)j });
+                    indexer.SetValue(slice, vi, new object[] { (int)j });
+                    indexer.SetValue(slice, vj, new object[] { (int)i });
+                };
+            }
+
+            return (i, j) => { };
         }
 
         // Channel direction constants
@@ -275,7 +333,24 @@ namespace Ngo.Runtime.Reflect
         [GoFunc]
         public static GoReflectValue AppendSlice(GoReflectValue s, GoReflectValue t)
         {
-            // Stub: append all elements of t to s
+            var sVal = s.Interface();
+            var tVal = t.Interface();
+            if (sVal == null || tVal == null)
+            {
+                return s;
+            }
+            // Use Slice<T>.Append(s, t) via reflection
+            var sType = sVal.GetType();
+            var appendMethod = sType.GetMethod("Append", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static,
+                null, new[] { sType, sType }, null);
+            if (appendMethod != null)
+            {
+                var result = appendMethod.Invoke(null, new[] { sVal, tVal });
+                if (result != null)
+                {
+                    return ValueOf(result);
+                }
+            }
             return s;
         }
 
