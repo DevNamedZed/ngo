@@ -703,7 +703,9 @@ static class Analyzer
         InjectSyntheticSources(dir, trees);
 
         var moduleRoot = FindModuleRoot(dir);
-        var compilation = new CompilationContext(moduleRoot);
+        // For stdlib packages without go.mod, use the package dir itself
+        // so GoPackageResolver is active and can find stdlib source for dependencies.
+        var compilation = new CompilationContext(moduleRoot ?? dir);
 
         var result = SemanticAnalyzer.Analyze(trees, compilation);
         return result.Errors.Where(e => e.Severity == ErrorSeverity.Error).ToList();

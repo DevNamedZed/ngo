@@ -50,7 +50,7 @@ namespace Ngo.Compiler.Emit
 
             EmitCore(result, moduleBuilder, options, compilationContext);
 
-            // For ngo run: compile CGo native library to temp directory
+            // For ngo run: compile CGo static libs and link to temp directory
             if (compilationContext.CgoPreamble != null && compilationContext.CgoPreamble.HasCSource)
             {
                 string tempDir = Path.Combine(Path.GetTempPath(), "ngo", "run");
@@ -131,7 +131,8 @@ namespace Ngo.Compiler.Emit
         }
 
         /// <summary>
-        /// Compile CGo C preamble to a native shared library and place it next to the output assembly.
+        /// Compile CGo C preamble to a static library (.a), then link all static libs
+        /// into a single shared library placed next to the output assembly.
         /// </summary>
         private static void CompileCgoNativeLibrary(Semantics.CompilationContext compilation, string outputPath)
         {
@@ -151,20 +152,34 @@ namespace Ngo.Compiler.Emit
                 probeRequest.TypeSizes.Add("long");
                 probeRequest.TypeSizes.Add("unsigned long");
 
+                // Step 1: Compile C code to static library (.a)
                 var result = cgoCompiler.Compile(preamble, probeRequest, "main");
 
                 if (result.Success && result.NativeLibraryPath != null)
                 {
-                    // Copy native library to output directory
+                    // Step 2: Link all static libs into one shared library for runtime
                     string outputDir = Path.GetDirectoryName(outputPath) ?? ".";
-                    string libFileName = Path.GetFileName(result.NativeLibraryPath);
-                    string targetPath = Path.Combine(outputDir, libFileName);
+                    var staticLibs = new List<string> { result.NativeLibraryPath };
+                    string ldflags = result.LDFlags ?? "";
 
-                    if (result.NativeLibraryPath != targetPath)
+                    // Auto-add -lm if math.h is included
+                    if (preamble.CSource.Contains("#include <math.h>") && !ldflags.Contains("-lm"))
                     {
-                        File.Copy(result.NativeLibraryPath, targetPath, overwrite: true);
+                        ldflags = string.IsNullOrEmpty(ldflags) ? "-lm" : ldflags + " -lm";
                     }
 
+                    var driver = new Cgo.CCompilerDriver();
+                    var (linkedLib, linkError) = driver.LinkStaticLibraries(
+                        staticLibs, outputDir, "ngo_native", ldflags);
+
+                    if (linkError != null)
+                    {
+                        Console.Error.WriteLine($"cgo: warning: link failed: {linkError}");
+                        return;
+                    }
+
+                    // Update result to point to the final linked library
+                    result.NativeLibraryPath = linkedLib;
                     compilation.CgoResult = result;
 
                     // Save CGo metadata for cache
@@ -207,7 +222,51 @@ namespace Ngo.Compiler.Emit
             // Emit the main package
             EmitPackage(result.Root, ctx);
 
+            // Apply [UnmanagedCallersOnly] to //export functions
+            if (compilationContext.CgoExports != null && compilationContext.CgoExports.Count > 0)
+            {
+                ApplyCgoExports(result.Root, ctx, compilationContext);
+            }
+
             return ctx;
+        }
+
+        /// <summary>
+        /// Apply [UnmanagedCallersOnly] attribute to Go functions marked with //export.
+        /// This makes them callable from C via reverse P/Invoke.
+        /// </summary>
+        private static void ApplyCgoExports(Ast.SourceFile root, EmitContext ctx, Semantics.CompilationContext compilation)
+        {
+            var exports = compilation.CgoExports;
+            if (exports == null) return;
+
+            foreach (var func in root.Functions)
+            {
+                if (exports.TryGetValue(func.Symbol.Name, out var exportName))
+                {
+                    if (ctx.Methods.TryGetValue(func.Symbol, out var methodBuilder))
+                    {
+                        try
+                        {
+                            // Apply [UnmanagedCallersOnly(EntryPoint = "exportName")]
+                            var attr = new System.Reflection.Emit.CustomAttributeBuilder(
+                                typeof(System.Runtime.InteropServices.UnmanagedCallersOnlyAttribute)
+                                    .GetConstructor(Type.EmptyTypes)!,
+                                Array.Empty<object>(),
+                                new[] {
+                                    typeof(System.Runtime.InteropServices.UnmanagedCallersOnlyAttribute)
+                                        .GetField("EntryPoint")!
+                                },
+                                new object[] { exportName });
+                            methodBuilder.SetCustomAttribute(attr);
+                        }
+                        catch (Exception ex)
+                        {
+                            compilation.Log.Warn($"cgo: failed to apply //export to {func.Symbol.Name}: {ex.Message}");
+                        }
+                    }
+                }
+            }
         }
 
         /// <summary>
@@ -411,7 +470,8 @@ namespace Ngo.Compiler.Emit
             }
 
             // Emit package-level variable initializers and init() calls in a static constructor
-            if (root.Variables.Count > 0 || initFuncs.Count > 0)
+            // Also emit if CGo resolver needs initialization
+            if (root.Variables.Count > 0 || initFuncs.Count > 0 || ctx.CgoResolverInitMethod != null)
             {
                 bodyEmitter.EmitPackageInit(root.Variables, initFuncs);
             }

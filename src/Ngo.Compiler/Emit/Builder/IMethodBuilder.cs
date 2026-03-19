@@ -18,6 +18,7 @@
 
 using System;
 using System.Reflection;
+using System.Reflection.Emit;
 
 namespace Ngo.Compiler.Emit.Builder
 {
@@ -28,6 +29,7 @@ namespace Ngo.Compiler.Emit.Builder
         void SetReturnType(Type type);
         void SetParameters(Type[] types);
         CilWriter GetILWriter();
+        void SetCustomAttribute(CustomAttributeBuilder attr);
 
         /// <summary>
         /// Returns this method as a MethodInfo for use in CilWriter.Emit(OpCodes.Call, method).

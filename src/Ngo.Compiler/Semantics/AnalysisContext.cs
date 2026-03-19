@@ -39,6 +39,11 @@ namespace Ngo.Compiler.Semantics
         public bool CheckUnused { get; set; }
         public bool SuppressUsageMarking { get; set; }
         public Dictionary<string, long> PendingConstInts { get; } = new();
+
+        /// <summary>
+        /// File-level go:linkname directives: localName → target (e.g., "runtime.nanotime1")
+        /// </summary>
+        public Dictionary<string, string>? FileLinknames { get; set; }
         public Dictionary<string, int> PendingConstStringLens { get; } = new();
         public Dictionary<string, int> PendingVarArrayLens { get; } = new();
 

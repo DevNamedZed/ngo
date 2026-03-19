@@ -19,10 +19,36 @@ namespace Ngo.Runtime.Crypto.Ed25519
         public const long SeedSize = 32;
 
         [GoType("named", Name = "PublicKey", Package = "crypto/ed25519", Underlying = "[]byte")]
-        public struct GoPublicKeyType { }
+        public struct GoPublicKeyType
+        {
+            // func (pub PublicKey) Equal(x crypto.PublicKey) bool
+            [GoMethod]
+            public bool Equal([GoParam("crypto.PublicKey")] object? x) => false;
+        }
 
         [GoType("named", Name = "PrivateKey", Package = "crypto/ed25519", Underlying = "[]byte")]
-        public struct GoPrivateKeyType { }
+        public struct GoPrivateKeyType
+        {
+            // func (priv PrivateKey) Public() crypto.PublicKey
+            [GoMethod]
+            [return: GoReturn("crypto.PublicKey")]
+            public object? Public() => null;
+
+            // func (priv PrivateKey) Seed() []byte
+            [GoMethod]
+            [return: GoReturn("[]byte")]
+            public Slice<byte> Seed() => default;
+
+            // func (priv PrivateKey) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error)
+            [GoMethod]
+            [return: GoReturn("[]byte", "error")]
+            public (Slice<byte>, object?) Sign(object? rand, Slice<byte> digest, [GoParam("crypto.SignerOpts")] object? opts)
+                => (default, "crypto/ed25519: not supported");
+
+            // func (priv PrivateKey) Equal(x crypto.PrivateKey) bool
+            [GoMethod]
+            public bool Equal([GoParam("crypto.PrivateKey")] object? x) => false;
+        }
 
         // ed25519.GenerateKey(rand io.Reader) (PublicKey, PrivateKey, error)
         [GoFunc]

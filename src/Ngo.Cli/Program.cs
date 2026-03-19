@@ -249,6 +249,22 @@ class Program
             return 1;
         }
 
+        // Set os.Args for the Go program — filter out ngo CLI args
+        // Find "--" separator and pass everything after it, or just the program name
+        var cliArgs = Environment.GetCommandLineArgs();
+        var dashDashIdx = Array.IndexOf(cliArgs, "--");
+        if (dashDashIdx >= 0)
+        {
+            var goArgs = new string[cliArgs.Length - dashDashIdx - 1 + 1];
+            goArgs[0] = filePath; // program name
+            Array.Copy(cliArgs, dashDashIdx + 1, goArgs, 1, cliArgs.Length - dashDashIdx - 1);
+            Ngo.Runtime.Os.GoOs.OverrideArgs = goArgs;
+        }
+        else
+        {
+            Ngo.Runtime.Os.GoOs.OverrideArgs = new[] { filePath };
+        }
+
         try
         {
             entryPoint.Invoke(null, null);

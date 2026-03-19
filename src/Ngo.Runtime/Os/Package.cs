@@ -87,13 +87,16 @@ namespace Ngo.Runtime.Os
 
         // ---- Package variables ----
 
+        /// <summary>Set by ngo CLI to provide filtered args to the Go program.</summary>
+        public static string[]? OverrideArgs { get; set; }
+
         // os.Args []string
         [GoVar]
         public static Slice<string> Args
         {
             get
             {
-                var args = Environment.GetCommandLineArgs();
+                var args = OverrideArgs ?? Environment.GetCommandLineArgs();
                 return new Slice<string>(args);
             }
         }

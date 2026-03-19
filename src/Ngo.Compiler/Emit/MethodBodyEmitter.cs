@@ -77,6 +77,20 @@ namespace Ngo.Compiler.Emit
             _ctx.IL = method.GetILWriter();
             _ctx.ResetMethodState();
             _currentReturnTypes = func.Symbol.ReturnTypes;
+
+            // If the function has no body (assembly-only in Go source),
+            // try to emit a .NET intrinsic implementation instead of a no-op.
+            if (func.Body.Statements.Count == 0)
+            {
+                // Try by function name + package
+                if (RuntimeIntrinsics.TryEmitBody(_ctx, func.Symbol.Name, func.Symbol.PackageName))
+                    return;
+                // Try by go:linkname target (e.g., runtime_Semacquire → runtime.semacquire)
+                if (func.Symbol.LinkName != null &&
+                    RuntimeIntrinsics.TryEmitByLinkName(_ctx, func.Symbol.LinkName))
+                    return;
+            }
+
             EmitFunctionBodyCore(func);
         }
 
@@ -150,6 +164,15 @@ namespace Ngo.Compiler.Emit
             _ctx.IL = method.GetILWriter();
             _ctx.ResetMethodState();
             _currentReturnTypes = decl.Symbol.ReturnTypes;
+
+            if (decl.Body.Statements.Count == 0)
+            {
+                if (RuntimeIntrinsics.TryEmitBody(_ctx, decl.Symbol.Name, decl.Symbol.ReceiverType?.PackagePath))
+                {
+                    return;
+                }
+            }
+
             EmitMethodBodyCore(decl);
         }
 
@@ -233,6 +256,13 @@ namespace Ngo.Compiler.Emit
 
         private void EmitPackageInitCore(IReadOnlyList<VarDeclaration> vars, List<FunctionDeclaration> initFuncs)
         {
+            // Initialize CGo native library resolver before anything else
+            if (_ctx.CgoResolverInitMethod != null)
+            {
+                _ctx.IL.Emit(OpCodes.Call, _ctx.CgoResolverInitMethod.AsMethodInfo());
+                _ctx.CgoResolverInitMethod = null; // Only emit once
+            }
+
             // Initialize package-level variables
             foreach (var v in vars)
             {
@@ -2219,6 +2249,48 @@ namespace Ngo.Compiler.Emit
             {
                 EmitAddressForStore(sel.Target);
                 _ctx.IL.Emit(OpCodes.Ldfld, fb.AsFieldInfo());
+                return;
+            }
+
+            // Runtime type field/property access (C# [GoField] properties on runtime types)
+            var targetType = sel.Target.Type;
+            var clrType = _ctx.Mapper.Map(targetType is PointerTypeSymbol ptr ? ptr.ElementType : targetType);
+            if (clrType != null && clrType != typeof(object))
+            {
+                EmitExpression(sel.Target);
+                // Dereference pointer if needed
+                if (targetType is PointerTypeSymbol)
+                {
+                    // For reference types, pointer dereference is implicit
+                    // For value types, need to load from Ptr<T>
+                    if (clrType.IsValueType)
+                    {
+                        var ptrType = typeof(Ptr<>).MakeGenericType(clrType);
+                        _ctx.IL.Emit(OpCodes.Ldfld, EmitContext.GetFieldSafe(ptrType, "Value"));
+                    }
+                }
+
+                // Try property first (C# [GoField] uses properties)
+                var prop = clrType.GetProperty(sel.Field.Name,
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                if (prop != null)
+                {
+                    var getter = prop.GetGetMethod();
+                    if (getter != null)
+                    {
+                        _ctx.IL.Emit(clrType.IsValueType ? OpCodes.Call : OpCodes.Callvirt, getter);
+                        return;
+                    }
+                }
+
+                // Try field
+                var field = clrType.GetField(sel.Field.Name,
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                if (field != null)
+                {
+                    _ctx.IL.Emit(OpCodes.Ldfld, field);
+                    return;
+                }
             }
         }
 
@@ -2289,6 +2361,15 @@ namespace Ngo.Compiler.Emit
                     paramTypes[i] = _ctx.Mapper.Map(call.Method.Parameters[i].Type);
 
                 var ifaceMethod = ifaceClrType.GetMethod(call.Method.Name, paramTypes);
+                // Also search parent interfaces (C# doesn't include inherited interface methods in GetMethod)
+                if (ifaceMethod == null && ifaceClrType.IsInterface)
+                {
+                    foreach (var parentIface in ifaceClrType.GetInterfaces())
+                    {
+                        ifaceMethod = parentIface.GetMethod(call.Method.Name, paramTypes);
+                        if (ifaceMethod != null) break;
+                    }
+                }
                 if (ifaceMethod != null)
                 {
                     _ctx.IL.Emit(OpCodes.Callvirt, ifaceMethod);
@@ -2367,6 +2448,22 @@ namespace Ngo.Compiler.Emit
                     {
                         _ctx.IL.Emit(OpCodes.Ldloca, local);
                         EmitExpression(init.Value);
+                        // Wrap value types for interface-typed fields
+                        var fieldType = init.Field.Type;
+                        if (fieldType is Symbols.InterfaceTypeSymbol fieldIfaceType
+                            && fieldIfaceType.Methods.Count > 0
+                            && init.Value.Type.TypeKind != Symbols.TypeKind.Interface)
+                        {
+                            var fieldClrType = _ctx.Mapper.Map(fieldType);
+                            EmitInterfaceWrapIfNeeded(init.Value.Type, fieldIfaceType, fieldClrType);
+                        }
+                        else
+                        {
+                            var valClrType = _ctx.Mapper.Map(init.Value.Type);
+                            var fldClrType = fb.AsFieldInfo().FieldType;
+                            if (valClrType.IsValueType && !fldClrType.IsValueType)
+                                _ctx.IL.Emit(OpCodes.Box, valClrType);
+                        }
                         _ctx.IL.Emit(OpCodes.Stfld, fb.AsFieldInfo());
                     }
                 }
@@ -2416,6 +2513,18 @@ namespace Ngo.Compiler.Emit
                         _ctx.IL.Emit(OpCodes.Ldc_I4, i);
                     }
                     EmitExpression(elements[i].Value);
+                    // Wrap value types in interface wrappers when storing into interface slices
+                    if (sliceType.ElementType is Symbols.InterfaceTypeSymbol sliceIfaceElem
+                        && elements[i].Value.Type.TypeKind != Symbols.TypeKind.Interface)
+                    {
+                        EmitInterfaceWrapIfNeeded(elements[i].Value.Type, sliceIfaceElem, elemClrType);
+                    }
+                    else
+                    {
+                        var valClrType = _ctx.Mapper.Map(elements[i].Value.Type);
+                        if (valClrType.IsValueType && !elemClrType.IsValueType)
+                            _ctx.IL.Emit(OpCodes.Box, valClrType);
+                    }
                     EmitStelem(elemClrType);
                 }
             }
@@ -2714,6 +2823,19 @@ namespace Ngo.Compiler.Emit
                 // Get ref, then store into it
                 EmitExpression(value);
                 var elemClrType = _ctx.Mapper.Map(idx.Type);
+                // Wrap value types for interface element slices
+                var sliceElemType = ((SliceTypeSymbol)targetType).ElementType;
+                if (sliceElemType is Symbols.InterfaceTypeSymbol idxIfaceElem
+                    && value.Type.TypeKind != Symbols.TypeKind.Interface)
+                {
+                    EmitInterfaceWrapIfNeeded(value.Type, idxIfaceElem, elemClrType);
+                }
+                else
+                {
+                    var valClrType = _ctx.Mapper.Map(value.Type);
+                    if (valClrType.IsValueType && !elemClrType.IsValueType)
+                        _ctx.IL.Emit(OpCodes.Box, valClrType);
+                }
                 _ctx.IL.Emit(OpCodes.Stobj, elemClrType);
             }
             else if (targetType is ArrayTypeSymbol)
@@ -2767,7 +2889,7 @@ namespace Ngo.Compiler.Emit
             }
         }
 
-        private void EmitInterfaceWrapIfNeeded(TypeSymbol sourceType, TypeSymbol targetType, Type targetClrType)
+        internal void EmitInterfaceWrapIfNeeded(TypeSymbol sourceType, TypeSymbol targetType, Type targetClrType)
         {
             // Named interface with methods: generate wrapper
             if (targetType is InterfaceTypeSymbol ifaceType && ifaceType.Methods.Count > 0
@@ -2902,11 +3024,21 @@ namespace Ngo.Compiler.Emit
                     break;
                 case TypeKind.Int:
                 case TypeKind.Int64:
+                case TypeKind.Uint:
+                case TypeKind.Uint64:
+                case TypeKind.Uintptr:
                 case TypeKind.UntypedInt:
                     _ctx.IL.Emit(OpCodes.Ldc_I8, Convert.ToInt64(constant.Value));
                     break;
                 case TypeKind.Int32:
+                case TypeKind.Uint32:
                 case TypeKind.UntypedRune:
+                    _ctx.IL.Emit(OpCodes.Ldc_I4, Convert.ToInt32(constant.Value));
+                    break;
+                case TypeKind.Int8:
+                case TypeKind.Uint8:
+                case TypeKind.Int16:
+                case TypeKind.Uint16:
                     _ctx.IL.Emit(OpCodes.Ldc_I4, Convert.ToInt32(constant.Value));
                     break;
                 case TypeKind.String:

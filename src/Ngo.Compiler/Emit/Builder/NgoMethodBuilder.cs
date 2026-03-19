@@ -82,5 +82,6 @@ namespace Ngo.Compiler.Emit.Builder
         }
 
         public MethodInfo AsMethodInfo() => _proxy;
+        public void SetCustomAttribute(System.Reflection.Emit.CustomAttributeBuilder attr) { }
     }
 }

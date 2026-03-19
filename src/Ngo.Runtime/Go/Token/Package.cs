@@ -187,11 +187,21 @@ namespace Ngo.Runtime.Go.Token
 
     // token.Token type
     [GoType("named", Name = "Token", Package = "go/token", Underlying = "int")]
-    public struct GoTokenType { }
+    public struct GoTokenType
+    {
+        [GoMethod] public bool IsLiteral() => false;
+        [GoMethod] public bool IsOperator() => false;
+        [GoMethod] public bool IsKeyword() => false;
+        [GoMethod] public long Precedence() => 0;
+        [GoMethod] public string String() => "";
+    }
 
     // token.Pos type
     [GoType("named", Name = "Pos", Package = "go/token", Underlying = "int")]
-    public struct GoPosType { }
+    public struct GoPosType
+    {
+        [GoMethod] public bool IsValid() => false;
+    }
 
     // token.Position struct
     [GoType("struct", Name = "Position", Package = "go/token")]
@@ -246,6 +256,21 @@ namespace Ngo.Runtime.Go.Token
         [GoMethod]
         [return: GoReturn("token.Position")]
         public GoPosition Position(long pos) => new GoPosition();
+
+        [GoMethod]
+        [return: GoReturn("token.Position")]
+        public GoPosition PositionFor(long pos, bool adjusted) => new GoPosition();
+
+        [GoMethod]
+        [return: GoReturn("*token.File")]
+        public GoFile? File(long pos) => null;
+
+        [GoMethod]
+        public void Iterate(object? f) { }
+
+        [GoMethod]
+        [return: GoReturn("int")]
+        public long Base() => 1;
     }
 
     // token.File struct
@@ -333,5 +358,15 @@ namespace Ngo.Runtime.Go.Token
         {
             return 0;
         }
+
+        [GoMethod]
+        public void MergeLine([GoParam("int")] long line) { }
+
+        [GoMethod]
+        [return: GoReturn("token.Position")]
+        public GoPosition PositionFor(long pos, bool adjusted) => Position(pos);
+
+        [GoMethod]
+        public void SetLinesForContent(Slice<byte> content) { }
     }
 }

@@ -12,9 +12,9 @@ namespace Ngo.Compiler.Cgo
     ///   ~/.ngo/cache/pkg/
     ///   ├── mypackage.ngo         (Go metadata + IL)
     ///   ├── mypackage.ngo.cgo     (CGo metadata: lib hash, probe results)
-    ///   └── cgo/                   (native shared libraries by hash)
+    ///   └── cgo/                   (static libraries by hash, linked at build time)
     ///       └── {hash}/
-    ///           └── libcgo_{pkg}.so
+    ///           └── libcgo_{pkg}.a
     /// </summary>
     public static class CgoArchiveManager
     {

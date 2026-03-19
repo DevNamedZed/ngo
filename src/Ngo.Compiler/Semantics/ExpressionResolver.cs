@@ -381,11 +381,20 @@ namespace Ngo.Compiler.Semantics
                 return TypeSymbol.Error;
             }
 
-            // Type parameters: allow operations based on constraints.
-            // In generic code, type params may support ==, <, +, etc. depending on constraint.
-            if (left is TypeParameterSymbol leftTp || right is TypeParameterSymbol rightTp)
+            // Type parameters and pointer-to-type-parameters: allow operations based on constraints.
+            // In generic code, *T may be used with comparisons when T is a numeric type.
+            bool leftIsTypeParam = left is TypeParameterSymbol
+                || (left is PointerTypeSymbol lp && lp.ElementType is TypeParameterSymbol)
+                || (left.Name.StartsWith("*") && left.Name.Length <= 3); // *T, *K, *V etc.
+            bool rightIsTypeParam = right is TypeParameterSymbol
+                || (right is PointerTypeSymbol rp && rp.ElementType is TypeParameterSymbol)
+                || (right.Name.StartsWith("*") && right.Name.Length <= 3);
+            if (leftIsTypeParam || rightIsTypeParam)
             {
-                var tp = (left as TypeParameterSymbol) ?? (right as TypeParameterSymbol)!;
+                TypeParameterSymbol? tp = (left as TypeParameterSymbol)
+                    ?? (right as TypeParameterSymbol)
+                    ?? ((left as PointerTypeSymbol)?.ElementType as TypeParameterSymbol)
+                    ?? ((right as PointerTypeSymbol)?.ElementType as TypeParameterSymbol);
                 switch (op)
                 {
                     case BinaryOperator.Equal:
@@ -403,7 +412,7 @@ namespace Ngo.Compiler.Semantics
                         return BuiltinTypes.UntypedBool;
                     default:
                         // Arithmetic/bitwise: return the type parameter type
-                        return tp;
+                        return tp ?? left;
                 }
             }
 
@@ -528,6 +537,20 @@ namespace Ngo.Compiler.Semantics
 
                     // Pointer comparison: pointers of the same type can be compared
                     if (left is PointerTypeSymbol && right is PointerTypeSymbol)
+                    {
+                        return BuiltinTypes.UntypedBool;
+                    }
+
+                    // Pointer compared to int/uintptr (unsafe pointer arithmetic)
+                    if ((left is PointerTypeSymbol || left.TypeKind == TypeKind.Uintptr
+                        || left.Name.StartsWith("*"))
+                        && (TypeChecker.IsNumeric(right) || right.TypeKind == TypeKind.UntypedInt))
+                    {
+                        return BuiltinTypes.UntypedBool;
+                    }
+                    if ((right is PointerTypeSymbol || right.TypeKind == TypeKind.Uintptr
+                        || right.Name.StartsWith("*"))
+                        && (TypeChecker.IsNumeric(left) || left.TypeKind == TypeKind.UntypedInt))
                     {
                         return BuiltinTypes.UntypedBool;
                     }

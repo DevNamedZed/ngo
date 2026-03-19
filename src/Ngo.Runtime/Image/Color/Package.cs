@@ -24,52 +24,52 @@ namespace Ngo.Runtime.Image.Color
             object? Convert(object? c);
         }
 
-        // Standard color models
+        // Standard color models — each converts any Color to its specific type
         [GoVar(Type = "color.Model")]
-        public static readonly object? RGBAModel = null;
+        public static readonly object? RGBAModel = new ModelFunc(c => { var (r, g, b, a) = ((IColor)c).RGBA(); return new GoRGBA { R = (byte)(r >> 8), G = (byte)(g >> 8), B = (byte)(b >> 8), A = (byte)(a >> 8) }; });
 
         [GoVar(Type = "color.Model")]
-        public static readonly object? RGBA64Model = null;
+        public static readonly object? RGBA64Model = new ModelFunc(c => { var (r, g, b, a) = ((IColor)c).RGBA(); return new GoRGBA64 { R = (ushort)r, G = (ushort)g, B = (ushort)b, A = (ushort)a }; });
 
         [GoVar(Type = "color.Model")]
-        public static readonly object? NRGBAModel = null;
+        public static readonly object? NRGBAModel = new ModelFunc(c => { var (r, g, b, a) = ((IColor)c).RGBA(); return new GoNRGBA { R = (byte)(r >> 8), G = (byte)(g >> 8), B = (byte)(b >> 8), A = (byte)(a >> 8) }; });
 
         [GoVar(Type = "color.Model")]
-        public static readonly object? NRGBA64Model = null;
+        public static readonly object? NRGBA64Model = new ModelFunc(c => { var (r, g, b, a) = ((IColor)c).RGBA(); return new GoNRGBA64 { R = (ushort)r, G = (ushort)g, B = (ushort)b, A = (ushort)a }; });
 
         [GoVar(Type = "color.Model")]
-        public static readonly object? AlphaModel = null;
+        public static readonly object? AlphaModel = new ModelFunc(c => { var (_, _, _, a) = ((IColor)c).RGBA(); return new GoAlpha { A = (byte)(a >> 8) }; });
 
         [GoVar(Type = "color.Model")]
-        public static readonly object? Alpha16Model = null;
+        public static readonly object? Alpha16Model = new ModelFunc(c => { var (_, _, _, a) = ((IColor)c).RGBA(); return new GoAlpha16 { A = (ushort)a }; });
 
         [GoVar(Type = "color.Model")]
-        public static readonly object? GrayModel = null;
+        public static readonly object? GrayModel = new ModelFunc(c => { var (r, g, b, _) = ((IColor)c).RGBA(); return new GoGray { Y = (byte)(((19595 * r + 38470 * g + 7471 * b + (1 << 15)) >> 24)) }; });
 
         [GoVar(Type = "color.Model")]
-        public static readonly object? Gray16Model = null;
+        public static readonly object? Gray16Model = new ModelFunc(c => { var (r, g, b, _) = ((IColor)c).RGBA(); return new GoGray16 { Y = (ushort)((19595 * r + 38470 * g + 7471 * b + (1 << 15)) >> 16) }; });
 
         [GoVar(Type = "color.Model")]
-        public static readonly object? CMYKModel = null;
+        public static readonly object? CMYKModel = new ModelFunc(c => { var (r, g, b, _) = ((IColor)c).RGBA(); var (cc, m, y, k) = RGBToCMYK((byte)(r >> 8), (byte)(g >> 8), (byte)(b >> 8)); return new GoCMYK { C = cc, M = m, Y = y, K = k }; });
 
         [GoVar(Type = "color.Model")]
-        public static readonly object? YCbCrModel = null;
+        public static readonly object? YCbCrModel = new ModelFunc(c => { var (r, g, b, _) = ((IColor)c).RGBA(); var (yy, cb, cr) = RGBToYCbCr((byte)(r >> 8), (byte)(g >> 8), (byte)(b >> 8)); return new GoYCbCr { Y = yy, Cb = cb, Cr = cr }; });
 
         [GoVar(Type = "color.Model")]
-        public static readonly object? NYCbCrAModel = null;
+        public static readonly object? NYCbCrAModel = new ModelFunc(c => { var (r, g, b, a) = ((IColor)c).RGBA(); var (yy, cb, cr) = RGBToYCbCr((byte)(r >> 8), (byte)(g >> 8), (byte)(b >> 8)); return new GoNYCbCrA { YCbCr = new GoYCbCr { Y = yy, Cb = cb, Cr = cr }, A = (byte)(a >> 8) }; });
 
         // Standard colors
         [GoVar(Type = "color.Color")]
-        public static readonly object? Black = null;
+        public static readonly object? Black = new GoGray16 { Y = 0 };
 
         [GoVar(Type = "color.Color")]
-        public static readonly object? White = null;
+        public static readonly object? White = new GoGray16 { Y = 0xFFFF };
 
         [GoVar(Type = "color.Color")]
-        public static readonly object? Transparent = null;
+        public static readonly object? Transparent = new GoAlpha16 { A = 0 };
 
         [GoVar(Type = "color.Color")]
-        public static readonly object? Opaque = null;
+        public static readonly object? Opaque = new GoAlpha16 { A = 0xFFFF };
 
         // Conversion functions
         [GoFunc]
@@ -108,6 +108,14 @@ namespace Ngo.Runtime.Image.Color
             byte b = (byte)((255 - y) * w / 255);
             return (r, g, b);
         }
+    }
+
+    /// <summary>Helper implementing the color.Model interface via a delegate.</summary>
+    internal class ModelFunc : Package.IModel
+    {
+        private readonly Func<object, object?> _convert;
+        public ModelFunc(Func<object, object?> convert) { _convert = convert; }
+        public object? Convert(object? c) => c == null ? null : _convert(c);
     }
 
     [GoType("struct", Name = "RGBA", Package = "image/color")]

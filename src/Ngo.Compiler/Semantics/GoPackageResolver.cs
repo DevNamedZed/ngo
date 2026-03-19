@@ -19,6 +19,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using Ngo.Compiler.Emit;
 using Ngo.Compiler.Language;
 using Ngo.Compiler.Symbols;
@@ -36,7 +37,9 @@ namespace Ngo.Compiler.Semantics
         private readonly Dictionary<string, PackageSymbol> _resolvedPackages = new();
         private readonly Dictionary<string, string> _resolvedDirs = new();
         private readonly HashSet<string> _discoveredPackages = new();
-        private bool _isAnalyzingDag;
+        // _isAnalyzingDag removed — per-package cycle detection via _beingResolved
+        private readonly HashSet<string> _beingResolved = new();
+        private readonly string? _goStdlibSrc;
 
         public GoPackageResolver(CompilationContext ctx, string projectRoot)
         {
@@ -44,6 +47,102 @@ namespace Ngo.Compiler.Semantics
             _moduleResolver = new GoModuleResolver(ctx.Log);
             ProjectRoot = projectRoot;
             _moduleResolver.LoadGoMod(projectRoot);
+            _goStdlibSrc = FindGoStdlibSource();
+        }
+
+        /// <summary>
+        /// Returns true for packages that must use the C# runtime and cannot be
+        /// compiled from Go source. These are packages whose Go source uses
+        /// assembly stubs (.s files) or deeply internal runtime features that
+        /// have no .NET equivalent at the source level.
+        ///
+        /// The RuntimeIntrinsics system handles the individual assembly-backed
+        /// FUNCTIONS within these packages, but the package resolution itself
+        /// must come from C# for the core runtime types.
+        /// </summary>
+        /// <summary>
+        /// Packages that MUST use C# runtime and cannot compile from Go source.
+        /// Only packages that use assembly stubs (.s files) with no pure-Go fallback
+        /// or are fundamental .NET runtime bridges belong here.
+        /// Pure Go internal packages should compile from Go source for exact type compatibility.
+        /// </summary>
+        private static bool IsRuntimeIntrinsicPackage(string importPath)
+        {
+            return importPath switch
+            {
+                // Core runtime — provides Slice<T>, Map, Channel, goroutine, defer/panic/recover
+                "runtime" => true,
+
+                // Compiler intrinsic
+                "unsafe" => true,
+
+                // CGo pseudo-package
+                "C" => true,
+
+                // Internal packages WITH assembly that need C# bridges
+                "internal/bytealg" => true,    // has assembly + generics; C# stub handles both types
+                "internal/cpu" => true,         // CPU feature detection via asm
+                "internal/abi" => true,         // compiles from source but TypeMapper can't map its structs yet
+                "internal/chacha8rand" => true, // ChaCha8 in asm
+                "internal/reflectlite" => true, // needs runtime reflect bridge
+
+                // Internal packages that bridge to .NET runtime
+                "internal/poll" => true,        // I/O polling — needs .NET async
+                "internal/syscall/unix" => true, // syscall bridge
+                "internal/syscall/execenv" => true,
+
+                // go/internal packages (Go toolchain internals, not in stdlib source tree)
+                _ when importPath.StartsWith("go/internal/") => true,
+
+                // Everything else compiles from Go source — including pure-Go internal packages:
+                // internal/fmtsort, internal/itoa, internal/race, internal/godebug,
+                // internal/goversion, internal/gover, internal/goroot, internal/safefilepath,
+                // internal/singleflight, internal/testlog, internal/unsafeheader,
+                // internal/oserror, internal/nettrace, internal/lazyregexp, internal/saferio,
+                // internal/intern, internal/profile, internal/diff, internal/platform,
+                // internal/bisect, internal/fuzz, internal/coverage/rtcov,
+                // internal/goarch, internal/goos, internal/goexperiment, internal/godebugs
+                _ => false,
+            };
+        }
+
+        /// <summary>
+        /// Find the Go stdlib source directory.
+        /// Searches: GOROOT env, ~/.ngo/gosrc/go1.22.6/src, /usr/local/go/src
+        /// </summary>
+        private static string? FindGoStdlibSource()
+        {
+            // Check GOROOT environment variable
+            var goroot = System.Environment.GetEnvironmentVariable("GOROOT");
+            if (!string.IsNullOrEmpty(goroot))
+            {
+                var src = Path.Combine(goroot, "src");
+                if (Directory.Exists(src) && Directory.Exists(Path.Combine(src, "fmt")))
+                    return src;
+            }
+
+            // Check ngo's cached Go source (~/.ngo/gosrc/go1.22.6/src)
+            var home = System.Environment.GetFolderPath(System.Environment.SpecialFolder.UserProfile);
+            var ngoCache = Path.Combine(home, ".ngo", "gosrc");
+            if (Directory.Exists(ngoCache))
+            {
+                // Find the latest version
+                foreach (var dir in Directory.GetDirectories(ngoCache).OrderByDescending(d => d))
+                {
+                    var src = Path.Combine(dir, "src");
+                    if (Directory.Exists(src) && Directory.Exists(Path.Combine(src, "fmt")))
+                        return src;
+                }
+            }
+
+            // Check common system paths
+            foreach (var candidate in new[] { "/usr/local/go/src", "/usr/lib/go/src", "/snap/go/current/src" })
+            {
+                if (Directory.Exists(candidate) && Directory.Exists(Path.Combine(candidate, "fmt")))
+                    return candidate;
+            }
+
+            return null;
         }
 
         public string ProjectRoot { get; }
@@ -93,6 +192,10 @@ namespace Ngo.Compiler.Semantics
             if (_resolvedPackages.TryGetValue(importPath, out var cached))
                 return cached;
 
+            // Skip packages that must stay in C# runtime
+            if (IsRuntimeIntrinsicPackage(importPath))
+                return null;
+
             // Check .ngo cache on disk FIRST
             if (ProjectRoot != null)
             {
@@ -117,7 +220,7 @@ namespace Ngo.Compiler.Semantics
 
         private PackageSymbol? ResolveFromSource(string importPath)
         {
-            if (_isAnalyzingDag)
+            if (_beingResolved.Contains(importPath))
             {
                 return null;
             }
@@ -137,7 +240,8 @@ namespace Ngo.Compiler.Semantics
 
                 var order = TopologicalSort(pkgDirs.Keys, deps);
 
-                _isAnalyzingDag = true;
+                _beingResolved.Add(importPath);
+                // _isAnalyzingDag removed — using _beingResolved for per-package cycle detection
                 try
                 {
                     foreach (var pkg in order)
@@ -146,8 +250,8 @@ namespace Ngo.Compiler.Semantics
                         {
                             continue;
                         }
-                        // Skip packages already resolved by other resolvers in the chain
-                        if (_ctx.ResolvePackage(pkg) != null)
+                        // Only skip if the package is a runtime intrinsic (must use C#)
+                        if (IsRuntimeIntrinsicPackage(pkg))
                         {
                             continue;
                         }
@@ -170,7 +274,8 @@ namespace Ngo.Compiler.Semantics
                 }
                 finally
                 {
-                    _isAnalyzingDag = false;
+                    // _isAnalyzingDag removed
+                    _beingResolved.Remove(importPath);
                 }
 
                 _resolvedPackages.TryGetValue(importPath, out var result);
@@ -178,7 +283,8 @@ namespace Ngo.Compiler.Semantics
             }
             catch (OutOfMemoryException ex)
             {
-                _isAnalyzingDag = false;
+                // _isAnalyzingDag removed
+                _beingResolved.Remove(importPath);
                 _ctx.Log.Error($"out of memory resolving '{importPath}': {ex.Message}");
                 GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
                 return null;
@@ -201,8 +307,9 @@ namespace Ngo.Compiler.Semantics
                 {
                     continue;
                 }
-                // Skip packages already resolved by other resolvers
-                if (RuntimePackageResolver.Instance.Resolve(current) != null)
+                // Skip only true runtime intrinsic packages that can't compile from Go source.
+                // Everything else should be compiled from Go source when available.
+                if (IsRuntimeIntrinsicPackage(current))
                 {
                     continue;
                 }
@@ -226,9 +333,12 @@ namespace Ngo.Compiler.Semantics
                         }
                     }
                 }
+                // Only skip if already discovered AND successfully resolved from Go source
                 if (_discoveredPackages.Contains(current))
                 {
-                    continue;
+                    if (_resolvedPackages.ContainsKey(current))
+                        continue;
+                    // Previously discovered but not successfully compiled — try again
                 }
                 _discoveredPackages.Add(current);
 
@@ -425,13 +535,27 @@ namespace Ngo.Compiler.Semantics
                 return Directory.Exists(dir) ? dir : null;
             }
 
-            // Simple relative path (no dots in first segment — likely a local subdirectory)
+            // Simple relative path (no dots in first segment — likely a local subdirectory or stdlib)
             if (!importPath.Contains('.'))
             {
+                // Check project-local first
                 var dir = Path.Combine(ProjectRoot, importPath.Replace('/', Path.DirectorySeparatorChar));
                 if (Directory.Exists(dir))
                     return dir;
+
+                // Check Go stdlib source (GOROOT/src or ~/.ngo/gosrc/...)
+                if (_goStdlibSrc != null)
+                {
+                    var stdlibDir = Path.Combine(_goStdlibSrc, importPath.Replace('/', Path.DirectorySeparatorChar));
+                    if (Directory.Exists(stdlibDir))
+                        return stdlibDir;
+                }
             }
+
+            // Check vendor directory (common in Go projects)
+            var vendorDir = Path.Combine(ProjectRoot, "vendor", importPath.Replace('/', Path.DirectorySeparatorChar));
+            if (Directory.Exists(vendorDir))
+                return vendorDir;
 
             // External module: find via go.mod requirements
             var match = _moduleResolver.FindModule(importPath);
@@ -448,6 +572,10 @@ namespace Ngo.Compiler.Semantics
             {
                 // Pass compilation context so nested imports resolve through the resolver chain
                 result = SemanticAnalyzer.Analyze(trees, _ctx);
+                if (result.HasErrors)
+                {
+                    _ctx.Log.Debug($"analysis of '{importPath}' has {result.Errors.Count(e => e.Severity == Ngo.Compiler.ErrorSeverity.Error)} errors");
+                }
             }
             catch (Exception ex)
             {
@@ -472,6 +600,7 @@ namespace Ngo.Compiler.Semantics
                     pkg.AddExport(typeDecl.Symbol);
                 }
             }
+            // Types with methods from compiled Go source
 
             foreach (var constDecl in result.Root.Constants)
             {
@@ -517,25 +646,60 @@ namespace Ngo.Compiler.Semantics
             }
         }
 
+        // Current target platform — used for file filtering
+        private static readonly string _targetOS = System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
+            System.Runtime.InteropServices.OSPlatform.Windows) ? "windows"
+            : System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
+                System.Runtime.InteropServices.OSPlatform.OSX) ? "darwin" : "linux";
+        private static readonly string _targetArch = System.Runtime.InteropServices.RuntimeInformation.OSArchitecture switch
+        {
+            System.Runtime.InteropServices.Architecture.X64 => "amd64",
+            System.Runtime.InteropServices.Architecture.Arm64 => "arm64",
+            System.Runtime.InteropServices.Architecture.X86 => "386",
+            System.Runtime.InteropServices.Architecture.Arm => "arm",
+            _ => "amd64",
+        };
+
+        private static readonly HashSet<string> _allOS = new()
+        {
+            "linux", "windows", "darwin", "freebsd", "openbsd", "netbsd",
+            "solaris", "plan9", "aix", "ios", "js", "wasip1", "android",
+            "illumos", "dragonfly", "hurd",
+        };
+        private static readonly HashSet<string> _allArch = new()
+        {
+            "amd64", "386", "arm", "arm64", "mips", "mips64", "mipsle",
+            "mips64le", "ppc64", "ppc64le", "riscv64", "s390x", "wasm", "loong64",
+        };
+
         public static bool ShouldSkipGoFile(string filePath)
         {
             var fileName = Path.GetFileName(filePath);
             if (fileName.EndsWith("_test.go", StringComparison.OrdinalIgnoreCase))
                 return true;
 
-            var platformSuffixes = new[]
+            // Parse platform suffixes from filename: name_GOOS.go, name_GOARCH.go, name_GOOS_GOARCH.go
+            var nameWithoutGo = fileName.Substring(0, fileName.Length - 3); // strip ".go"
+            var parts = nameWithoutGo.Split('_');
+            if (parts.Length >= 2)
             {
-                "_windows.go", "_darwin.go", "_freebsd.go", "_openbsd.go", "_netbsd.go",
-                "_solaris.go", "_plan9.go", "_aix.go", "_ios.go", "_js.go", "_wasip1.go",
-                "_android.go", "_illumos.go", "_dragonfly.go", "_hurd.go",
-                "_386.go", "_arm.go", "_arm64.go", "_mips.go", "_mips64.go",
-                "_mipsle.go", "_mips64le.go", "_ppc64.go", "_ppc64le.go",
-                "_riscv64.go", "_s390x.go", "_wasm.go", "_loong64.go",
-            };
-            foreach (var suffix in platformSuffixes)
-            {
-                if (fileName.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+                var last = parts[parts.Length - 1];
+                var secondLast = parts.Length >= 3 ? parts[parts.Length - 2] : null;
+
+                // name_GOARCH.go — skip if arch doesn't match
+                if (_allArch.Contains(last) && last != _targetArch)
                     return true;
+
+                // name_GOOS.go — skip if OS doesn't match
+                if (_allOS.Contains(last) && last != _targetOS)
+                    return true;
+
+                // name_GOOS_GOARCH.go — skip if either doesn't match
+                if (secondLast != null && _allOS.Contains(secondLast) && _allArch.Contains(last))
+                {
+                    if (secondLast != _targetOS || last != _targetArch)
+                        return true;
+                }
             }
 
             // Read only the first ~20 lines for build tag checks — not the whole file
@@ -556,17 +720,48 @@ namespace Ngo.Compiler.Semantics
                     if (line.StartsWith("//go:build ") || line.StartsWith("// +build "))
                     {
                         var tag = line.StartsWith("//go:build ") ? line.Substring(11).Trim() : line.Substring(10).Trim();
-                        var platformTags = new[] { "windows", "darwin", "freebsd", "openbsd", "netbsd",
+
+                        // Skip files explicitly marked ignore
+                        if (tag == "ignore")
+                            return true;
+
+                        // Skip CGo-required files when not in CGo mode
+                        // (files with "cgo" build tag without negation)
+                        if (tag == "cgo" || tag.StartsWith("cgo ") || tag.StartsWith("cgo,")
+                            || tag.Contains("&& cgo") || tag.Contains("cgo &&"))
+                            return true;
+
+                        // Skip files that require specific platforms we're not on
+                        var excludedPlatforms = new[] { "windows", "darwin", "freebsd", "openbsd", "netbsd",
                             "solaris", "plan9", "aix", "ios", "js", "wasip1", "android", "illumos",
                             "dragonfly", "hurd", "386", "arm", "arm64", "mips", "mips64", "mipsle",
                             "mips64le", "ppc64", "ppc64le", "riscv64", "s390x", "wasm", "loong64",
                             "boringcrypto" };
-                        foreach (var pt in platformTags)
+
+                        // If the build tag is JUST an excluded platform name, skip
+                        foreach (var pt in excludedPlatforms)
                         {
-                            if (tag == pt || tag.StartsWith(pt + " ") || tag.StartsWith(pt + ","))
-                            {
+                            if (tag == pt)
                                 return true;
+                        }
+
+                        // If the tag is "!linux" or "!amd64", skip (negation of our platform)
+                        if (tag == "!linux" || tag == "!amd64")
+                            return true;
+
+                        // Complex expressions: skip if tag requires a platform we don't support
+                        // e.g., "//go:build windows || darwin" — skip if neither matches
+                        if (tag.Contains("||") && !tag.Contains("linux") && !tag.Contains("unix"))
+                        {
+                            bool anyMatch = false;
+                            foreach (var part in tag.Split(new[] { "||" }, StringSplitOptions.None))
+                            {
+                                var p = part.Trim().TrimStart('(').TrimEnd(')').Trim();
+                                if (p == "linux" || p == "amd64" || p == "unix" || p.StartsWith("go1."))
+                                    anyMatch = true;
                             }
+                            if (!anyMatch)
+                                return true;
                         }
                     }
                 }

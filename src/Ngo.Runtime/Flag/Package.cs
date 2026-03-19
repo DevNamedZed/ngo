@@ -61,7 +61,7 @@ namespace Ngo.Runtime.Flag
         {
             _parsed = true;
             _args.Clear();
-            var cmdArgs = Environment.GetCommandLineArgs();
+            var cmdArgs = Os.GoOs.OverrideArgs ?? Environment.GetCommandLineArgs();
 
             // Skip first arg (executable name)
             int i = 1;

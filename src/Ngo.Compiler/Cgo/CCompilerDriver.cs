@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 
 namespace Ngo.Compiler.Cgo
@@ -148,6 +150,57 @@ namespace Ngo.Compiler.Cgo
             if (!File.Exists(outputPath))
             {
                 return (null, "cgo: failed to create static library");
+            }
+
+            return (outputPath, null);
+        }
+
+        /// <summary>
+        /// Link one or more static libraries (.a/.lib) into a single shared library.
+        /// This is called at final build time to produce the runtime native library.
+        /// </summary>
+        public (string? libraryPath, string? error) LinkStaticLibraries(
+            IReadOnlyList<string> staticLibPaths, string outputDir, string outputName, string ldflags)
+        {
+            var compiler = Detect() ?? throw new InvalidOperationException(GetMissingCompilerMessage());
+
+            string libName = GetSharedLibraryName(outputName);
+            string outputPath = Path.Combine(outputDir, libName);
+
+            string libArgs = string.Join(" ", staticLibPaths.Select(p => $"\"{p}\""));
+
+            string args;
+            if (compiler.Kind == CCompilerKind.MSVC)
+            {
+                args = $"/LD /Fe:\"{outputPath}\" {libArgs} link {ldflags}";
+            }
+            else
+            {
+                // Wrap static libs in --whole-archive so all symbols are included
+                string picFlag = RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? "" : "-fPIC";
+                string wholeArchiveStart = RuntimeInformation.IsOSPlatform(OSPlatform.OSX)
+                    ? "-Wl,-force_load"
+                    : "-Wl,--whole-archive";
+                string wholeArchiveEnd = RuntimeInformation.IsOSPlatform(OSPlatform.OSX)
+                    ? ""
+                    : "-Wl,--no-whole-archive";
+
+                if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+                {
+                    // macOS: -force_load takes one lib at a time
+                    var forceLoadArgs = string.Join(" ", staticLibPaths.Select(p => $"-Wl,-force_load,\"{p}\""));
+                    args = $"-shared {picFlag} -o \"{outputPath}\" {forceLoadArgs} {ldflags}";
+                }
+                else
+                {
+                    args = $"-shared {picFlag} -o \"{outputPath}\" {wholeArchiveStart} {libArgs} {wholeArchiveEnd} {ldflags}";
+                }
+            }
+
+            var (_, errors) = RunCompiler(compiler.Path, args);
+            if (!string.IsNullOrEmpty(errors) && !File.Exists(outputPath))
+            {
+                return (null, $"cgo: link failed:\n{errors}");
             }
 
             return (outputPath, null);

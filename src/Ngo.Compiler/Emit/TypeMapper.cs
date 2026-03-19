@@ -212,6 +212,18 @@ namespace Ngo.Compiler.Emit
                         }
                     }
 
+                    // Check if we've already registered a CLR type for a different
+                    // InterfaceTypeSymbol instance with the same name (symbol identity issue)
+                    foreach (var kv in _typeCache)
+                    {
+                        if (kv.Key is InterfaceTypeSymbol cachedIface
+                            && cachedIface.Name == symbol.Name
+                            && kv.Value != typeof(object))
+                        {
+                            return kv.Value;
+                        }
+                    }
+
                     // Unresolved named interface → object (runtime dispatch)
                     return typeof(object);
 

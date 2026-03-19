@@ -311,14 +311,67 @@ namespace Ngo.Runtime.Json
 
         internal static void PopulateFromJson(JsonElement elem, object target)
         {
+            var type = target.GetType();
+
+            // Handle Ptr<T> — unwrap pointer to get the inner value
+            if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(Ptr<>))
+            {
+                var valueField = type.GetField("Value");
+                if (valueField != null)
+                {
+                    var inner = valueField.GetValue(target);
+                    var innerType = valueField.FieldType;
+
+                    // For Ptr<Slice<T>>, deserialize array into slice
+                    if (elem.ValueKind == JsonValueKind.Array && innerType.IsGenericType
+                        && innerType.GetGenericTypeDefinition() == typeof(Slice<>))
+                    {
+                        var elemType = innerType.GetGenericArguments()[0];
+                        var items = new System.Collections.Generic.List<object?>();
+                        foreach (var arrElem in elem.EnumerateArray())
+                        {
+                            if (arrElem.ValueKind == JsonValueKind.Object)
+                            {
+                                var item = System.Activator.CreateInstance(elemType);
+                                if (item != null)
+                                {
+                                    PopulateFromJson(arrElem, item);
+                                    items.Add(item);
+                                }
+                            }
+                            else
+                            {
+                                items.Add(ConvertJsonElement(arrElem, elemType));
+                            }
+                        }
+                        var arr = System.Array.CreateInstance(elemType, items.Count);
+                        for (int i = 0; i < items.Count; i++)
+                            arr.SetValue(items[i], i);
+                        var sliceCtor = innerType.GetConstructor(new[] { arr.GetType() });
+                        if (sliceCtor != null)
+                        {
+                            var slice = sliceCtor.Invoke(new object[] { arr });
+                            valueField.SetValue(target, slice);
+                        }
+                        return;
+                    }
+
+                    // For Ptr<struct>, populate the struct
+                    if (elem.ValueKind == JsonValueKind.Object && inner != null)
+                    {
+                        PopulateFromJson(elem, inner);
+                        valueField.SetValue(target, inner);
+                        return;
+                    }
+                }
+            }
+
             if (elem.ValueKind != JsonValueKind.Object) return;
 
-            var type = target.GetType();
             var boxed = target;
 
             foreach (var prop in elem.EnumerateObject())
             {
-                // Find matching field (case-insensitive first char)
                 var field = FindField(type, prop.Name);
                 if (field == null) continue;
 

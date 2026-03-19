@@ -10,6 +10,20 @@ namespace Ngo.Runtime.Go.Printer
         [GoFunc]
         [return: GoReturn("error")]
         public static object? Fprint(object? output, GoFileSet? fset, object? node) => null;
+
+        // Mode constants
+        [GoConst(Type = "printer.Mode")] public const long RawFormat = 1;
+        [GoConst(Type = "printer.Mode")] public const long TabIndent = 2;
+        [GoConst(Type = "printer.Mode")] public const long UseSpaces = 4;
+        [GoConst(Type = "printer.Mode")] public const long SourcePos = 8;
+    }
+
+    // printer.CommentedNode struct
+    [GoType("struct", Name = "CommentedNode", Package = "go/printer")]
+    public class GoCommentedNode
+    {
+        [GoField(Name = "Node")] public object? Node;
+        [GoField(Name = "Comments", Type = "[]*ast.CommentGroup")] public Slice<object?> Comments;
     }
 
     // printer.Config struct

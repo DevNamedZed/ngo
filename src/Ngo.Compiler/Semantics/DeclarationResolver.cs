@@ -101,6 +101,18 @@ namespace Ngo.Compiler.Semantics
             var typeSyntaxes = new List<TypeDeclarationSyntax>();
             var constSyntaxes = new List<ConstDeclarationSyntax>();
 
+            // Pre-pass: scan ALL file-level go:linkname directives.
+            // Go allows go:linkname anywhere in the file, not just before func declarations.
+            var fileLinknames = new Dictionary<string, string>(); // localName → target
+            foreach (var file in files)
+            {
+                ScanFileLinknames(file, fileLinknames);
+            }
+            if (fileLinknames.Count > 0)
+            {
+                _context.FileLinknames = fileLinknames;
+            }
+
             foreach (var file in files)
             {
                 foreach (var member in file.Members)
@@ -264,9 +276,20 @@ namespace Ngo.Compiler.Semantics
             var variables = new List<VarDeclaration>();
             foreach (var varSyntax in varSyntaxes)
             {
+                // Extract //go:embed patterns from var keyword trivia
+                var embedPatterns = ExtractEmbedPatterns(varSyntax.VarKeyword);
+
                 foreach (var spec in varSyntax.Specs)
                 {
-                    variables.AddRange(ResolveVarSpec(spec));
+                    var vars = ResolveVarSpec(spec);
+
+                    // Apply embed patterns to the first variable in the spec
+                    if (embedPatterns != null && vars.Count > 0 && vars[0].Symbol != null)
+                    {
+                        vars[0].Symbol.EmbedPatterns = embedPatterns;
+                    }
+
+                    variables.AddRange(vars);
                 }
             }
 
@@ -514,6 +537,14 @@ namespace Ngo.Compiler.Semantics
             {
                 if (nr.Name != "_")
                     _context.Scope.TryDeclare(nr);
+            }
+
+            // Parse //go:linkname directive if present (on func keyword or from file-level scan)
+            ParseGoLinkname(syntax.FuncKeyword, symbol);
+            if (symbol.LinkName == null && _context.FileLinknames != null
+                && _context.FileLinknames.TryGetValue(symbol.Name, out var fileLinkTarget))
+            {
+                symbol.LinkName = fileLinkTarget;
             }
 
             // External function declarations (no body) — skip body resolution
@@ -845,6 +876,102 @@ namespace Ngo.Compiler.Semantics
             return TryEvalConstInt(expr, iota);
         }
 
+        /// <summary>
+        /// Scan all tokens in a file for //go:linkname directives.
+        /// Go allows these anywhere in the file, not just before func declarations.
+        /// </summary>
+        private static void ScanFileLinknames(Language.Syntax.SourceFileSyntax file, Dictionary<string, string> linknames)
+        {
+            foreach (var member in file.Members)
+            {
+                ScanNodeForLinknames(member, linknames);
+            }
+        }
+
+        private static void ScanNodeForLinknames(Language.SyntaxNode node, Dictionary<string, string> linknames)
+        {
+            foreach (var child in node.ChildNodes())
+            {
+                if (child is Language.SyntaxToken token)
+                {
+                    foreach (var extra in token.LeadingExtra)
+                    {
+                        if (extra.Kind == Language.SyntaxKind.LineCommentExtra
+                            && extra.Text.StartsWith("//go:linkname "))
+                        {
+                            var parts = extra.Text.Substring(14).Trim()
+                                .Split(' ', System.StringSplitOptions.RemoveEmptyEntries);
+                            if (parts.Length >= 2)
+                            {
+                                linknames[parts[0]] = parts[1];
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    ScanNodeForLinknames(child, linknames);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Extract //go:embed patterns from var keyword trivia.
+        /// Returns null if no embed directive found.
+        /// </summary>
+        private static List<string>? ExtractEmbedPatterns(Language.SyntaxToken varKeyword)
+        {
+            List<string>? patterns = null;
+            foreach (var extra in varKeyword.LeadingExtra)
+            {
+                if (extra.Kind != Language.SyntaxKind.LineCommentExtra)
+                    continue;
+                var text = extra.Text;
+                if (!text.StartsWith("//go:embed "))
+                    continue;
+                var pattern = text.Substring(11).Trim();
+                if (!string.IsNullOrEmpty(pattern))
+                {
+                    patterns ??= new List<string>();
+                    // Multiple patterns can be space-separated
+                    foreach (var p in pattern.Split(' ', System.StringSplitOptions.RemoveEmptyEntries))
+                        patterns.Add(p);
+                }
+            }
+            return patterns;
+        }
+
+        /// <summary>
+        /// Parse //go:linkname directive from function trivia.
+        /// Format: //go:linkname localname importpath.name
+        /// Sets FunctionSymbol.LinkName if found.
+        /// </summary>
+        private static void ParseGoLinkname(Language.SyntaxToken funcKeyword, FunctionSymbol symbol)
+        {
+            foreach (var extra in funcKeyword.LeadingExtra)
+            {
+                if (extra.Kind != Language.SyntaxKind.LineCommentExtra)
+                    continue;
+
+                var text = extra.Text;
+                if (!text.StartsWith("//go:linkname "))
+                    continue;
+
+                // //go:linkname localname target.name
+                var parts = text.Substring(14).Trim().Split(' ', System.StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length >= 2 && parts[0] == symbol.Name)
+                {
+                    symbol.LinkName = parts[1];
+                }
+                else if (parts.Length == 1)
+                {
+                    // Single-arg form: //go:linkname localname
+                    // Makes the symbol externally visible (no rename)
+                    symbol.LinkName = parts[0];
+                }
+            }
+        }
+
         private long? TryEvalConstInt(ExpressionSyntax expr) => TryEvalConstInt(expr, -1, 0);
 
         private long? TryEvalConstInt(ExpressionSyntax expr, int iota) => TryEvalConstInt(expr, iota, 0);
@@ -881,6 +1008,13 @@ namespace Ngo.Compiler.Semantics
                 var right = TryEvalConstInt(bin.Right, iota, depth + 1);
                 if (left.HasValue && right.HasValue)
                 {
+                    // Use unsigned (logical) right shift when the left operand is from an
+                    // unsigned context (e.g., ^uintptr(0) >> 63 should give 1, not -1).
+                    // Detect unsigned context by checking if the left sub-expression involves
+                    // a uintptr/uint/uint64 type conversion.
+                    bool useUnsignedShift = bin.OperatorToken.Kind == SyntaxKind.GreaterThanGreaterThanToken
+                        && IsUnsignedContext(bin.Left);
+
                     return bin.OperatorToken.Kind switch
                     {
                         SyntaxKind.PlusToken => left.Value + right.Value,
@@ -889,6 +1023,8 @@ namespace Ngo.Compiler.Semantics
                         SyntaxKind.SlashToken when right.Value != 0 => left.Value / right.Value,
                         SyntaxKind.PercentToken when right.Value != 0 => left.Value % right.Value,
                         SyntaxKind.LessThanLessThanToken => left.Value << (int)right.Value,
+                        SyntaxKind.GreaterThanGreaterThanToken when useUnsignedShift
+                            => (long)((ulong)left.Value >> (int)right.Value),
                         SyntaxKind.GreaterThanGreaterThanToken => left.Value >> (int)right.Value,
                         SyntaxKind.AmpersandToken => left.Value & right.Value,
                         SyntaxKind.PipeToken => left.Value | right.Value,
@@ -944,7 +1080,22 @@ namespace Ngo.Compiler.Semantics
                 if (typeName is "uintptr" or "int" or "uint" or "int64" or "uint64"
                     or "int32" or "uint32" or "int16" or "uint16" or "int8" or "uint8" or "byte")
                 {
-                    return TryEvalConstInt(convCall.Arguments[0], iota, depth + 1);
+                    var inner = TryEvalConstInt(convCall.Arguments[0], iota, depth + 1);
+                    if (inner.HasValue)
+                    {
+                        // Apply truncation/masking for unsigned types
+                        return typeName switch
+                        {
+                            "uint8" or "byte" => inner.Value & 0xFF,
+                            "int8" => (long)(sbyte)inner.Value,
+                            "uint16" => inner.Value & 0xFFFF,
+                            "int16" => (long)(short)inner.Value,
+                            "uint32" => inner.Value & 0xFFFFFFFF,
+                            "int32" => (long)(int)inner.Value,
+                            _ => inner.Value,
+                        };
+                    }
+                    return null;
                 }
             }
 
@@ -1012,6 +1163,38 @@ namespace Ngo.Compiler.Semantics
                 result = result * 8 + (c - '0');
             }
             return s.Length > 0;
+        }
+
+        /// <summary>
+        /// Returns true if the expression is in an unsigned type context
+        /// (e.g., uintptr(...), uint64(...), uint(...)), meaning right-shift
+        /// should be logical (unsigned) rather than arithmetic (signed).
+        /// </summary>
+        private static bool IsUnsignedContext(ExpressionSyntax expr)
+        {
+            // Direct type conversion: uintptr(x), uint(x), uint64(x)
+            if (expr is CallExpressionSyntax call
+                && call.Function is IdentifierNameSyntax callId)
+            {
+                var name = callId.Identifier.Text;
+                if (name is "uintptr" or "uint" or "uint64" or "uint32" or "uint16" or "uint8" or "byte")
+                    return true;
+            }
+
+            // Unary ^ on an unsigned context: ^uintptr(0)
+            if (expr is UnaryExpressionSyntax unary
+                && unary.OperatorToken.Kind == SyntaxKind.CaretToken)
+            {
+                return IsUnsignedContext(unary.Operand);
+            }
+
+            // Parenthesized: (uintptr(0))
+            if (expr is ParenthesizedExpressionSyntax paren)
+            {
+                return IsUnsignedContext(paren.Expression);
+            }
+
+            return false;
         }
 
         private static bool TryParseOctalLong(ReadOnlySpan<char> s, out long result)
@@ -1976,6 +2159,7 @@ namespace Ngo.Compiler.Semantics
             {
                 _context.Compilation.CgoPackage = cgoPackage;
                 _context.Compilation.CgoFunctions = functions;
+                _context.Compilation.CgoStructs = structs;
             }
 
             return cgoPackage;

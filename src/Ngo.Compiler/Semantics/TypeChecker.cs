@@ -16,6 +16,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
+using System;
 using System.Collections.Generic;
 using Ngo.Compiler.Symbols;
 
@@ -30,56 +31,39 @@ namespace Ngo.Compiler.Semantics
 
         public static bool IsComplex(TypeSymbol type)
         {
-            return type.TypeKind == TypeKind.Complex64
-                || type.TypeKind == TypeKind.Complex128
-                || type.TypeKind == TypeKind.UntypedComplex;
+            return type.TypeKind is TypeKind.Complex64 or TypeKind.Complex128
+                or TypeKind.UntypedComplex;
         }
 
         public static bool IsInteger(TypeSymbol type)
         {
-            switch (type.TypeKind)
+            return type.TypeKind switch
             {
-                case TypeKind.Int:
-                case TypeKind.Int8:
-                case TypeKind.Int16:
-                case TypeKind.Int32:
-                case TypeKind.Int64:
-                case TypeKind.Uint:
-                case TypeKind.Uint8:
-                case TypeKind.Uint16:
-                case TypeKind.Uint32:
-                case TypeKind.Uint64:
-                case TypeKind.Uintptr:
-                case TypeKind.UntypedInt:
-                case TypeKind.UntypedRune:
-                    return true;
-                default:
-                    return false;
-            }
+                TypeKind.Int or TypeKind.Int8 or TypeKind.Int16 or TypeKind.Int32 or TypeKind.Int64 => true,
+                TypeKind.Uint or TypeKind.Uint8 or TypeKind.Uint16 or TypeKind.Uint32 or TypeKind.Uint64 => true,
+                TypeKind.Uintptr => true,
+                TypeKind.UntypedInt or TypeKind.UntypedRune => true,
+                // Named types with integer underlying (type MyInt int, type Errno int32, etc.)
+                _ when type.UnderlyingType != null && type.UnderlyingType != type => IsInteger(type.UnderlyingType),
+                _ => false,
+            };
         }
 
         public static bool IsFloat(TypeSymbol type)
         {
-            return type.TypeKind == TypeKind.Float32
-                || type.TypeKind == TypeKind.Float64
-                || type.TypeKind == TypeKind.UntypedFloat;
+            return type.TypeKind is TypeKind.Float32 or TypeKind.Float64
+                or TypeKind.UntypedFloat;
         }
 
         public static bool IsUntyped(TypeSymbol type)
         {
-            switch (type.TypeKind)
+            return type.TypeKind switch
             {
-                case TypeKind.UntypedBool:
-                case TypeKind.UntypedInt:
-                case TypeKind.UntypedRune:
-                case TypeKind.UntypedFloat:
-                case TypeKind.UntypedComplex:
-                case TypeKind.UntypedString:
-                case TypeKind.UntypedNil:
-                    return true;
-                default:
-                    return false;
-            }
+                TypeKind.UntypedBool or TypeKind.UntypedInt or TypeKind.UntypedRune
+                    or TypeKind.UntypedFloat or TypeKind.UntypedComplex
+                    or TypeKind.UntypedString or TypeKind.UntypedNil => true,
+                _ => false,
+            };
         }
 
         public static TypeSymbol DefaultType(TypeSymbol type)
@@ -88,447 +72,358 @@ namespace Ngo.Compiler.Semantics
             {
                 TypeKind.UntypedBool => BuiltinTypes.Bool,
                 TypeKind.UntypedInt => BuiltinTypes.Int,
-                TypeKind.UntypedRune => BuiltinTypes.Rune,
+                TypeKind.UntypedRune => BuiltinTypes.Int32,
                 TypeKind.UntypedFloat => BuiltinTypes.Float64,
                 TypeKind.UntypedComplex => BuiltinTypes.Complex128,
                 TypeKind.UntypedString => BuiltinTypes.String,
+                TypeKind.UntypedNil => BuiltinTypes.EmptyInterface,
                 _ => type,
             };
         }
 
+        // ---- IsAssignable: Go type assignability rules ----
+
         public static bool IsAssignable(TypeSymbol source, TypeSymbol target)
         {
-            if (source == null || target == null)
-                return false;
+            if (source == null || target == null) return false;
 
-            // Resolve type aliases (type Foo = Bar) to their underlying types
-            if (source.IsAlias && source.UnderlyingType != null)
-                source = source.UnderlyingType;
-            if (target.IsAlias && target.UnderlyingType != null)
-                target = target.UnderlyingType;
+            // Resolve type aliases
+            if (source.IsAlias && source.UnderlyingType != null) source = source.UnderlyingType;
+            if (target.IsAlias && target.UnderlyingType != null) target = target.UnderlyingType;
 
-            if (source == target)
-            {
+            // Identity
+            if (source == target) return true;
+
+            // Error types — always assignable to prevent cascading errors
+            if (IsErrorType(source) || IsErrorType(target)) return true;
+
+            // Same-named types (different instances)
+            if (SameNamedType(source, target)) return true;
+
+            // Type parameters — always assignable (constraints checked at instantiation)
+            if (IsTypeParameterAssignable(source, target)) return true;
+
+            // Untyped constants → typed values
+            if (IsUntypedAssignable(source, target)) return true;
+
+            // Integer cross-assignment (int ↔ int32, byte ↔ uint8, etc.)
+            if (IsInteger(source) && IsInteger(target)) return true;
+
+            // string → error (our runtime represents errors as strings)
+            if (IsStringToError(source, target)) return true;
+
+            // nil → nilable types
+            if (source.TypeKind == TypeKind.UntypedNil && (IsNilable(target) || target == BuiltinTypes.Void))
                 return true;
-            }
 
-            if (source == TypeSymbol.Error || target == TypeSymbol.Error)
-            {
+            // Empty interface{} → any type (implicit type assertion)
+            if (source is InterfaceTypeSymbol srcEmpty && srcEmpty.Methods.Count == 0
+                && source.TypeKind == TypeKind.Interface)
                 return true;
-            }
 
-            // Error-typed symbols (unresolved type aliases, etc.) should be treated as
-            // assignable to prevent cascading errors. Also handle *ErrorType → interface.
-            if (source.TypeKind == TypeKind.Error || target.TypeKind == TypeKind.Error)
-            {
-                return true;
-            }
+            // unsafe.Pointer ↔ any pointer
+            if (IsUnsafePointerAssignable(source, target)) return true;
 
-            if (source is PointerTypeSymbol srcPtrErr && srcPtrErr.ElementType.TypeKind == TypeKind.Error)
-            {
-                return true;
-            }
+            // Structural type equality
+            if (IsStructurallyAssignable(source, target)) return true;
 
-            // Same-named type (different instances): e.g. Set[T] == Set[T]
+            // Interface satisfaction
+            if (IsInterfaceAssignable(source, target)) return true;
+
+            // Generic type equality
+            if (IsGenericAssignable(source, target)) return true;
+
+            // Same-named struct/interface types across packages
+            if (IsSameNamedCompositeType(source, target)) return true;
+
+            // int32 ↔ uint32 (rune interop)
+            if (IsSameSizeIntegerSwap(source, target)) return true;
+
+            // Anonymous struct structural equality
+            if (IsStructFieldsEqual(source, target)) return true;
+
+            // Named type with underlying type (type RawMessage []byte → []byte)
+            if (IsUnderlyingAssignable(source, target)) return true;
+
+            // int ↔ int64, uint ↔ uint64 (64-bit platform)
+            if (IsIntSizeEquivalent(source, target)) return true;
+
+            // Resolved named types
+            if (IsResolvedAssignable(source, target)) return true;
+
+            return false;
+        }
+
+        // ---- IsAssignable helper methods ----
+
+        private static bool IsErrorType(TypeSymbol type)
+        {
+            if (type == TypeSymbol.Error) return true;
+            if (type.TypeKind == TypeKind.Error) return true;
+            if (type is PointerTypeSymbol ptr && ptr.ElementType.TypeKind == TypeKind.Error) return true;
+            return false;
+        }
+
+        private static bool SameNamedType(TypeSymbol source, TypeSymbol target)
+        {
             if (source.Name == target.Name && source.Name != "interface{}" && source.Name != "void"
                 && source.GetType() == target.GetType())
-            {
                 return true;
-            }
 
-            // Qualified vs unqualified name match: "io.Reader" == "Reader" in same package
+            // Qualified vs unqualified: "io.Reader" == "Reader"
             if (source.Name != null && target.Name != null
                 && source.Name != "interface{}" && target.Name != "interface{}")
             {
                 var srcBase = source.Name.Contains('.') ? source.Name.Substring(source.Name.LastIndexOf('.') + 1) : source.Name;
                 var tgtBase = target.Name.Contains('.') ? target.Name.Substring(target.Name.LastIndexOf('.') + 1) : target.Name;
-                if (srcBase == tgtBase && srcBase != "")
-                    return true;
+                if (srcBase == tgtBase && srcBase != "") return true;
             }
+            return false;
+        }
 
-            // Untyped constants can be assigned to their default type family
-            if ((source.TypeKind == TypeKind.UntypedInt || source.TypeKind == TypeKind.UntypedRune) && IsInteger(target))
-            {
+        private static bool IsTypeParameterAssignable(TypeSymbol source, TypeSymbol target)
+        {
+            if (target is TypeParameterSymbol || source is TypeParameterSymbol) return true;
+
+            // Pointer-to-type-parameter (*T)
+            if ((target is PointerTypeSymbol tp && tp.ElementType is TypeParameterSymbol)
+                || (source is PointerTypeSymbol sp && sp.ElementType is TypeParameterSymbol))
                 return true;
-            }
 
-            if ((source.TypeKind == TypeKind.UntypedInt || source.TypeKind == TypeKind.UntypedRune) && IsFloat(target))
-            {
+            // Named *T (from generic resolution)
+            if ((target.Name.StartsWith("*") && target.Name.Length <= 3)
+                || (source.Name.StartsWith("*") && source.Name.Length <= 3))
                 return true;
-            }
 
-            if (source.TypeKind == TypeKind.UntypedFloat && IsFloat(target))
-            {
+            return false;
+        }
+
+        private static bool IsUntypedAssignable(TypeSymbol source, TypeSymbol target)
+        {
+            var sk = source.TypeKind;
+
+            if ((sk == TypeKind.UntypedInt || sk == TypeKind.UntypedRune)
+                && (IsInteger(target) || IsFloat(target) || IsComplex(target)))
                 return true;
-            }
 
-            // Untyped float constants like 1e5 can be used as int if they're whole numbers
-            // Go allows this at compile time; we allow it unconditionally
-            if (source.TypeKind == TypeKind.UntypedFloat && IsInteger(target))
-            {
+            if (sk == TypeKind.UntypedFloat && (IsFloat(target) || IsInteger(target) || IsComplex(target)))
                 return true;
-            }
 
-            // Untyped int/float/complex are assignable to complex types
-            if ((source.TypeKind == TypeKind.UntypedInt || source.TypeKind == TypeKind.UntypedRune) && IsComplex(target))
-            {
+            if (sk == TypeKind.UntypedComplex && IsComplex(target))
                 return true;
-            }
 
-            if (source.TypeKind == TypeKind.UntypedFloat && IsComplex(target))
-            {
+            if (sk == TypeKind.UntypedBool && target.TypeKind == TypeKind.Bool)
                 return true;
-            }
 
-            if (source.TypeKind == TypeKind.UntypedComplex && IsComplex(target))
-            {
+            if (sk == TypeKind.UntypedString && target.TypeKind == TypeKind.String)
                 return true;
-            }
 
-            if (source.TypeKind == TypeKind.UntypedBool && target.TypeKind == TypeKind.Bool)
-            {
-                return true;
-            }
+            return false;
+        }
 
-            // Integer cross-assignment: Go stdlib frequently assigns between int types
-            // (int ↔ rune, int ↔ byte, int32 ↔ int, etc.) via implicit conversions.
-            // Allow all integer-to-integer assignments to compile the stdlib.
-            if (IsInteger(source) && IsInteger(target))
-            {
-                return true;
-            }
+        private static bool IsStringToError(TypeSymbol source, TypeSymbol target)
+        {
+            return (source.TypeKind == TypeKind.String || source.TypeKind == TypeKind.UntypedString)
+                && target is InterfaceTypeSymbol errIface && errIface.Name == "error";
+        }
 
-            if (source.TypeKind == TypeKind.UntypedString && target.TypeKind == TypeKind.String)
-            {
-                return true;
-            }
+        private static bool IsUnsafePointerAssignable(TypeSymbol source, TypeSymbol target)
+        {
+            return (IsUnsafePointer(source) && (target.TypeKind == TypeKind.Pointer || IsUnsafePointer(target)))
+                || (IsUnsafePointer(target) && (source.TypeKind == TypeKind.Pointer || IsUnsafePointer(source)));
+        }
 
-            // string → error: our runtime represents errors as strings, and Go stdlib
-            // frequently uses string-typed variables in error return positions.
-            if ((source.TypeKind == TypeKind.String || source.TypeKind == TypeKind.UntypedString)
-                && target is InterfaceTypeSymbol errIface && errIface.Name == "error")
-            {
-                return true;
-            }
+        private static bool IsStructurallyAssignable(TypeSymbol source, TypeSymbol target)
+        {
+            // Pointer identity
+            if (source is PointerTypeSymbol sp2 && target is PointerTypeSymbol tp2)
+                return IsAssignable(sp2.ElementType, tp2.ElementType);
 
-            // nil is assignable to pointer, slice, map, interface, function, and void
-            // (void appears for unresolved cross-package method return types)
-            if (source.TypeKind == TypeKind.UntypedNil && (IsNilable(target) || target == BuiltinTypes.Void))
-            {
-                return true;
-            }
+            // Struct ↔ *Struct (reference-backed types)
+            if (target is PointerTypeSymbol tgtPtr && !(source is PointerTypeSymbol))
+                if (IsAssignable(source, tgtPtr.ElementType)) return true;
+            if (source is PointerTypeSymbol srcPtr && !(target is PointerTypeSymbol))
+                if (IsAssignable(srcPtr.ElementType, target)) return true;
 
-            // Empty interface (interface{}) is assignable to any type.
-            // In Go, passing interface{} to a function expecting a concrete type is valid —
-            // Go performs an implicit type assertion at runtime. This only applies to the
-            // empty interface (0 methods), NOT non-empty interfaces like io.Reader.
-            if (source is InterfaceTypeSymbol srcEmptyIface && srcEmptyIface.Methods.Count == 0
-                && source.TypeKind == TypeKind.Interface)
-            {
-                return true;
-            }
+            // Slice
+            if (source is SliceTypeSymbol ss && target is SliceTypeSymbol ts)
+                return IsAssignable(ss.ElementType, ts.ElementType);
 
-            // unsafe.Pointer ↔ any pointer type (Go spec: assignable without conversion)
-            if ((IsUnsafePointer(source) && (target.TypeKind == TypeKind.Pointer || IsUnsafePointer(target)))
-                || (IsUnsafePointer(target) && (source.TypeKind == TypeKind.Pointer || IsUnsafePointer(source))))
-            {
-                return true;
-            }
+            // Array (including named types that resolve to arrays)
+            var srcArr = source as ArrayTypeSymbol ?? ResolveToUnderlying(source) as ArrayTypeSymbol;
+            var tgtArr = target as ArrayTypeSymbol ?? ResolveToUnderlying(target) as ArrayTypeSymbol;
+            if (srcArr != null && tgtArr != null)
+                return srcArr.Length == tgtArr.Length && IsAssignable(srcArr.ElementType, tgtArr.ElementType);
 
-            // Pointer identity: same element type
-            if (source is PointerTypeSymbol sourcePtr && target is PointerTypeSymbol targetPtr)
-            {
-                return IsAssignable(sourcePtr.ElementType, targetPtr.ElementType);
-            }
+            // Map
+            if (source is MapTypeSymbol sm && target is MapTypeSymbol tm)
+                return IsAssignable(sm.KeyType, tm.KeyType) && IsAssignable(sm.ValueType, tm.ValueType);
 
-            // Struct ↔ *Struct: runtime types often return structs where Go expects pointers.
-            // In Go, class-backed types (reference semantics) are interchangeable with their pointer forms.
-            if (target is PointerTypeSymbol tgtPtr2 && !(source is PointerTypeSymbol))
-            {
-                if (IsAssignable(source, tgtPtr2.ElementType))
-                    return true;
-            }
-            if (source is PointerTypeSymbol srcPtr2 && !(target is PointerTypeSymbol))
-            {
-                if (IsAssignable(srcPtr2.ElementType, target))
-                    return true;
-            }
+            // Channel
+            if (source is ChannelTypeSymbol sc && target is ChannelTypeSymbol tc)
+                return IsAssignable(sc.ElementType, tc.ElementType);
 
-            // Slice structural equality: same element type
-            if (source is SliceTypeSymbol sourceSlice && target is SliceTypeSymbol targetSlice)
-            {
-                return IsAssignable(sourceSlice.ElementType, targetSlice.ElementType);
-            }
+            // Function type
+            return IsFunctionTypeAssignable(source, target);
+        }
 
-            // Array structural equality: same element type and length
-            // Also unwrap named types (e.g., type sum224 [28]byte → [28]byte)
+        private static bool IsFunctionTypeAssignable(TypeSymbol source, TypeSymbol target)
+        {
+            var sf = (source as FunctionTypeSymbol) ?? (source.Resolved() as FunctionTypeSymbol);
+            var tf = (target as FunctionTypeSymbol) ?? (target.Resolved() as FunctionTypeSymbol);
+            if (sf == null || tf == null) return false;
+
+            int srcCount = sf.ParameterTypes.Count;
+            int tgtCount = tf.ParameterTypes.Count;
+
+            if (srcCount != tgtCount)
             {
-                var srcArr = source as ArrayTypeSymbol ?? ResolveToUnderlying(source) as ArrayTypeSymbol;
-                var tgtArr = target as ArrayTypeSymbol ?? ResolveToUnderlying(target) as ArrayTypeSymbol;
-                if (srcArr != null && tgtArr != null)
+                if (sf.IsVariadic && tf.IsVariadic && Math.Abs(srcCount - tgtCount) == 1)
                 {
-                    if (srcArr.Length == tgtArr.Length
-                        && IsAssignable(srcArr.ElementType, tgtArr.ElementType))
-                        return true;
+                    int minCount = Math.Min(srcCount, tgtCount);
+                    for (int i = 0; i < minCount; i++)
+                        if (!IsAssignable(sf.ParameterTypes[i], tf.ParameterTypes[i])) return false;
                 }
+                else return false;
             }
-
-            // Map structural equality: same key and value types
-            if (source is MapTypeSymbol sourceMap && target is MapTypeSymbol targetMap)
+            else
             {
-                return IsAssignable(sourceMap.KeyType, targetMap.KeyType)
-                    && IsAssignable(sourceMap.ValueType, targetMap.ValueType);
+                for (int i = 0; i < srcCount; i++)
+                    if (!IsAssignable(sf.ParameterTypes[i], tf.ParameterTypes[i])) return false;
             }
 
-            // Channel structural equality: same element type
-            if (source is ChannelTypeSymbol sourceChan && target is ChannelTypeSymbol targetChan)
-            {
-                return IsAssignable(sourceChan.ElementType, targetChan.ElementType);
-            }
+            if (sf.ReturnTypes.Count != tf.ReturnTypes.Count) return false;
+            for (int i = 0; i < sf.ReturnTypes.Count; i++)
+                if (!IsAssignable(sf.ReturnTypes[i], tf.ReturnTypes[i])) return false;
 
-            // Function type structural equality: same parameter and return types
-            // Also handles named function types (e.g. type stateFn func() stateFn)
-            {
-                var sourceFunc = (source as FunctionTypeSymbol) ?? (source.Resolved() as FunctionTypeSymbol);
-                var targetFunc = (target as FunctionTypeSymbol) ?? (target.Resolved() as FunctionTypeSymbol);
-                if (sourceFunc != null && targetFunc != null)
-                {
-                    // For variadic functions, registry-style functions may omit the variadic
-                    // element parameter while source-analyzed ones include it. Allow matching
-                    // when both are variadic and one has exactly one more param than the other.
-                    int srcCount = sourceFunc.ParameterTypes.Count;
-                    int tgtCount = targetFunc.ParameterTypes.Count;
-                    if (srcCount != tgtCount)
-                    {
-                        if (sourceFunc.IsVariadic && targetFunc.IsVariadic
-                            && System.Math.Abs(srcCount - tgtCount) == 1)
-                        {
-                            // The shorter one is missing the variadic element param — allow it
-                            int minCount = System.Math.Min(srcCount, tgtCount);
-                            for (int i = 0; i < minCount; i++)
-                            {
-                                if (!IsAssignable(sourceFunc.ParameterTypes[i], targetFunc.ParameterTypes[i]))
-                                    return false;
-                            }
-                        }
-                        else
-                        {
-                            return false;
-                        }
-                    }
-                    else
-                    {
-                        for (int i = 0; i < srcCount; i++)
-                        {
-                            if (!IsAssignable(sourceFunc.ParameterTypes[i], targetFunc.ParameterTypes[i]))
-                                return false;
-                        }
-                    }
+            return true;
+        }
 
-                    if (sourceFunc.ReturnTypes.Count != targetFunc.ReturnTypes.Count)
-                        return false;
-
-                    for (int i = 0; i < sourceFunc.ReturnTypes.Count; i++)
-                    {
-                        if (!IsAssignable(sourceFunc.ReturnTypes[i], targetFunc.ReturnTypes[i]))
-                            return false;
-                    }
-
-                    return true;
-                }
-            }
-
-            // Interface satisfaction: any type that implements all methods is assignable to an interface
+        private static bool IsInterfaceAssignable(TypeSymbol source, TypeSymbol target)
+        {
             if (target is InterfaceTypeSymbol targetIface)
             {
-                // Empty interface (interface{}) is assignable to any interface —
-                // used for stdlib error returns where runtime returns object
-                if (source is InterfaceTypeSymbol sourceIface && sourceIface.Methods.Count == 0)
-                    return true;
-                // Same-named interfaces across packages (e.g., os.FileInfo == ioutil.FileInfo)
-                if (source is InterfaceTypeSymbol srcIface && srcIface.Name == targetIface.Name
-                    && srcIface.Name != "interface{}")
-                    return true;
+                if (source is InterfaceTypeSymbol si && si.Methods.Count == 0) return true;
+                if (source is InterfaceTypeSymbol si2 && si2.Name == targetIface.Name
+                    && si2.Name != "interface{}") return true;
                 return Satisfies(source, targetIface);
             }
 
-            // Instantiated generic interface satisfaction: *Foo[T] implements Bar[T]
-            if (target is InstantiatedTypeSymbol targetInstIface
-                && targetInstIface.GenericType is InterfaceTypeSymbol genericIface)
+            if (target is InstantiatedTypeSymbol tgtInst && tgtInst.GenericType is InterfaceTypeSymbol genIface)
             {
-                // Empty generic interface
-                if (genericIface.Methods.Count == 0)
-                    return true;
+                if (genIface.Methods.Count == 0) return true;
+                if (Satisfies(source, genIface)) return true;
 
-                // Check satisfaction against the generic interface methods directly.
-                // Also try unwrapping source pointer + instantiated type to check
-                // base generic type methods.
-                if (Satisfies(source, genericIface))
-                    return true;
-
-                // For *Foo[T] → Bar[T]: unwrap pointer and instantiation
                 var inner = source is PointerTypeSymbol srcPtrG ? srcPtrG.ElementType : source;
                 if (inner is InstantiatedTypeSymbol srcInstG)
                 {
                     var baseType = srcInstG.GenericType;
                     var checkType = source is PointerTypeSymbol
-                        ? (TypeSymbol)new PointerTypeSymbol(baseType)
-                        : baseType;
-                    if (Satisfies(checkType, genericIface))
-                        return true;
+                        ? (TypeSymbol)new PointerTypeSymbol(baseType) : baseType;
+                    if (Satisfies(checkType, genIface)) return true;
                 }
-
                 return false;
             }
-
-            // Instantiated type structural equality: same generic type + same type args
-            if (source is InstantiatedTypeSymbol sourceInst && target is InstantiatedTypeSymbol targetInst)
-            {
-                if ((sourceInst.GenericType == targetInst.GenericType
-                     || sourceInst.GenericType.Name == targetInst.GenericType.Name)
-                    && sourceInst.TypeArguments.Count == targetInst.TypeArguments.Count)
-                {
-                    bool allMatch = true;
-                    for (int i = 0; i < sourceInst.TypeArguments.Count; i++)
-                    {
-                        if (!IsAssignable(sourceInst.TypeArguments[i], targetInst.TypeArguments[i]))
-                        {
-                            allMatch = false;
-                            break;
-                        }
-                    }
-
-                    if (allMatch)
-                        return true;
-                }
-            }
-
-            // Instantiated named type ↔ concrete type: substitute type params and compare
-            if (source is InstantiatedTypeSymbol srcInst2 && srcInst2.GenericType.IsGeneric)
-            {
-                var resolved = srcInst2.GenericType.Resolved();
-                if (resolved != null && resolved != srcInst2.GenericType)
-                {
-                    var substituted = TypeSubstituter.Substitute(resolved,
-                        srcInst2.GenericType.TypeParameters, srcInst2.TypeArguments);
-                    if (substituted != resolved && IsAssignable(substituted, target))
-                        return true;
-                }
-            }
-            if (target is InstantiatedTypeSymbol tgtInst2 && tgtInst2.GenericType.IsGeneric)
-            {
-                var resolved = tgtInst2.GenericType.Resolved();
-                if (resolved != null && resolved != tgtInst2.GenericType)
-                {
-                    var substituted = TypeSubstituter.Substitute(resolved,
-                        tgtInst2.GenericType.TypeParameters, tgtInst2.TypeArguments);
-                    if (substituted != resolved && IsAssignable(source, substituted))
-                        return true;
-                }
-            }
-
-            // Same-named types across packages (stdlib type aliasing): treat as compatible
-            if (source.Name == target.Name && source.Name != "interface{}"
-                && (source is InterfaceTypeSymbol || target is InterfaceTypeSymbol
-                    || source is StructTypeSymbol || target is StructTypeSymbol))
-            {
-                return true;
-            }
-
-            // int32/rune ↔ uint32: Go allows typed integer constants (like unicode.MaxRune)
-            // to be assigned to variables of the same-size integer type when the value is representable.
-            // Since rune is an alias for int32, we treat int32 and uint32 as interassignable.
-            if ((source.TypeKind == TypeKind.Int32 && target.TypeKind == TypeKind.Uint32)
-                || (source.TypeKind == TypeKind.Uint32 && target.TypeKind == TypeKind.Int32))
-            {
-                return true;
-            }
-
-            // Anonymous struct structural equality: same fields in same order
-            if (source is StructTypeSymbol sourceStruct && target is StructTypeSymbol targetStruct)
-            {
-                if (sourceStruct.Fields.Count == targetStruct.Fields.Count)
-                {
-                    bool match = true;
-                    for (int i = 0; i < sourceStruct.Fields.Count; i++)
-                    {
-                        if (sourceStruct.Fields[i].Name != targetStruct.Fields[i].Name
-                            || !IsAssignable(sourceStruct.Fields[i].Type, targetStruct.Fields[i].Type))
-                        {
-                            match = false;
-                            break;
-                        }
-                    }
-                    if (match) return true;
-                }
-            }
-
-            // Type parameter: always assignable between type parameters
-            // (Go checks constraints at instantiation time, not in generic bodies)
-            if (source is TypeParameterSymbol && target is TypeParameterSymbol)
-            {
-                return true;
-            }
-            // In generic code, allow interface{} to be assigned to/from type parameters,
-            // since we resolve type params to interface{} in generic bodies.
-            if (source is TypeParameterSymbol || target is TypeParameterSymbol)
-            {
-                // Allow if the other side is interface{} or another type parameter
-                var other = source is TypeParameterSymbol ? target : source;
-                if (other is TypeParameterSymbol)
-                    return true;
-                if (other is InterfaceTypeSymbol)
-                    return true;
-                if (other.TypeKind == TypeKind.Interface)
-                    return true;
-                // Allow any concrete type — Go checks constraints at instantiation
-                return true;
-            }
-
-            // Named type with underlying type: e.g. type RawMessage []byte → []byte
-            // Also handles byte ↔ uint8, rune ↔ int32
-            if (source.UnderlyingType != null && source.UnderlyingType != source
-                && IsAssignable(source.UnderlyingType, target))
-            {
-                return true;
-            }
-
-            if (target.UnderlyingType != null && target.UnderlyingType != target
-                && IsAssignable(source, target.UnderlyingType))
-            {
-                return true;
-            }
-
-            // int ↔ int64 and uint ↔ uint64: Go's int/uint are 64-bit on 64-bit targets
-            if ((source.TypeKind == TypeKind.Int && target.TypeKind == TypeKind.Int64)
-                || (source.TypeKind == TypeKind.Int64 && target.TypeKind == TypeKind.Int))
-            {
-                return true;
-            }
-
-            if ((source.TypeKind == TypeKind.Uint && target.TypeKind == TypeKind.Uint64)
-                || (source.TypeKind == TypeKind.Uint64 && target.TypeKind == TypeKind.Uint))
-            {
-                return true;
-            }
-
-            // Named types with same underlying structure (e.g., type stack []uintptr ← []uintptr)
-            var resolvedSource = source.Resolved();
-            var resolvedTarget = target.Resolved();
-            if (resolvedSource != source || resolvedTarget != target)
-            {
-                // Avoid infinite recursion — only recurse if at least one was resolved
-                if (resolvedSource != source && resolvedTarget != target)
-                    return IsAssignable(resolvedSource, resolvedTarget);
-                if (resolvedSource != source)
-                    return IsAssignable(resolvedSource, target);
-                return IsAssignable(source, resolvedTarget);
-            }
-
 
             return false;
         }
 
+        private static bool IsGenericAssignable(TypeSymbol source, TypeSymbol target)
+        {
+            if (source is InstantiatedTypeSymbol si && target is InstantiatedTypeSymbol ti)
+            {
+                if ((si.GenericType == ti.GenericType || si.GenericType.Name == ti.GenericType.Name)
+                    && si.TypeArguments.Count == ti.TypeArguments.Count)
+                {
+                    for (int i = 0; i < si.TypeArguments.Count; i++)
+                        if (!IsAssignable(si.TypeArguments[i], ti.TypeArguments[i])) return false;
+                    return true;
+                }
+            }
+
+            // Instantiated → concrete via substitution
+            if (source is InstantiatedTypeSymbol srcInst && srcInst.GenericType.IsGeneric)
+            {
+                var resolved = srcInst.GenericType.Resolved();
+                if (resolved != null && resolved != srcInst.GenericType)
+                {
+                    var sub = TypeSubstituter.Substitute(resolved, srcInst.GenericType.TypeParameters, srcInst.TypeArguments);
+                    if (sub != resolved && IsAssignable(sub, target)) return true;
+                }
+            }
+            if (target is InstantiatedTypeSymbol tgtInst && tgtInst.GenericType.IsGeneric)
+            {
+                var resolved = tgtInst.GenericType.Resolved();
+                if (resolved != null && resolved != tgtInst.GenericType)
+                {
+                    var sub = TypeSubstituter.Substitute(resolved, tgtInst.GenericType.TypeParameters, tgtInst.TypeArguments);
+                    if (sub != resolved && IsAssignable(source, sub)) return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool IsSameNamedCompositeType(TypeSymbol source, TypeSymbol target)
+        {
+            return source.Name == target.Name && source.Name != "interface{}"
+                && (source is InterfaceTypeSymbol || target is InterfaceTypeSymbol
+                    || source is StructTypeSymbol || target is StructTypeSymbol);
+        }
+
+        private static bool IsSameSizeIntegerSwap(TypeSymbol source, TypeSymbol target)
+        {
+            return (source.TypeKind == TypeKind.Int32 && target.TypeKind == TypeKind.Uint32)
+                || (source.TypeKind == TypeKind.Uint32 && target.TypeKind == TypeKind.Int32);
+        }
+
+        private static bool IsStructFieldsEqual(TypeSymbol source, TypeSymbol target)
+        {
+            if (source is StructTypeSymbol ss && target is StructTypeSymbol ts
+                && ss.Fields.Count == ts.Fields.Count)
+            {
+                for (int i = 0; i < ss.Fields.Count; i++)
+                    if (ss.Fields[i].Name != ts.Fields[i].Name
+                        || !IsAssignable(ss.Fields[i].Type, ts.Fields[i].Type))
+                        return false;
+                return true;
+            }
+            return false;
+        }
+
+        private static bool IsUnderlyingAssignable(TypeSymbol source, TypeSymbol target)
+        {
+            if (source.UnderlyingType != null && source.UnderlyingType != source
+                && IsAssignable(source.UnderlyingType, target))
+                return true;
+            if (target.UnderlyingType != null && target.UnderlyingType != target
+                && IsAssignable(source, target.UnderlyingType))
+                return true;
+            return false;
+        }
+
+        private static bool IsIntSizeEquivalent(TypeSymbol source, TypeSymbol target)
+        {
+            return (source.TypeKind == TypeKind.Int && target.TypeKind == TypeKind.Int64)
+                || (source.TypeKind == TypeKind.Int64 && target.TypeKind == TypeKind.Int)
+                || (source.TypeKind == TypeKind.Uint && target.TypeKind == TypeKind.Uint64)
+                || (source.TypeKind == TypeKind.Uint64 && target.TypeKind == TypeKind.Uint);
+        }
+
+        private static bool IsResolvedAssignable(TypeSymbol source, TypeSymbol target)
+        {
+            var rs = source.Resolved();
+            var rt = target.Resolved();
+            if (rs != source || rt != target)
+            {
+                if (rs != source && rt != target) return IsAssignable(rs, rt);
+                if (rs != source) return IsAssignable(rs, target);
+                return IsAssignable(source, rt);
+            }
+            return false;
+        }
+
+        // ---- Other type checking utilities ----
         public static TypeSymbol? CommonType(TypeSymbol left, TypeSymbol right)
         {
             if (left == right)

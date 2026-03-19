@@ -49,7 +49,7 @@ namespace Ngo.Runtime.Http
         [GoField(Name = "ProtoMajor")] public long ProtoMajor { get; set; } = 1;
         [GoField(Name = "ProtoMinor")] public long ProtoMinor { get; set; } = 1;
         [GoField(Name = "Header")] public Header Header { get; set; } = new Header();
-        [GoField(Name = "Body")] public object? Body { get; set; }
+        [GoField(Name = "Body", Type = "io.ReadCloser")] public object? Body { get; set; }
         [GoField(Name = "ContentLength")] public long ContentLength { get; set; }
         [GoField(Name = "TransferEncoding")] public Slice<string> TransferEncoding { get; set; }
         [GoField(Name = "Close")] public bool Close { get; set; }

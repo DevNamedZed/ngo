@@ -29,5 +29,11 @@ namespace Ngo.Compiler.Symbols
         public TypeSymbol Type { get; set; }
 
         public bool IsUsed { get; set; }
+
+        /// <summary>
+        /// If this variable has a //go:embed directive, the embed patterns.
+        /// Used to embed file contents at compile time.
+        /// </summary>
+        public System.Collections.Generic.List<string>? EmbedPatterns { get; set; }
     }
 }

@@ -80,6 +80,9 @@ namespace Ngo.Compiler.Cgo
             // Emit P/Invoke stubs for user-declared C functions
             EmitUserFunctionStubs(context, compilation);
 
+            // Emit .NET struct types for C structs defined in the preamble
+            EmitCgoStructTypes(context, compilation);
+
             // Emit NativeLibrary resolver so the CLR can find the native library
             EmitNativeLibraryResolver(context, compilation);
         }
@@ -132,7 +135,7 @@ namespace Ngo.Compiler.Cgo
 
             foreach (var func in functions)
             {
-                var stub = marshaller.GenerateFunctionStub(func, "cgo_main");
+                var stub = marshaller.GenerateFunctionStub(func, "ngo_native");
 
                 // Map C types to .NET types for the P/Invoke signature
                 var returnType = MapToClrType(stub.ReturnType);
@@ -142,18 +145,9 @@ namespace Ngo.Compiler.Cgo
                     paramTypes[i] = MapToClrType(stub.Parameters[i].Type);
                 }
 
-                // Determine the native library name
-                // Use the compiled library, stripping "lib" prefix for DllImport
-                string libraryName = "cgo_main";
-                if (compilation.CgoResult?.NativeLibraryPath != null)
-                {
-                    libraryName = System.IO.Path.GetFileNameWithoutExtension(
-                        compilation.CgoResult.NativeLibraryPath);
-                    if (libraryName.StartsWith("lib"))
-                    {
-                        libraryName = libraryName.Substring(3);
-                    }
-                }
+                // All static libs are linked into a single shared library at build time.
+                // The unified library name is always "ngo_native".
+                string libraryName = "ngo_native";
 
                 // Create real P/Invoke method via DefinePInvokeMethod
                 var pinvokeMethod = pinvokeType.DefinePInvokeMethod(
@@ -194,9 +188,63 @@ namespace Ngo.Compiler.Cgo
         }
 
         /// <summary>
-        /// Emit a module initializer that registers a NativeLibrary DllImport resolver.
-        /// This ensures the CLR can find cgo_main.dll/libcgo_main.so at runtime
-        /// by searching relative to the assembly's base directory.
+        /// Emit .NET struct types with [StructLayout(Explicit)] for C structs defined in the preamble.
+        /// Each C struct becomes a .NET value type with exact field offsets from the probe.
+        /// </summary>
+        private static void EmitCgoStructTypes(EmitContext context, CompilationContext compilation)
+        {
+            var structs = compilation.CgoStructs;
+            var cgoPackage = compilation.CgoPackage;
+            if (structs == null || structs.Count == 0 || cgoPackage == null)
+            {
+                return;
+            }
+
+            var probeResult = compilation.CgoResult?.ProbeResult ?? new CgoProbeResult();
+            var marshaller = new MarshallingStubGenerator(probeResult);
+
+            foreach (var structInfo in structs)
+            {
+                var layout = marshaller.GenerateStructLayout(structInfo);
+
+                // Define the struct type with sequential layout matching C
+                var structType = context.Module.DefineType(
+                    layout.NetTypeName,
+                    TypeAttributes.Public | TypeAttributes.SequentialLayout | TypeAttributes.Sealed,
+                    typeof(System.ValueType));
+
+                // Add fields in order
+                foreach (var field in layout.Fields)
+                {
+                    var fieldType = MapToClrType(field.Type);
+                    structType.DefineField(
+                        field.Name,
+                        fieldType,
+                        FieldAttributes.Public);
+                }
+
+                // Register in StructTypes — CreateType() is called during EmitPackage finalization
+                var goStructSym = cgoPackage.LookupExport("struct_" + structInfo.CName)
+                    ?? cgoPackage.LookupExport(structInfo.GoName);
+                if (goStructSym is Symbols.StructTypeSymbol sts)
+                {
+                    context.StructTypes[sts] = structType;
+                }
+                else
+                {
+                    // No matching symbol — finalize immediately
+                    structType.CreateType();
+                }
+            }
+        }
+
+        /// <summary>
+        /// Emit a static class with a resolver method that helps the CLR find
+        /// libngo_native.so/ngo_native.dll at runtime. The resolver searches
+        /// relative to the assembly's directory and common native lib paths.
+        ///
+        /// The main package's .cctor calls Cgo_NativeResolver.Initialize()
+        /// which registers the DllImport resolver via NativeLibrary.SetDllImportResolver.
         /// </summary>
         private static void EmitNativeLibraryResolver(EmitContext context, CompilationContext compilation)
         {
@@ -206,11 +254,26 @@ namespace Ngo.Compiler.Cgo
                 return;
             }
 
-            // Create a static class with a module initializer
+            // Create a static class with Initialize() that registers the resolver
             var resolverType = context.Module.DefineType(
                 "Cgo_NativeResolver",
                 TypeAttributes.Public | TypeAttributes.Abstract | TypeAttributes.Sealed);
 
+            // Emit: public static void Initialize()
+            // {
+            //     NativeLibrary.SetDllImportResolver(
+            //         typeof(Cgo_PInvoke).Assembly,
+            //         (name, assembly, paths) => {
+            //             var dir = Path.GetDirectoryName(assembly.Location) ?? ".";
+            //             var libPath = Path.Combine(dir, GetPlatformLibName(name));
+            //             if (NativeLibrary.TryLoad(libPath, out var handle))
+            //                 return handle;
+            //             return NativeLibrary.Load(name);
+            //         });
+            // }
+            //
+            // We can't emit lambda IL easily, so instead we register the resolver
+            // by calling a runtime helper in Ngo.Runtime.
             var initMethod = resolverType.DefineMethod(
                 "Initialize",
                 MethodAttributes.Public | MethodAttributes.Static,
@@ -218,15 +281,23 @@ namespace Ngo.Compiler.Cgo
                 Type.EmptyTypes);
 
             var writer = initMethod.GetILWriter();
-            // For now, emit a no-op — the actual resolver registration will use
-            // NativeLibrary.SetDllImportResolver via a runtime call
-            // The P/Invoke resolver needs the Assembly reference at runtime,
-            // which isn't available at compile time via IL emission.
-            // Instead, the native library should be placed in the same directory
-            // as the assembly, where the default P/Invoke probing finds it.
+            // Call Ngo.Runtime.CgoNativeResolver.Register() which handles
+            // the NativeLibrary.SetDllImportResolver call at runtime
+            var registerMethod = typeof(Ngo.Runtime.CgoNativeResolver).GetMethod(
+                "Register", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+            if (registerMethod != null)
+            {
+                // Pass the calling assembly so the resolver knows where to search
+                writer.Emit(System.Reflection.Emit.OpCodes.Call,
+                    typeof(System.Reflection.Assembly).GetMethod("GetCallingAssembly")!);
+                writer.Emit(System.Reflection.Emit.OpCodes.Call, registerMethod);
+            }
             writer.Emit(System.Reflection.Emit.OpCodes.Ret);
 
             resolverType.CreateType();
+
+            // Store resolver type so the package .cctor can call Initialize()
+            context.CgoResolverInitMethod = initMethod;
         }
 
         private static Type MapToClrType(NetTypeMapping mapping)

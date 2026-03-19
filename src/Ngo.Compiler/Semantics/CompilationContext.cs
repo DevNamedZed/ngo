@@ -39,11 +39,14 @@ namespace Ngo.Compiler.Semantics
             Log = log ?? NullLog.Instance;
 
             var resolvers = new List<IPackageResolver>();
-            resolvers.Add(RuntimePackageResolver.Instance);
+            // Go source takes priority — compile from Go source first.
+            // Fall back to C# runtime only for packages that can't compile from Go
+            // (runtime intrinsics, internal/* packages, assembly-backed functions).
             if (projectRoot != null)
             {
                 resolvers.Add(new GoPackageResolver(this, projectRoot));
             }
+            resolvers.Add(RuntimePackageResolver.Instance);
             _resolvers = resolvers.ToArray();
         }
 
@@ -64,12 +67,18 @@ namespace Ngo.Compiler.Semantics
                 return cached;
             }
 
-            foreach (var resolver in _resolvers)
+            for (int i = 0; i < _resolvers.Length; i++)
             {
-                var pkg = resolver.Resolve(importPath);
+                var pkg = _resolvers[i].Resolve(importPath);
                 if (pkg != null)
                 {
-                    _resolved[importPath] = pkg;
+                    // Cache results from GoPackageResolver (index 0).
+                    // Don't cache RuntimePackageResolver results (index 1+)
+                    // so GoPackageResolver gets another chance on future calls.
+                    if (i == 0)
+                    {
+                        _resolved[importPath] = pkg;
+                    }
                     return pkg;
                 }
             }
@@ -134,6 +143,11 @@ namespace Ngo.Compiler.Semantics
         /// C function info extracted from the preamble.
         /// </summary>
         public List<Cgo.CgoFunctionInfo>? CgoFunctions { get; set; }
+
+        /// <summary>
+        /// C struct info extracted from the preamble.
+        /// </summary>
+        public List<Cgo.CgoStructInfo>? CgoStructs { get; set; }
 
         /// <summary>
         /// Go function name → C export name from //export directives.

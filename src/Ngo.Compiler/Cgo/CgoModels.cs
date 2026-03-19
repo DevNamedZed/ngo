@@ -217,10 +217,17 @@ namespace Ngo.Compiler.Cgo
     public class CgoCompilationResult
     {
         public CgoProbeResult? ProbeResult { get; set; }
+        /// <summary>
+        /// Path to the compiled static library (.a/.lib) for this package.
+        /// </summary>
         public string? NativeLibraryPath { get; set; }
         public CCompilerInfo? CompilerInfo { get; set; }
         public string? Error { get; set; }
         public bool CacheHit { get; set; }
+        /// <summary>
+        /// LDFLAGS from #cgo directives, needed at final link time.
+        /// </summary>
+        public string? LDFlags { get; set; }
         public bool Success => Error == null;
     }
 

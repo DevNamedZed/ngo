@@ -61,6 +61,9 @@ namespace Ngo.Compiler.Emit
         // Methods from cached/precompiled assemblies (for resolving calls to cached packages)
         public Dictionary<Symbol, MethodInfo> CachedMethods { get; } = new();
 
+        // CGo native library resolver initializer (called from .cctor)
+        public IMethodBuilder? CgoResolverInitMethod { get; set; }
+
         // Loop label stack for break/continue
         public Stack<LoopLabel> LoopLabels { get; } = new();
 

@@ -978,6 +978,18 @@ namespace Ngo.Compiler.Emit
                 _ctx.IL.Emit(OpCodes.Dup);
                 _ctx.IL.Emit(OpCodes.Ldc_I4, i);
                 _body.EmitExpression(call.Arguments[i + 1]);
+                // Wrap value types in interface wrappers when appending to interface slices
+                if (sliceType.ElementType is Ngo.Compiler.Symbols.InterfaceTypeSymbol appendIfaceElem
+                    && call.Arguments[i + 1].Type.TypeKind != Ngo.Compiler.Symbols.TypeKind.Interface)
+                {
+                    _body.EmitInterfaceWrapIfNeeded(call.Arguments[i + 1].Type, appendIfaceElem, elemClrType);
+                }
+                else
+                {
+                    var argClrType = _ctx.Mapper.Map(call.Arguments[i + 1].Type);
+                    if (argClrType.IsValueType && !elemClrType.IsValueType)
+                        _ctx.IL.Emit(OpCodes.Box, argClrType);
+                }
                 _body.EmitStelem(elemClrType);
             }
 

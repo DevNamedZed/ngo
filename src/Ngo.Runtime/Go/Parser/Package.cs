@@ -34,6 +34,9 @@ namespace Ngo.Runtime.Go.Parser
 
         [GoConst]
         public const long AllErrors = 32;
+
+        [GoConst]
+        public const long SkipObjectResolution = 64;
     }
 
     // parser.Mode named type

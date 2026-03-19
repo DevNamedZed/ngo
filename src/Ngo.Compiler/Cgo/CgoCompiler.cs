@@ -56,7 +56,7 @@ namespace Ngo.Compiler.Cgo
             string cacheKey = ComputeCacheKey(preamble.CSource, cflags, ldflags, currentOS, compiler.Version);
             string cacheDir = Path.Combine(_cacheDirectory, "cgo", cacheKey);
 
-            string cachedLibrary = Path.Combine(cacheDir, CCompilerDriver.GetSharedLibraryName(packageName));
+            string cachedLibrary = Path.Combine(cacheDir, CCompilerDriver.GetStaticLibraryName(packageName));
             string cachedProbe = Path.Combine(cacheDir, "probe.json");
 
             if (File.Exists(cachedLibrary) && File.Exists(cachedProbe))
@@ -64,6 +64,7 @@ namespace Ngo.Compiler.Cgo
                 // Cache hit — read cached probe results
                 result.ProbeResult = _probeResultParser.Parse(File.ReadAllText(cachedProbe));
                 result.NativeLibraryPath = cachedLibrary;
+                result.LDFlags = ldflags;
                 result.CacheHit = true;
                 return result;
             }
@@ -94,20 +95,15 @@ namespace Ngo.Compiler.Cgo
                 result.ProbeResult = new CgoProbeResult();
             }
 
-            // Step 4: Compile preamble C code to shared library
+            // Step 4: Compile preamble C code to static library (.a/.lib)
+            // Static libs are cached per-package and linked together at final build time.
             if (preamble.HasCSource)
             {
                 string cSourceFile = Path.Combine(cacheDir, $"cgo_{packageName}.c");
                 File.WriteAllText(cSourceFile, preamble.CSource);
 
-                // Auto-add -lm if math.h is included (common CGo pattern)
-                if (preamble.CSource.Contains("#include <math.h>") && !ldflags.Contains("-lm"))
-                {
-                    ldflags = string.IsNullOrEmpty(ldflags) ? "-lm" : ldflags + " -lm";
-                }
-
-                var (libraryPath, compileError) = _compilerDriver.CompileSharedLibrary(
-                    cSourceFile, cacheDir, packageName, cflags, ldflags);
+                var (libraryPath, compileError) = _compilerDriver.CompileStaticLibrary(
+                    cSourceFile, cacheDir, packageName, cflags);
 
                 if (compileError != null)
                 {
@@ -116,6 +112,7 @@ namespace Ngo.Compiler.Cgo
                 }
 
                 result.NativeLibraryPath = libraryPath;
+                result.LDFlags = ldflags;
             }
 
             return result;

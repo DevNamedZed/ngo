@@ -41,6 +41,7 @@ namespace Ngo.Compiler.Emit.Builder
 
         public void SetReturnType(Type type) => _mb.SetReturnType(type);
         public void SetParameters(Type[] types) => _mb.SetParameters(types);
+        public void SetCustomAttribute(System.Reflection.Emit.CustomAttributeBuilder attr) => _mb.SetCustomAttribute(attr);
 
         public CilWriter GetILWriter() => new ILGeneratorWriter(_mb.GetILGenerator());
     }
