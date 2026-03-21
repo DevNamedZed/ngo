@@ -10,6 +10,7 @@ namespace Ngo.Runtime.Net.Mail
     public static class Package
     {
         [GoFunc]
+        [return: GoReturn("*Address", "error")]
         public static (GoAddress, string) ParseAddress(string address)
         {
             // Simple parser for "Name <email>" format
@@ -38,6 +39,7 @@ namespace Ngo.Runtime.Net.Mail
         }
 
         [GoFunc]
+        [return: GoReturn("[]*Address", "error")]
         public static (Slice<GoAddress>, string) ParseAddressList(string list)
         {
             try

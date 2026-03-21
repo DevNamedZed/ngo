@@ -50,6 +50,7 @@ namespace Ngo.Runtime.RuntimeDebug
         }
 
         [GoFunc]
+        [return: GoReturn("int", "int")]
         public static (long, long) SetMaxThreads(long threads)
         {
             // .NET ThreadPool manages this
@@ -70,12 +71,14 @@ namespace Ngo.Runtime.RuntimeDebug
         }
 
         [GoFunc]
+        [return: GoReturn("*BuildInfo", "bool")]
         public static (GoBuildInfo, bool) ParseBuildInfo(string data)
         {
             return (new GoBuildInfo { GoVersion = "go1.22.6", Path = "", Main = new GoModule() }, true);
         }
 
         [GoFunc]
+        [return: GoReturn("*BuildInfo", "bool")]
         public static (GoBuildInfo, bool) ReadBuildInfo()
         {
             var entry = Assembly.GetEntryAssembly();

@@ -601,6 +601,22 @@ namespace Ngo.Compiler.Emit
                 case ReceiveExpression recv:
                     CollectReferencedSymbols(recv.Channel, result);
                     return;
+                case SliceExpression slice:
+                    CollectReferencedSymbols(slice.Operand, result);
+                    if (slice.Low != null) CollectReferencedSymbols(slice.Low, result);
+                    if (slice.High != null) CollectReferencedSymbols(slice.High, result);
+                    if (slice.Max != null) CollectReferencedSymbols(slice.Max, result);
+                    return;
+                case ForRangeStatement range:
+                    CollectReferencedSymbols(range.Iterable, result);
+                    CollectReferencedSymbols(range.Body, result);
+                    return;
+                case MultiAssignmentStatement multi:
+                    CollectReferencedSymbols(multi.Value, result);
+                    return;
+                case LabeledStatement labeled:
+                    CollectReferencedSymbols(labeled.InnerStatement, result);
+                    return;
                 // Recurse into nested function literals so transitive captures are visible
                 case FunctionLiteralExpression funcLit:
                     CollectReferencedSymbols(funcLit.Body, result);

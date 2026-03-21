@@ -35,7 +35,7 @@ namespace Ngo.Runtime.Errors
         public static object? Unwrap([GoParam("error")] object? err)
         {
             if (err is WrappedError w) return w.Inner;
-            return null;
+            return TryCallUnwrap(err);
         }
 
         [GoFunc]
@@ -45,7 +45,14 @@ namespace Ngo.Runtime.Errors
             {
                 if (Equals(err, target)) return true;
                 if (err is string s1 && target is string s2 && s1 == s2) return true;
-                if (err is WrappedError w) { err = w.Inner; continue; }
+
+                // Unwrap via wrapper's _value field (interface wrapper holds concrete error)
+                var unwrapped = TryUnwrapError(err);
+                if (unwrapped != null)
+                {
+                    err = unwrapped;
+                    continue;
+                }
                 break;
             }
             return false;
@@ -59,10 +66,61 @@ namespace Ngo.Runtime.Errors
             while (err != null)
             {
                 if (targetType.IsInstanceOfType(err)) return true;
-                if (err is WrappedError w) { err = w.Inner; continue; }
+                // Also check the wrapped value inside interface wrappers
+                var innerValue = TryGetWrappedValue(err);
+                if (innerValue != null && targetType.IsInstanceOfType(innerValue))
+                {
+                    return true;
+                }
+                var unwrapped = TryUnwrapError(err);
+                if (unwrapped != null)
+                {
+                    err = unwrapped;
+                    continue;
+                }
                 break;
             }
             return false;
+        }
+
+        private static object? TryUnwrapError(object? err)
+        {
+            if (err is WrappedError w) return w.Inner;
+
+            // Check for Unwrap() method via reflection (Go interface pattern)
+            var unwrapResult = TryCallUnwrap(err);
+            if (unwrapResult != null) return unwrapResult;
+
+            // Check wrapper's _value field for Unwrap
+            var innerValue = TryGetWrappedValue(err);
+            if (innerValue != null)
+            {
+                return TryCallUnwrap(innerValue);
+            }
+
+            return null;
+        }
+
+        private static object? TryCallUnwrap(object? err)
+        {
+            if (err == null) return null;
+            var unwrapMethod = err.GetType().GetMethod("Unwrap", System.Type.EmptyTypes);
+            if (unwrapMethod != null && unwrapMethod.ReturnType != typeof(void))
+            {
+                return unwrapMethod.Invoke(err, null);
+            }
+            return null;
+        }
+
+        private static object? TryGetWrappedValue(object? obj)
+        {
+            if (obj == null) return null;
+            var valueField = obj.GetType().GetField("_value");
+            if (valueField != null)
+            {
+                return valueField.GetValue(obj);
+            }
+            return null;
         }
 
         [GoFunc(IsVariadic = true)]

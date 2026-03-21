@@ -281,7 +281,15 @@ namespace Ngo.Compiler.Semantics
 
                 foreach (var spec in varSyntax.Specs)
                 {
-                    var vars = ResolveVarSpec(spec);
+                    IReadOnlyList<VarDeclaration> vars;
+                    try
+                    {
+                        vars = ResolveVarSpec(spec);
+                    }
+                    catch
+                    {
+                        continue;
+                    }
 
                     // Apply embed patterns to the first variable in the spec
                     if (embedPatterns != null && vars.Count > 0 && vars[0].Symbol != null)
@@ -1213,9 +1221,14 @@ namespace Ngo.Compiler.Semantics
         {
             var name = syntax.Name.Text;
 
-            // Type alias — handled fully in RegisterTypeDeclaration
+            // Type alias — pre-declare with a placeholder so the name is in scope.
+            // The underlying type is resolved later in RegisterTypeDeclaration.
             if (syntax.AssignToken != null)
+            {
+                var aliasPlaceholder = new TypeSymbol(name, TypeKind.Error, null) { IsAlias = true };
+                _context.Scope.TryDeclare(aliasPlaceholder);
                 return;
+            }
 
             // Struct and interface types get concrete symbols
             if (syntax.Type is StructTypeSyntax)
@@ -1262,15 +1275,24 @@ namespace Ngo.Compiler.Semantics
             // For now, create a placeholder type symbol with the name
             if (syntax.AssignToken != null)
             {
-                // Type alias: resolve immediately since it just refers to an existing type
+                // Type alias: resolve the underlying type and update the pre-declared placeholder
                 var underlying = _typeResolver.ResolveType(syntax.Type);
                 if (underlying == null)
                 {
                     underlying = TypeSymbol.Error;
                 }
 
-                var alias = new TypeSymbol(name, underlying.TypeKind, underlying) { IsAlias = true };
-                _context.Scope.TryDeclare(alias);
+                var aliasPlaceholder = _context.Scope.Lookup(name) as TypeSymbol;
+                if (aliasPlaceholder != null && aliasPlaceholder.IsAlias)
+                {
+                    aliasPlaceholder.TypeKind = underlying.TypeKind;
+                    aliasPlaceholder.UnderlyingType = underlying;
+                }
+                else
+                {
+                    var alias = new TypeSymbol(name, underlying.TypeKind, underlying) { IsAlias = true };
+                    _context.Scope.TryDeclare(alias);
+                }
 
                 return;
             }
@@ -1723,7 +1745,11 @@ namespace Ngo.Compiler.Semantics
                         }
                     }
                 }
-                _context.TrackLocal(symbol, _context.SpanOf(syntax));
+                // Only track for unused-var checking at function scope, not package level
+                if (_context.Scope.Name != "package")
+                {
+                    _context.TrackLocal(symbol, _context.SpanOf(syntax));
+                }
 
                 results.Add(new VarDeclaration(symbol, initializer, _context.SpanOf(syntax)));
             }

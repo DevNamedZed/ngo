@@ -185,6 +185,7 @@ namespace Ngo.Runtime.Io.Fs
         }
 
         [GoFunc]
+        [return: GoReturn("FileInfo", "error")]
         public static (object, string) Stat(object fsys, string name)
         {
             try
@@ -207,6 +208,7 @@ namespace Ngo.Runtime.Io.Fs
         }
 
         [GoFunc]
+        [return: GoReturn("[]DirEntry", "error")]
         public static (Slice<object>, string) ReadDir(object fsys, string name)
         {
             try
@@ -228,6 +230,7 @@ namespace Ngo.Runtime.Io.Fs
         }
 
         [GoFunc]
+        [return: GoReturn("[]string", "error")]
         public static (Slice<string>, string) Glob(object fsys, string pattern)
         {
             return (new Slice<string>(Array.Empty<string>()), null!);
@@ -250,6 +253,7 @@ namespace Ngo.Runtime.Io.Fs
     [GoType("interface", Name = "FS", Package = "io/fs")]
     public interface IGoFS
     {
+        [GoMethod]
         [return: GoReturn("fs.File", "error")]
         (IGoFile, string) Open(string name);
     }

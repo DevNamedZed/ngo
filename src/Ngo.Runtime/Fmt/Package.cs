@@ -344,8 +344,34 @@ namespace Ngo.Runtime.Fmt
             if (arg == null) return "<nil>";
             if (arg is bool b) return b ? "true" : "false";
 
-            // Stringer dispatch: check for String() method (Go's fmt.Stringer interface)
             var type = arg.GetType();
+
+            // Check for interface wrapper: unwrap _value and dispatch on inner value
+            var valueField = type.GetField("_value");
+            if (valueField != null)
+            {
+                var innerValue = valueField.GetValue(arg);
+                if (innerValue != null)
+                {
+                    // Use wrapper's ToString if it overrides (e.g., error wrappers)
+                    var wrapperStr = arg.ToString();
+                    if (wrapperStr != null && wrapperStr != type.FullName && wrapperStr != type.Name)
+                    {
+                        return wrapperStr;
+                    }
+                    return FormatValue(innerValue);
+                }
+            }
+
+            // Error() method (Go's error interface — checked before Stringer)
+            var errorMethod = type.GetMethod("Error", Type.EmptyTypes);
+            if (errorMethod != null && errorMethod.ReturnType == typeof(string))
+            {
+                var result = errorMethod.Invoke(arg, null);
+                if (result is string errorStr) return errorStr;
+            }
+
+            // String() method (Go's fmt.Stringer interface)
             var stringMethod = type.GetMethod("String", Type.EmptyTypes);
             if (stringMethod != null && stringMethod.ReturnType == typeof(string)
                 && stringMethod.DeclaringType != typeof(object))

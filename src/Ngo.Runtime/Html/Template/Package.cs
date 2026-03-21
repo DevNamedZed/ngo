@@ -24,6 +24,18 @@ namespace Ngo.Runtime.Html.Template
         }
 
         [GoFunc]
+        public static void HTMLEscape([GoParam("io.Writer")] object writer, [GoParam("[]byte")] Slice<byte> data)
+        {
+            var escaped = System.Net.WebUtility.HtmlEncode(
+                System.Text.Encoding.UTF8.GetString(data.AsSpan()));
+            if (writer is Ngo.Runtime.Io.IGoWriter goWriter)
+            {
+                var bytes = System.Text.Encoding.UTF8.GetBytes(escaped);
+                goWriter.Write(new Slice<byte>(bytes));
+            }
+        }
+
+        [GoFunc]
         public static string HTMLEscapeString(string s) => System.Net.WebUtility.HtmlEncode(s) ?? s;
 
         [GoFunc(IsVariadic = true)]

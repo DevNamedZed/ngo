@@ -46,5 +46,70 @@ namespace Ngo.Compiler.Emit.Builder
         public override bool Equals(object? o) => o is NgoProxyType other && other._fullName == _fullName;
         public override bool Equals(Type? o) => o is NgoProxyType other && other._fullName == _fullName;
         public override string ToString() => _fullName;
+
+        public override Type MakeArrayType() => new NgoProxyType(_fullName + "[]");
+        public override Type MakeArrayType(int rank) => new NgoProxyType(_fullName + $"[{new string(',', rank - 1)}]");
+        public override Type MakeByRefType() => new NgoProxyType(_fullName + "&");
+        public override Type MakePointerType() => new NgoProxyType(_fullName + "*");
+        public override Type MakeGenericType(params Type[] typeArguments)
+        {
+            var argNames = new string[typeArguments.Length];
+            for (int i = 0; i < typeArguments.Length; i++)
+            {
+                argNames[i] = typeArguments[i].FullName ?? typeArguments[i].Name;
+            }
+            return new NgoProxyType($"{_fullName}[{string.Join(",", argNames)}]");
+        }
+        public override bool IsGenericType => _fullName.Contains('[') && !_fullName.EndsWith("[]");
+        public new bool IsArray => _fullName.EndsWith("[]");
+        public override Type GetGenericTypeDefinition()
+        {
+            // Extract the base name before [...]
+            var bracketIdx = _fullName.IndexOf('[');
+            if (bracketIdx > 0)
+            {
+                return new NgoProxyType(_fullName.Substring(0, bracketIdx));
+            }
+            return this;
+        }
+        public override Type[] GetGenericArguments()
+        {
+            return System.Array.Empty<Type>();
+        }
+
+        public override ConstructorInfo[] GetConstructors(BindingFlags bindingAttr)
+        {
+            return new[] { new NgoProxyConstructorInfo(this) };
+        }
+
+        protected override ConstructorInfo? GetConstructorImpl(
+            BindingFlags bindingAttr, Binder? binder, CallingConventions callConvention,
+            Type[]? types, ParameterModifier[]? modifiers)
+        {
+            return new NgoProxyConstructorInfo(this);
+        }
+    }
+
+    internal sealed class NgoProxyConstructorInfo : ConstructorInfo
+    {
+        private readonly NgoProxyType _declaringType;
+
+        public NgoProxyConstructorInfo(NgoProxyType declaringType)
+        {
+            _declaringType = declaringType;
+        }
+
+        public override Type? DeclaringType => _declaringType;
+        public override string Name => ".ctor";
+        public override Type? ReflectedType => _declaringType;
+        public override MethodAttributes Attributes => MethodAttributes.Public;
+        public override RuntimeMethodHandle MethodHandle => throw new NotSupportedException();
+        public override ParameterInfo[] GetParameters() => System.Array.Empty<ParameterInfo>();
+        public override object Invoke(BindingFlags invokeAttr, Binder? binder, object?[]? parameters, CultureInfo? culture) => throw new NotSupportedException();
+        public override object Invoke(object? obj, BindingFlags invokeAttr, Binder? binder, object?[]? parameters, CultureInfo? culture) => throw new NotSupportedException();
+        public override MethodImplAttributes GetMethodImplementationFlags() => MethodImplAttributes.IL;
+        public override object[] GetCustomAttributes(bool inherit) => System.Array.Empty<object>();
+        public override object[] GetCustomAttributes(Type attributeType, bool inherit) => System.Array.Empty<object>();
+        public override bool IsDefined(Type attributeType, bool inherit) => false;
     }
 }

@@ -152,6 +152,7 @@ namespace Ngo.Runtime.Filepath
 
         /// <summary>filepath.Split(path string) (dir, file string)</summary>
         [GoFunc]
+        [return: GoReturn("string", "string")]
         public static (string, string) Split(string path)
         {
             var dir = System.IO.Path.GetDirectoryName(path) ?? "";
@@ -217,7 +218,7 @@ namespace Ngo.Runtime.Filepath
         /// </summary>
         [GoFunc]
         [return: GoReturn("error")]
-        public static object? Walk(string root, Action<string, object?, object?> fn)
+        public static object? Walk(string root, Func<string, object?, object?, object?> fn)
         {
             try
             {
@@ -230,14 +231,9 @@ namespace Ngo.Runtime.Filepath
             }
         }
 
-        /// <summary>
-        /// filepath.WalkDir(root string, fn fs.WalkDirFunc) error
-        /// WalkDirFunc = func(path string, d fs.DirEntry, err error) error
-        /// Simplified: fn receives (path, nil, nil) for each entry.
-        /// </summary>
         [GoFunc]
         [return: GoReturn("error")]
-        public static object? WalkDir(string root, Action<string, object?, object?> fn)
+        public static object? WalkDir(string root, Func<string, object?, object?, object?> fn)
         {
             try
             {
@@ -272,17 +268,29 @@ namespace Ngo.Runtime.Filepath
             return cleaned.StartsWith(cwd, StringComparison.Ordinal);
         }
 
-        private static void WalkDirInternal(string dir, Action<string, object?, object?> fn)
+        private static void WalkDirInternal(string dir, Func<string, object?, object?, object?> fn)
         {
-            fn(dir, null, null);
+            var err = fn(dir, null, null);
+            if (err != null)
+            {
+                return;
+            }
             try
             {
                 foreach (var entry in Directory.GetFileSystemEntries(dir))
                 {
                     if (Directory.Exists(entry))
+                    {
                         WalkDirInternal(entry, fn);
+                    }
                     else
-                        fn(entry, null, null);
+                    {
+                        err = fn(entry, null, null);
+                        if (err != null)
+                        {
+                            return;
+                        }
+                    }
                 }
             }
             catch

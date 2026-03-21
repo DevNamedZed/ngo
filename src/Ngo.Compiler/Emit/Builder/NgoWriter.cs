@@ -464,8 +464,13 @@ namespace Ngo.Compiler.Emit.Builder
 
         private static string GetMethodRef(MethodInfo method)
         {
+            if (method == null)
+            {
+                return "?::?";
+            }
             var declaringType = method.DeclaringType;
-            return GetTypeName(declaringType!) + "::" + method.Name;
+            var typeName = declaringType != null ? GetTypeName(declaringType) : "?";
+            return typeName + "::" + method.Name;
         }
 
         private static string GetCtorRef(ConstructorInfo ctor)

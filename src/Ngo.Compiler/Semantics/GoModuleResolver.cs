@@ -54,7 +54,183 @@ namespace Ngo.Compiler.Semantics
         public IReadOnlyDictionary<string, string> Replaces => _replaces;
 
         private readonly Dictionary<string, string> _requirements = new();
-        private readonly Dictionary<string, string> _replaces = new(); // module → local path or module@version
+        private readonly Dictionary<string, string> _replaces = new();
+        private readonly HashSet<string> _loadedModuleGoMods = new();
+
+        /// <summary>
+        /// Loads a module's go.mod and merges its requirements into this resolver.
+        /// </summary>
+        public void LoadTransitiveGoMod(string moduleDir)
+        {
+            var goModPath = Path.Combine(moduleDir, "go.mod");
+            if (!File.Exists(goModPath))
+            {
+                return;
+            }
+            if (!_loadedModuleGoMods.Add(goModPath))
+            {
+                return;
+            }
+            var lines = File.ReadAllLines(goModPath);
+            MergeGoMod(lines);
+        }
+
+        /// <summary>
+        /// Loads ALL transitive go.mod files reachable from the project's go.mod.
+        /// This mirrors the Go compiler's behavior: before compiling anything,
+        /// build a complete picture of ALL module versions from the entire
+        /// transitive dependency tree.
+        /// </summary>
+        public void LoadAllTransitiveDependencies()
+        {
+            var worklist = new Queue<(string module, string version)>();
+
+            // Seed with current project's requirements
+            foreach (var req in _requirements)
+            {
+                worklist.Enqueue((req.Key, req.Value));
+            }
+
+            while (worklist.Count > 0)
+            {
+                var (module, version) = worklist.Dequeue();
+
+                // Find this module's directory in cache
+                var moduleDir = GetCachedModuleDir(module, version);
+                if (moduleDir == null)
+                {
+                    // Try to download it
+                    moduleDir = DownloadModule(module, version);
+                    if (moduleDir == null)
+                    {
+                        continue;
+                    }
+                }
+
+                // Load its go.mod
+                var goModPath = Path.Combine(moduleDir, "go.mod");
+                if (!File.Exists(goModPath) || !_loadedModuleGoMods.Add(goModPath))
+                {
+                    continue;
+                }
+
+                // Parse and merge requirements
+                var lines = File.ReadAllLines(goModPath);
+                var newRequirements = ParseRequirements(lines);
+
+                foreach (var req in newRequirements)
+                {
+                    // Go's Minimal Version Selection: pick the HIGHEST version
+                    // requested by any module in the dependency graph.
+                    if (!_requirements.ContainsKey(req.Key))
+                    {
+                        _requirements[req.Key] = req.Value;
+                        worklist.Enqueue((req.Key, req.Value));
+                    }
+                    else if (CompareVersions(_requirements[req.Key], req.Value) < 0)
+                    {
+                        _requirements[req.Key] = req.Value;
+                        worklist.Enqueue((req.Key, req.Value));
+                    }
+                }
+            }
+        }
+
+        private static Dictionary<string, string> ParseRequirements(string[] lines)
+        {
+            var requirements = new Dictionary<string, string>();
+            bool inRequireBlock = false;
+
+            foreach (var rawLine in lines)
+            {
+                var line = rawLine.Trim();
+                var commentIdx = line.IndexOf("//");
+                if (commentIdx >= 0)
+                {
+                    line = line.Substring(0, commentIdx).Trim();
+                }
+                if (string.IsNullOrEmpty(line))
+                {
+                    continue;
+                }
+
+                if (line == "require (")
+                {
+                    inRequireBlock = true;
+                    continue;
+                }
+                if (line == ")" && inRequireBlock)
+                {
+                    inRequireBlock = false;
+                    continue;
+                }
+
+                if (inRequireBlock)
+                {
+                    var parts = line.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length >= 2)
+                    {
+                        requirements[parts[0]] = parts[1];
+                    }
+                }
+                else if (line.StartsWith("require ") && !line.Contains("("))
+                {
+                    var parts = line.Substring(8).Trim().Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length >= 2)
+                    {
+                        requirements[parts[0]] = parts[1];
+                    }
+                }
+            }
+            return requirements;
+        }
+
+        private void MergeGoMod(string[] lines)
+        {
+            bool inRequireBlock = false;
+
+            foreach (var rawLine in lines)
+            {
+                var line = rawLine.Trim();
+                var commentIdx = line.IndexOf("//");
+                if (commentIdx >= 0)
+                {
+                    line = line.Substring(0, commentIdx).Trim();
+                }
+                if (string.IsNullOrEmpty(line))
+                {
+                    continue;
+                }
+
+                if (line == "require (")
+                {
+                    inRequireBlock = true;
+                    continue;
+                }
+                if (line == ")" && inRequireBlock)
+                {
+                    inRequireBlock = false;
+                    continue;
+                }
+
+                if (inRequireBlock)
+                {
+                    var parts = line.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length >= 2 && !_requirements.ContainsKey(parts[0]))
+                    {
+                        _requirements[parts[0]] = parts[1];
+                    }
+                }
+                else if (line.StartsWith("require ") && !line.Contains("("))
+                {
+                    var parts = line.Substring(8).Trim().Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length >= 2 && !_requirements.ContainsKey(parts[0]))
+                    {
+                        _requirements[parts[0]] = parts[1];
+                    }
+                }
+            }
+        }
 
         public void LoadGoMod(string dir)
         {
@@ -319,7 +495,11 @@ namespace Ngo.Compiler.Semantics
             {
                 var replacePath = ResolveReplacePath(replacement, importPath, module);
                 if (replacePath != null)
+                {
                     return replacePath;
+                }
+                // Local path replace failed (dir doesn't exist in module cache download).
+                // Fall through to find the module by its original import path in the cache.
             }
 
             var moduleDir = GetCachedModuleDir(module, version);
@@ -384,6 +564,166 @@ namespace Ngo.Compiler.Semantics
             }
 
             return null;
+        }
+
+        /// <summary>
+        /// Searches the module cache for a package directory by trying all cached versions
+        /// of potential parent modules. For example, "google.golang.org/grpc/internal" will
+        /// find the "internal" subdirectory inside any cached "google.golang.org/grpc@vX.Y.Z".
+        /// </summary>
+        public string? FindInCache(string importPath)
+        {
+            // Handle replace directives: if the module is replaced with a local path,
+            // look for it as a separate module in the cache at the same version.
+            foreach (var kvp in _replaces)
+            {
+                if (importPath == kvp.Key || importPath.StartsWith(kvp.Key + "/"))
+                {
+                    var replacement = kvp.Value;
+                    if (replacement.StartsWith("./") || replacement.StartsWith("../"))
+                    {
+                        // Local path replace: the replaced module should exist separately in the cache.
+                        // Look for it by its original import path (not the local path).
+                        // The module cache has it as a separate download.
+                        var subPath = importPath.Length > kvp.Key.Length
+                            ? importPath.Substring(kvp.Key.Length + 1)
+                            : "";
+                        var replacedResult = FindModuleInCache(kvp.Key, subPath);
+                        if (replacedResult != null)
+                        {
+                            return replacedResult;
+                        }
+                    }
+                    else
+                    {
+                        // Module replace: "old => new v1.2.3"
+                        var replaceParts = replacement.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                        if (replaceParts.Length >= 1)
+                        {
+                            var newModule = replaceParts[0];
+                            var subPath = importPath.Length > kvp.Key.Length
+                                ? importPath.Substring(kvp.Key.Length + 1)
+                                : "";
+                            var newImport = string.IsNullOrEmpty(subPath) ? newModule : newModule + "/" + subPath;
+                            var result = FindInCache(newImport);
+                            if (result != null)
+                            {
+                                return result;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Try progressively shorter module paths (longest prefix match)
+            var parts = importPath.Split('/');
+            for (int prefixLen = parts.Length - 1; prefixLen >= 1; prefixLen--)
+            {
+                var candidateModule = string.Join("/", parts, 0, prefixLen);
+
+                // Check if this module is in the current project's requirements first
+                if (_requirements.TryGetValue(candidateModule, out var reqVersion))
+                {
+                    var reqDir = GetCachedModuleDir(candidateModule, reqVersion);
+                    if (reqDir != null)
+                    {
+                        var subPath = string.Join("/", parts, prefixLen, parts.Length - prefixLen);
+                        var pkgDir = Path.Combine(reqDir, subPath.Replace('/', Path.DirectorySeparatorChar));
+                        if (Directory.Exists(pkgDir))
+                        {
+                            return pkgDir;
+                        }
+                    }
+                }
+
+                // Fall back to scanning cache for any version
+                var safePath = candidateModule.Replace('/', Path.DirectorySeparatorChar);
+                var parentDir = Path.Combine(CacheRoot, Path.GetDirectoryName(safePath) ?? "");
+
+                if (!Directory.Exists(parentDir))
+                {
+                    continue;
+                }
+
+                var moduleDirName = Path.GetFileName(safePath);
+                var subPathFallback = string.Join("/", parts, prefixLen, parts.Length - prefixLen);
+
+                string? bestMatch = null;
+                string? bestVersion = null;
+                foreach (var dir in Directory.GetDirectories(parentDir))
+                {
+                    var dirName = Path.GetFileName(dir);
+                    if (dirName.StartsWith(moduleDirName + "@"))
+                    {
+                        var pkgDir = Path.Combine(dir, subPathFallback.Replace('/', Path.DirectorySeparatorChar));
+                        if (Directory.Exists(pkgDir))
+                        {
+                            var version = dirName.Substring(moduleDirName.Length + 1);
+                            if (bestMatch == null || CompareVersions(version, bestVersion!) > 0)
+                            {
+                                bestMatch = pkgDir;
+                                bestVersion = version;
+                            }
+                        }
+                    }
+                }
+                if (bestMatch != null)
+                {
+                    return bestMatch;
+                }
+            }
+            return null;
+        }
+
+        private string? FindModuleInCache(string modulePath, string subPath)
+        {
+            var safePath = modulePath.Replace('/', Path.DirectorySeparatorChar);
+            var parentDir = Path.Combine(CacheRoot, Path.GetDirectoryName(safePath) ?? "");
+            if (!Directory.Exists(parentDir))
+            {
+                return null;
+            }
+
+            var moduleDirName = Path.GetFileName(safePath);
+            string? bestMatch = null;
+            string? bestVersion = null;
+            foreach (var dir in Directory.GetDirectories(parentDir))
+            {
+                var dirName = Path.GetFileName(dir);
+                if (dirName.StartsWith(moduleDirName + "@"))
+                {
+                    var pkgDir = string.IsNullOrEmpty(subPath)
+                        ? dir
+                        : Path.Combine(dir, subPath.Replace('/', Path.DirectorySeparatorChar));
+                    if (Directory.Exists(pkgDir))
+                    {
+                        var version = dirName.Substring(moduleDirName.Length + 1);
+                        if (bestMatch == null || CompareVersions(version, bestVersion!) > 0)
+                        {
+                            bestMatch = pkgDir;
+                            bestVersion = version;
+                        }
+                    }
+                }
+            }
+            return bestMatch;
+        }
+
+        private static int CompareVersions(string a, string b)
+        {
+            // Simple semver comparison: v1.29.1 vs v1.69.2
+            var aParts = a.TrimStart('v').Split('.', '-');
+            var bParts = b.TrimStart('v').Split('.', '-');
+            for (int i = 0; i < System.Math.Max(aParts.Length, bParts.Length); i++)
+            {
+                var aVal = i < aParts.Length && int.TryParse(aParts[i], out var av) ? av : 0;
+                var bVal = i < bParts.Length && int.TryParse(bParts[i], out var bv) ? bv : 0;
+                if (aVal != bVal)
+                {
+                    return aVal.CompareTo(bVal);
+                }
+            }
+            return string.Compare(a, b, StringComparison.Ordinal);
         }
 
         private static string GetModuleCachePath(string module, string version)

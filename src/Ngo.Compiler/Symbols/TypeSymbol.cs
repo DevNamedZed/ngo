@@ -45,6 +45,12 @@ namespace Ngo.Compiler.Symbols
         /// </summary>
         public string? PackagePath { get; set; }
 
+        /// <summary>
+        /// Deferred underlying type string for named types whose underlying type
+        /// references other types not yet declared. Resolved in Pass 1b.
+        /// </summary>
+        internal string? _deferredUnderlying;
+
         /// <summary>True for type aliases (type Foo = Bar) vs type definitions (type Foo Bar).</summary>
         public bool IsAlias { get; set; }
 

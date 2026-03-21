@@ -58,6 +58,8 @@ namespace Ngo.Runtime.Reflect
         public bool Anonymous { get; }
         [GoField(Name = "PkgPath")]
         public string PkgPath { get; } = "";
+        [GoField(Name = "Offset")]
+        public long Offset { get; set; }
 
         internal GoReflectStructField(string name, GoReflectType type, string tag, int index, bool anonymous)
         {

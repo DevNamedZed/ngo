@@ -35,7 +35,12 @@ namespace Ngo.Runtime.Http
     public interface ICookieJar { }
 
     [GoType("interface", Name = "FileSystem", Package = "net/http")]
-    public interface IFileSystem { }
+    public interface IFileSystem
+    {
+        [GoMethod]
+        [return: GoReturn("http.File", "error")]
+        (IFile, object?) Open(string name);
+    }
 
     [GoType("interface", Name = "File", Package = "net/http")]
     public interface IFile { }

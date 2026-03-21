@@ -34,6 +34,7 @@ namespace Ngo.Compiler.Emit
         public static string TypeToString(TypeSymbol type, string? currentPackagePath = null)
         {
             if (type == null) return "interface{}";
+            if (type.TypeKind == TypeKind.Error) return "interface{}";
 
             return type switch
             {
@@ -43,15 +44,17 @@ namespace Ngo.Compiler.Emit
                 PointerTypeSymbol ptr => $"*{TypeToString(ptr.ElementType, currentPackagePath)}",
                 ChannelTypeSymbol chan => $"chan {TypeToString(chan.ElementType, currentPackagePath)}",
                 FunctionTypeSymbol funcType => SerializeFuncType(funcType, currentPackagePath),
-                InterfaceTypeSymbol iface when iface == BuiltinTypes.EmptyInterface => "interface{}",
-                InterfaceTypeSymbol iface when iface == BuiltinTypes.Error => "error",
+                InterfaceTypeSymbol iface when iface == BuiltinTypes.EmptyInterface || iface.Methods.Count == 0 => "interface{}",
+                InterfaceTypeSymbol iface when iface == BuiltinTypes.Error
+                    || (iface.Name == "error" && iface.Methods.Count == 1 && iface.Methods[0].Name == "Error") => "error",
                 InterfaceTypeSymbol iface when !string.IsNullOrEmpty(iface.PackagePath)
                     && iface.PackagePath != currentPackagePath
-                    => PackagePathLastSegment(iface.PackagePath) + "." + iface.Name,
+                    => iface.PackagePath + ":" + iface.Name,
                 TypeParameterSymbol tp => $"~{tp.Name}",
+                StructTypeSymbol st when st.Name == "struct{}" => "struct{}",
                 _ when !string.IsNullOrEmpty(type.PackagePath)
                     && type.PackagePath != currentPackagePath
-                    => PackagePathLastSegment(type.PackagePath) + "." + type.Name,
+                    => type.PackagePath + ":" + type.Name,
                 _ => type.Name,
             };
         }
@@ -59,18 +62,35 @@ namespace Ngo.Compiler.Emit
         private static string SerializeFuncType(FunctionTypeSymbol funcType, string? currentPackagePath = null)
         {
             var parts = new List<string>();
-            foreach (var p in funcType.ParameterTypes)
-                parts.Add(TypeToString(p, currentPackagePath));
+            for (int i = 0; i < funcType.ParameterTypes.Count; i++)
+            {
+                var paramType = funcType.ParameterTypes[i];
+                if (funcType.IsVariadic && i == funcType.ParameterTypes.Count - 1
+                    && paramType is SliceTypeSymbol variadicSlice)
+                {
+                    parts.Add("..." + TypeToString(variadicSlice.ElementType, currentPackagePath));
+                }
+                else
+                {
+                    parts.Add(TypeToString(paramType, currentPackagePath));
+                }
+            }
             var paramStr = string.Join(", ", parts);
 
             if (funcType.ReturnTypes.Count == 0)
+            {
                 return $"func({paramStr})";
+            }
             if (funcType.ReturnTypes.Count == 1)
+            {
                 return $"func({paramStr}) {TypeToString(funcType.ReturnTypes[0], currentPackagePath)}";
+            }
 
             var retParts = new List<string>();
             foreach (var r in funcType.ReturnTypes)
+            {
                 retParts.Add(TypeToString(r, currentPackagePath));
+            }
             return $"func({paramStr}) ({string.Join(", ", retParts)})";
         }
 
@@ -82,6 +102,12 @@ namespace Ngo.Compiler.Emit
         {
             if (string.IsNullOrEmpty(typeStr))
                 return BuiltinTypes.EmptyInterface;
+
+            // Empty struct
+            if (typeStr == "struct{}")
+            {
+                return new StructTypeSymbol("struct{}", System.Array.Empty<FieldSymbol>());
+            }
 
             // Builtin types
             var builtin = BuiltinTypes.Resolve(typeStr);
@@ -115,7 +141,7 @@ namespace Ngo.Compiler.Emit
             if (typeStr.StartsWith("chan<- "))
                 return new ChannelTypeSymbol(StringToType(typeStr.Substring(7), knownTypes, crossPkgResolver));
             if (typeStr.StartsWith("chan "))
-                return new ChannelTypeSymbol(StringToType(typeStr.Substring(4), knownTypes, crossPkgResolver));
+                return new ChannelTypeSymbol(StringToType(typeStr.Substring(5), knownTypes, crossPkgResolver));
 
             // Array ([N]T)
             if (typeStr.StartsWith("[") && !typeStr.StartsWith("[]"))
@@ -139,7 +165,17 @@ namespace Ngo.Compiler.Emit
             if (typeStr.StartsWith("func("))
                 return ParseFuncType(typeStr, knownTypes, crossPkgResolver);
 
-            // Cross-package type reference (e.g., "io.Reader", "time.Duration")
+            // Fully-qualified cross-package type: "github.com/foo/bar:TypeName"
+            if (crossPkgResolver != null && typeStr.Contains(':'))
+            {
+                var colonIdx = typeStr.LastIndexOf(':');
+                var importPath = typeStr.Substring(0, colonIdx);
+                var typeName = typeStr.Substring(colonIdx + 1);
+                var resolved = crossPkgResolver(importPath, typeName);
+                if (resolved != null) return resolved;
+            }
+
+            // Legacy short-name cross-package type: "pkg.TypeName" (backward compatibility)
             if (crossPkgResolver != null && typeStr.Contains('.'))
             {
                 var dotIdx = typeStr.LastIndexOf('.');
@@ -158,8 +194,8 @@ namespace Ngo.Compiler.Emit
                     return known2;
             }
 
-            // Unknown — return as a named type referencing interface{}
-            return new TypeSymbol(typeStr, TypeKind.Struct, null);
+            // Unknown — return as an empty struct
+            return new StructTypeSymbol(typeStr, System.Array.Empty<FieldSymbol>());
         }
 
         private static MapTypeParts ParseMapType(string typeStr, Dictionary<string, TypeSymbol>? knownTypes,
@@ -217,10 +253,24 @@ namespace Ngo.Compiler.Emit
 
             var paramStr = typeStr.Substring(parenStart + 1, parenEnd - parenStart - 1).Trim();
             var paramTypes = new List<TypeSymbol>();
+            bool isVariadic = false;
             if (!string.IsNullOrEmpty(paramStr))
             {
-                foreach (var p in SplitTypeList(paramStr))
-                    paramTypes.Add(StringToType(p.Trim(), knownTypes, crossPkgResolver));
+                var paramParts = SplitTypeList(paramStr);
+                for (int i = 0; i < paramParts.Count; i++)
+                {
+                    var paramPart = paramParts[i].Trim();
+                    if (paramPart.StartsWith("..."))
+                    {
+                        isVariadic = true;
+                        var elementType = StringToType(paramPart.Substring(3), knownTypes, crossPkgResolver);
+                        paramTypes.Add(new SliceTypeSymbol(elementType));
+                    }
+                    else
+                    {
+                        paramTypes.Add(StringToType(paramPart, knownTypes, crossPkgResolver));
+                    }
+                }
             }
 
             var returnStr = typeStr.Substring(parenEnd + 1).Trim();
@@ -228,18 +278,21 @@ namespace Ngo.Compiler.Emit
             if (!string.IsNullOrEmpty(returnStr))
             {
                 if (returnStr.StartsWith("(") && returnStr.EndsWith(")"))
+                {
                     returnStr = returnStr.Substring(1, returnStr.Length - 2);
+                }
                 foreach (var r in SplitTypeList(returnStr))
+                {
                     returnTypes.Add(StringToType(r.Trim(), knownTypes, crossPkgResolver));
+                }
             }
 
-            return new FunctionTypeSymbol(paramTypes, returnTypes);
+            return new FunctionTypeSymbol(paramTypes, returnTypes, isVariadic);
         }
 
         private static string PackagePathLastSegment(string packagePath)
         {
-            var idx = packagePath.LastIndexOf('/');
-            return idx >= 0 ? packagePath.Substring(idx + 1) : packagePath;
+            return Ngo.Compiler.Semantics.CompilationContext.GetDefaultPackageName(packagePath);
         }
 
         private static List<string> SplitTypeList(string s)

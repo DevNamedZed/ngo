@@ -3,7 +3,7 @@ using Ngo.Runtime.Discovery;
 
 namespace Ngo.Runtime.Math.Big
 {
-    [GoType("struct", Name = "Int", Package = "math/big")]
+    [GoType("struct", Name = "Int", Package = "math/big", Pointer = true)]
     public class GoInt
     {
         internal BigInteger _value;
@@ -491,13 +491,10 @@ namespace Ngo.Runtime.Math.Big
         }
 
         [GoMethod]
-        [return: GoReturn("int", "error")]
-        public (long, string) Scan(object s, long ch)
+        [return: GoReturn("error")]
+        public object? Scan([GoParam("fmt.ScanState")] object? state, [GoParam("rune")] long ch)
         {
-            // Scan reads a formatted big.Int from s
-            // ch is the format verb (d, x, o, b, etc.)
-            // This is used by fmt.Scan to read big.Int values
-            return (0, null!);
+            return null;
         }
 
         [GoMethod]
@@ -557,6 +554,7 @@ namespace Ngo.Runtime.Math.Big
             chars.Reverse();
             return new string(chars.ToArray());
         }
+
     }
 }
 

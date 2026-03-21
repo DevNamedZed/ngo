@@ -12,7 +12,7 @@ namespace Ngo.Runtime.Log.Slog
         [GoField(Name = "Level")]
         public object? Level;
 
-        [GoField(Name = "ReplaceAttr")]
+        [GoField(Name = "ReplaceAttr", Type = "func([]string, Attr) Attr")]
         public object? ReplaceAttr;
     }
 }

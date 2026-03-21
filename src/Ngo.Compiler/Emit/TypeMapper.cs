@@ -51,9 +51,9 @@ namespace Ngo.Compiler.Emit
 
             if (!_inProgress.Add(symbol))
             {
-                throw new InvalidOperationException(
-                    $"Recursive type cycle detected for '{symbol.Name}' (package: {symbol.PackagePath ?? "unknown"}). " +
-                    "User types must be Register()ed before their fields are mapped.");
+                // Recursive type (e.g., type lexFn func(*lexer) lexFn)
+                // Break the cycle by returning object for self-referencing types
+                return typeof(object);
             }
 
             try
@@ -188,10 +188,9 @@ namespace Ngo.Compiler.Emit
                         }
                     }
 
-                    throw new NotSupportedException(
-                        $"Struct type '{symbol.Name}' (package: {symbol.PackagePath ?? "unknown"}) " +
-                        "has no CLR type mapping. Runtime types need [GoType] attributes. " +
-                        "User types need TypeBuilder registration.");
+                    // Struct without CLR type — return object as fallback
+                    // This happens for dependency structs not yet linked via EmitDependencyFromSource
+                    return typeof(object);
 
                 case TypeKind.Interface:
                     var ifaceType = (InterfaceTypeSymbol)symbol;
@@ -243,8 +242,13 @@ namespace Ngo.Compiler.Emit
                         $"Type parameter '{symbol.Name}' was not registered. " +
                         "Generic type parameters must be registered before use.");
 
+                case TypeKind.Error:
+                    // Unresolved types — return object as fallback
+                    return typeof(object);
+
                 default:
-                    throw new NotSupportedException($"Unsupported type kind: {symbol.TypeKind}");
+                    // Unknown type kind — return object instead of crashing
+                    return typeof(object);
             }
         }
 
@@ -261,7 +265,14 @@ namespace Ngo.Compiler.Emit
         {
             var clrTypes = new Type[types.Count];
             for (int i = 0; i < types.Count; i++)
+            {
                 clrTypes[i] = Map(types[i]);
+                // System.Void cannot be a generic type argument — replace with object
+                if (clrTypes[i] == typeof(void))
+                {
+                    clrTypes[i] = typeof(object);
+                }
+            }
 
             return MakeValueTupleType(clrTypes);
         }

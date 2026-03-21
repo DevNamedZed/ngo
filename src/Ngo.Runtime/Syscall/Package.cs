@@ -358,8 +358,8 @@ namespace Ngo.Runtime.Syscall
         public static (long, object?) Seek([GoParam("int")] long fd, long offset, [GoParam("int")] long whence) => (0, null);
 
         [GoFunc]
-        [return: GoReturn("int", "error")]
-        public static (long, object?) ParseDirent(Slice<byte> buf, [GoParam("int")] long max, Slice<string> names) => (0, null);
+        [return: GoReturn("int", "int", "[]string")]
+        public static (long, long, Slice<string>) ParseDirent(Slice<byte> buf, [GoParam("int")] long max, Slice<string> names) => (0, 0, names);
 
         [GoFunc]
         [return: GoReturn("int", "error")]

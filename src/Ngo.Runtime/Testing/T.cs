@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using Ngo.Runtime.Discovery;
 
 namespace Ngo.Runtime.Testing
@@ -60,12 +61,13 @@ namespace Ngo.Runtime.Testing
             _logs.Add(Fmt.Package.Sprintf(format, args));
         }
 
-        [GoMethod]
-        public void Fatal(object? msg)
+        [GoMethod(IsVariadic = true)]
+        public void Fatal(params object?[] args)
         {
             _failed = true;
-            _logs.Add(msg?.ToString() ?? "");
-            throw new TestFailException(_logs[_logs.Count - 1]);
+            var msg = string.Join(" ", args.Select(a => a?.ToString() ?? "<nil>"));
+            _logs.Add(msg);
+            throw new TestFailException(msg);
         }
 
         [GoMethod(IsVariadic = true)]

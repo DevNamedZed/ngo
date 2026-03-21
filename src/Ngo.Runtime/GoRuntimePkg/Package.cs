@@ -65,6 +65,7 @@ namespace Ngo.Runtime.GoRuntimePkg
             return count;
         }
 
+        [return: GoReturn("uintptr", "string", "int", "bool")]
         public static (long pc, string file, long line, bool ok) Caller(long skip)
         {
             var trace = new StackTrace((int)skip + 1, true);
@@ -197,18 +198,5 @@ namespace Ngo.Runtime.GoRuntimePkg
         public static (long, bool) MemProfile([GoParam("[]MemProfileRecord")] Slice<object> p, bool inuseZero) => (0, true);
     }
 
-    [GoType("struct", Name = "Func", Package = "runtime")]
-    public class GoRuntimeFuncType
-    {
-        [GoMethod]
-        public string Name() => "unknown";
-
-        [GoMethod]
-        [return: GoReturn("uintptr")]
-        public long Entry() => 0;
-
-        [GoMethod]
-        [return: GoReturn("string", "int")]
-        public (string, long) FileLine(long pc) => ("unknown", 0);
-    }
+    // GoRuntimeFuncType removed — annotations moved to GoRuntimeFunc.cs
 }

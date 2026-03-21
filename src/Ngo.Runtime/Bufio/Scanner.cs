@@ -122,7 +122,7 @@ namespace Ngo.Runtime.Bufio
         public object? Err() => _err;
 
         [GoMethod]
-        public void Split(Func<Slice<byte>, bool, (long, Slice<byte>, object?)> split)
+        public void Split([GoParam("func([]byte, bool) (int, []byte, error)")] Func<Slice<byte>, bool, (long, Slice<byte>, object?)> split)
         {
             _split = split;
         }

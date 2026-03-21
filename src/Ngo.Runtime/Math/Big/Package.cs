@@ -43,6 +43,7 @@ namespace Ngo.Runtime.Math.Big
         }
 
         [GoFunc]
+        [return: GoReturn("*Float", "int", "error")]
         public static (GoFloat, long, object) ParseFloat(string s, long @base, ulong prec, object mode)
         {
             var f = new GoFloat();

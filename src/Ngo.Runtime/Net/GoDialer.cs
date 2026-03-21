@@ -30,6 +30,8 @@ namespace Ngo.Runtime.Net
         [GoField(Name = "Resolver")] public object? Resolver { get; set; }
         [GoField(Name = "FallbackDelay")] public long FallbackDelay { get; set; }
         [GoField(Name = "Control")] public object? Control { get; set; }
+        [GoField(Name = "DualStack")] public bool DualStack { get; set; }
+        [GoField(Name = "ControlContext")] public object? ControlContext { get; set; }
 
         [GoMethod]
         [return: GoReturn("Conn", "error")]

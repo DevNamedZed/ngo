@@ -42,15 +42,35 @@ namespace Ngo.Compiler.Emit
         private const int SectionEntrySize = 4 + 4; // offset(uint32) + length(uint32)
         private const int SectionCount = 4; // Go metadata, IL metadata, IL bytecode, CGo native lib
         private const int HeaderSize = MagicSize + VersionSize + (SectionEntrySize * SectionCount);
-        internal const ushort CurrentVersion = 3;
+        internal const ushort CurrentVersion = 5;
 
         /// <summary>
         /// Gets the archive path for a package in the cache directory.
         /// </summary>
-        public static string GetArchivePath(string cacheDir, string importPath)
+        public static string GetArchivePath(string cacheDir, string importPath, string? sourceDir = null)
         {
-            var fileName = importPath.Replace('/', '.') + ".ngo";
-            return Path.Combine(cacheDir, fileName);
+            var baseName = importPath.Replace('/', '.');
+            if (sourceDir != null)
+            {
+                var version = ExtractModuleVersion(sourceDir);
+                if (version != null)
+                {
+                    baseName += "@" + version;
+                }
+            }
+            return Path.Combine(cacheDir, baseName + ".ngo");
+        }
+
+        /// <summary>
+        /// Extracts a module version string from a source directory path.
+        /// e.g., "~/.ngo/mod/cache/google.golang.org/grpc@v1.69.2/internal" → "v1.69.2"
+        /// Returns null for stdlib or project-local paths (no @version).
+        /// </summary>
+        public static string? ExtractModuleVersion(string sourceDir)
+        {
+            var match = System.Text.RegularExpressions.Regex.Match(
+                sourceDir, @"@(v[^\\/]+)");
+            return match.Success ? match.Groups[1].Value : null;
         }
 
         /// <summary>
@@ -121,15 +141,28 @@ namespace Ngo.Compiler.Emit
         public static PackageSymbol? ReadGoMetadata(string path,
             Func<string, string, TypeSymbol?>? crossPkgResolver = null)
         {
+            var savedArchivePath = _currentArchivePath;
+            _currentArchivePath = path;
             if (!File.Exists(path))
+            {
+                _currentArchivePath = savedArchivePath;
                 return null;
+            }
+
+            // Try v2 (ZIP) format first
+            if (NgoArchiveV2.IsV2Archive(path))
+            {
+                var v2result = NgoArchiveV2.ReadMetadata(path, crossPkgResolver);
+                _currentArchivePath = savedArchivePath;
+                return v2result;
+            }
 
             try
             {
                 using var stream = new FileStream(path, FileMode.Open, FileAccess.Read);
                 using var reader = new BinaryReader(stream);
 
-                // Validate header
+                // Validate v1 header
                 var magic = reader.ReadBytes(4);
                 if (magic.Length < 4 || magic[0] != 'N' || magic[1] != 'G' || magic[2] != 'O' || magic[3] != 0)
                     return null;
@@ -150,10 +183,13 @@ namespace Ngo.Compiler.Emit
                     return null;
 
                 stream.Seek(goMetaOffset, SeekOrigin.Begin);
-                return ReadGoMetadataSection(reader, crossPkgResolver);
+                var result = ReadGoMetadataSection(reader, crossPkgResolver);
+                _currentArchivePath = savedArchivePath;
+                return result;
             }
             catch
             {
+                _currentArchivePath = savedArchivePath;
                 return null;
             }
         }
@@ -295,37 +331,222 @@ namespace Ngo.Compiler.Emit
                 }
             }
 
+            // Collect all unexported types reachable from the exported API.
+            // Walk the type graph from every export — any type reachable from
+            // any export must be in the archive.
+            var visited = new HashSet<string>();
+            foreach (var s in structs)
+            {
+                visited.Add(s.Name);
+            }
+            foreach (var i in interfaces)
+            {
+                visited.Add(i.Name);
+            }
+            foreach (var nt in namedTypes)
+            {
+                visited.Add(nt.Name);
+            }
+
+            var reachableStructs = new List<StructTypeSymbol>();
+            var reachableInterfaces = new List<InterfaceTypeSymbol>();
+            var reachableNamedTypes = new List<TypeSymbol>();
+
+            void WalkType(TypeSymbol type)
+            {
+                if (type == null)
+                {
+                    return;
+                }
+
+                switch (type)
+                {
+                    case PointerTypeSymbol ptr:
+                        WalkType(ptr.ElementType);
+                        return;
+                    case SliceTypeSymbol slice:
+                        WalkType(slice.ElementType);
+                        return;
+                    case ArrayTypeSymbol array:
+                        WalkType(array.ElementType);
+                        return;
+                    case MapTypeSymbol map:
+                        WalkType(map.KeyType);
+                        WalkType(map.ValueType);
+                        return;
+                    case ChannelTypeSymbol chan:
+                        WalkType(chan.ElementType);
+                        return;
+                    case FunctionTypeSymbol funcType:
+                        foreach (var p in funcType.ParameterTypes)
+                        {
+                            WalkType(p);
+                        }
+                        foreach (var r in funcType.ReturnTypes)
+                        {
+                            WalkType(r);
+                        }
+                        return;
+                }
+
+                // Only collect types from this package (no PackagePath or same as importPath)
+                if (!string.IsNullOrEmpty(type.PackagePath) && type.PackagePath != importPath)
+                {
+                    return;
+                }
+
+                if (type.Name.Length == 0 || !visited.Add(type.Name))
+                {
+                    return;
+                }
+
+                switch (type)
+                {
+                    case StructTypeSymbol st:
+                        reachableStructs.Add(st);
+                        foreach (var field in st.Fields)
+                        {
+                            WalkType(field.Type);
+                        }
+                        WalkMethods(st.Methods);
+                        break;
+                    case InterfaceTypeSymbol iface:
+                        reachableInterfaces.Add(iface);
+                        WalkMethods(iface.Methods);
+                        break;
+                    default:
+                        reachableNamedTypes.Add(type);
+                        if (type.UnderlyingType != null)
+                        {
+                            WalkType(type.UnderlyingType);
+                        }
+                        WalkMethods(type.Methods);
+                        break;
+                }
+            }
+
+            void WalkMethods(IReadOnlyList<MethodSymbol> methods)
+            {
+                foreach (var method in methods)
+                {
+                    foreach (var p in method.Parameters)
+                    {
+                        WalkType(p.Type);
+                    }
+                    foreach (var r in method.ReturnTypes)
+                    {
+                        WalkType(r);
+                    }
+                }
+            }
+
+            // Walk from all exported symbols
+            foreach (var s in structs)
+            {
+                foreach (var field in s.Fields)
+                {
+                    WalkType(field.Type);
+                }
+                WalkMethods(s.Methods);
+            }
+            foreach (var i in interfaces)
+            {
+                WalkMethods(i.Methods);
+            }
+            foreach (var nt in namedTypes)
+            {
+                if (nt.UnderlyingType != null)
+                {
+                    WalkType(nt.UnderlyingType);
+                }
+                WalkMethods(nt.Methods);
+            }
+            foreach (var f in functions)
+            {
+                foreach (var p in f.Parameters)
+                {
+                    WalkType(p.Type);
+                }
+                foreach (var r in f.ReturnTypes)
+                {
+                    WalkType(r);
+                }
+            }
+            foreach (var v in variables)
+            {
+                WalkType(v.Type);
+            }
+
+            // Merge reachable unexported types into the main lists
+            var allStructs = new List<StructTypeSymbol>(reachableStructs);
+            allStructs.AddRange(structs);
+            var allInterfaces = new List<InterfaceTypeSymbol>(reachableInterfaces);
+            allInterfaces.AddRange(interfaces);
+            var allNamedTypes = new List<TypeSymbol>(reachableNamedTypes);
+            allNamedTypes.AddRange(namedTypes);
+
+            // TypeNameTable: all type names and kinds, written before any bodies
+            int totalTypeNames = allNamedTypes.Count + allInterfaces.Count + allStructs.Count;
+            w.Write(totalTypeNames);
+            foreach (var nt in allNamedTypes)
+            {
+                w.Write(nt.Name);
+                w.Write((byte)0); // Named
+            }
+            foreach (var i in allInterfaces)
+            {
+                w.Write(i.Name);
+                w.Write((byte)1); // Interface
+            }
+            foreach (var s in allStructs)
+            {
+                w.Write(s.Name);
+                w.Write((byte)2); // Struct
+            }
+
             // Functions
             w.Write(functions.Count);
             foreach (var func in functions)
+            {
                 WriteFunction(w, func, importPath);
+            }
 
-            // Named types first (before structs/interfaces, so they're in typeMap when referenced)
-            w.Write(namedTypes.Count);
-            foreach (var t in namedTypes)
+            // Named types
+            w.Write(allNamedTypes.Count);
+            foreach (var t in allNamedTypes)
+            {
                 WriteNamedType(w, t, importPath);
+            }
 
-            // Interface types (before structs — structs may reference interfaces in field types)
-            w.Write(interfaces.Count);
-            foreach (var i in interfaces)
+            // Interfaces
+            w.Write(allInterfaces.Count);
+            foreach (var i in allInterfaces)
+            {
                 WriteInterfaceType(w, i, importPath);
+            }
 
-            // Struct types
-            w.Write(structs.Count);
-            foreach (var s in structs)
+            // Structs
+            w.Write(allStructs.Count);
+            foreach (var s in allStructs)
+            {
                 WriteStructType(w, s, importPath);
+            }
 
             // Constants
             w.Write(constants.Count);
             foreach (var c in constants)
+            {
                 WriteConstant(w, c, importPath);
+            }
 
             // Variables
             w.Write(variables.Count);
             foreach (var v in variables)
+            {
                 WriteVariable(w, v, importPath);
+            }
 
-            // Imports (added in v6)
+            // Imports
             w.Write(pkg.Imports.Count);
             foreach (var imp in pkg.Imports)
             {
@@ -339,61 +560,67 @@ namespace Ngo.Compiler.Emit
             var name = r.ReadString();
             var importPath = r.ReadString();
             var pkg = new PackageSymbol(name, importPath);
-
-            // First pass: read all types to build type map for cross-references
             var typeMap = new Dictionary<string, TypeSymbol>();
 
-            // We need to read types first, then functions/consts/vars.
-            // But the binary format has functions first. So we read in two passes:
-            // Pass 1: skip functions, read types
-            // Pass 2: seek back, read functions with type map
+            // Read TypeNameTable — creates all type objects before any bodies are read.
+            // This eliminates forward reference problems: any same-package type string
+            // in a body will find the correct object in typeMap.
+            int typeNameCount = r.ReadInt32();
+            for (int i = 0; i < typeNameCount; i++)
+            {
+                var typeName = r.ReadString();
+                var kind = r.ReadByte();
+                if (!typeMap.ContainsKey(typeName))
+                {
+                    switch (kind)
+                    {
+                        case 0: // Named
+                            typeMap[typeName] = new TypeSymbol(typeName, TypeKind.Struct, null);
+                            break;
+                        case 1: // Interface
+                            typeMap[typeName] = new InterfaceTypeSymbol(typeName, new List<MethodSymbol>());
+                            break;
+                        case 2: // Struct
+                            typeMap[typeName] = new StructTypeSymbol(typeName, new List<FieldSymbol>());
+                            break;
+                    }
+                }
+            }
 
-            var afterHeader = r.BaseStream.Position;
-
-            // Skip functions (pass 1) — functions reference types, so read types first
+            // Read functions
             int funcCount = r.ReadInt32();
             for (int i = 0; i < funcCount; i++)
-                SkipFunction(r);
+            {
+                var func = ReadFunction(r, typeMap, name, crossPkgResolver);
+                pkg.AddExport(func);
+            }
 
-            // Read named types first (they may be referenced by struct fields/methods)
+            // Read named types
             int namedCount = r.ReadInt32();
             for (int i = 0; i < namedCount; i++)
             {
                 var t = ReadNamedType(r, typeMap, crossPkgResolver);
+                t.PackagePath = importPath;
                 typeMap[t.Name] = t;
                 pkg.AddExport(t);
             }
 
-            // Read interface types (before structs — structs may reference interfaces in field types)
+            // Read interfaces
             int ifaceCount = r.ReadInt32();
             for (int i = 0; i < ifaceCount; i++)
             {
                 var iface = ReadInterfaceType(r, typeMap, crossPkgResolver);
+                iface.PackagePath = importPath;
                 typeMap[iface.Name] = iface;
                 pkg.AddExport(iface);
             }
 
-            // Read struct types — two-pass to handle forward references between structs
-            var beforeStructs = r.BaseStream.Position;
+            // Read structs
             int structCount = r.ReadInt32();
-            // Pass 1: pre-register all struct names as placeholder StructTypeSymbols
-            for (int i = 0; i < structCount; i++)
-            {
-                var sName = r.ReadString();
-                if (!typeMap.ContainsKey(sName))
-                    typeMap[sName] = new StructTypeSymbol(sName, new List<FieldSymbol>());
-                // Skip fields (name + type + isEmbedded) and methods
-                int fCount = r.ReadInt32();
-                for (int f = 0; f < fCount; f++) { r.ReadString(); r.ReadString(); r.ReadBoolean(); }
-                int mCount = r.ReadInt32();
-                for (int m = 0; m < mCount; m++) SkipMethod(r);
-            }
-            // Pass 2: seek back and read full struct types
-            r.BaseStream.Seek(beforeStructs, SeekOrigin.Begin);
-            structCount = r.ReadInt32();
             for (int i = 0; i < structCount; i++)
             {
                 var s = ReadStructType(r, typeMap, crossPkgResolver);
+                s.PackagePath = importPath;
                 typeMap[s.Name] = s;
                 pkg.AddExport(s);
             }
@@ -423,15 +650,6 @@ namespace Ngo.Compiler.Emit
             }
             pkg.SetImports(importPaths);
 
-            // Pass 2: seek back and read functions (now typeMap is fully populated)
-            r.BaseStream.Seek(afterHeader, SeekOrigin.Begin);
-            funcCount = r.ReadInt32();
-            for (int i = 0; i < funcCount; i++)
-            {
-                var func = ReadFunction(r, typeMap, name, crossPkgResolver);
-                pkg.AddExport(func);
-            }
-
             return pkg;
         }
 
@@ -441,6 +659,11 @@ namespace Ngo.Compiler.Emit
         {
             w.Write(func.Name);
             w.Write(func.IsVariadic);
+            w.Write(func.TypeParameters.Count);
+            foreach (var tp in func.TypeParameters)
+            {
+                w.Write(tp.Name);
+            }
             w.Write(func.Parameters.Count);
             foreach (var p in func.Parameters)
             {
@@ -449,7 +672,9 @@ namespace Ngo.Compiler.Emit
             }
             w.Write(func.ReturnTypes.Count);
             foreach (var r in func.ReturnTypes)
+            {
                 w.Write(TypeToString(r, pkgPath));
+            }
         }
 
         private static void WriteMethod(BinaryWriter w, MethodSymbol method, string? pkgPath = null)
@@ -514,64 +739,18 @@ namespace Ngo.Compiler.Emit
 
         // ----- Read helpers -----
 
-        private static void SkipFunction(BinaryReader r)
-        {
-            r.ReadString(); // name
-            r.ReadBoolean(); // isVariadic
-            int paramCount = r.ReadInt32();
-            for (int i = 0; i < paramCount; i++)
-            {
-                r.ReadString(); // param name
-                r.ReadString(); // param type
-            }
-            int retCount = r.ReadInt32();
-            for (int i = 0; i < retCount; i++)
-                r.ReadString(); // return type
-        }
-
-        private static void SkipMethod(BinaryReader r)
-        {
-            r.ReadString(); // name
-            r.ReadBoolean(); // isVariadic
-            int paramCount = r.ReadInt32();
-            for (int i = 0; i < paramCount; i++)
-            {
-                r.ReadString(); // param name
-                r.ReadString(); // param type
-            }
-            int retCount = r.ReadInt32();
-            for (int i = 0; i < retCount; i++)
-                r.ReadString(); // return type
-        }
-
-        private static void SkipStructType(BinaryReader r)
-        {
-            r.ReadString(); // name
-            int fieldCount = r.ReadInt32();
-            for (int i = 0; i < fieldCount; i++)
-            {
-                r.ReadString(); // field name
-                r.ReadString(); // field type
-                r.ReadBoolean(); // isEmbedded
-            }
-            int methodCount = r.ReadInt32();
-            for (int i = 0; i < methodCount; i++)
-                SkipMethod(r);
-        }
-
-        private static void SkipInterfaceType(BinaryReader r)
-        {
-            r.ReadString(); // name
-            int methodCount = r.ReadInt32();
-            for (int i = 0; i < methodCount; i++)
-                SkipMethod(r);
-        }
-
         private static FunctionSymbol ReadFunction(BinaryReader r, Dictionary<string, TypeSymbol> typeMap,
             string packageName, Func<string, string, TypeSymbol?>? crossPkgResolver = null)
         {
             var name = r.ReadString();
             var isVariadic = r.ReadBoolean();
+            int typeParamCount = r.ReadInt32();
+            var typeParameters = new List<TypeParameterSymbol>(typeParamCount);
+            for (int i = 0; i < typeParamCount; i++)
+            {
+                var tpName = r.ReadString();
+                typeParameters.Add(new TypeParameterSymbol(tpName, i, ConstraintInfo.Any));
+            }
             int paramCount = r.ReadInt32();
             var parameters = new List<ParameterSymbol>(paramCount);
             for (int i = 0; i < paramCount; i++)
@@ -583,9 +762,11 @@ namespace Ngo.Compiler.Emit
             int retCount = r.ReadInt32();
             var returnTypes = new List<TypeSymbol>(retCount);
             for (int i = 0; i < retCount; i++)
+            {
                 returnTypes.Add(StringToType(r.ReadString(), typeMap, crossPkgResolver));
+            }
 
-            return new FunctionSymbol(name, parameters, returnTypes, isVariadic, packageName);
+            return new FunctionSymbol(name, typeParameters, parameters, returnTypes, isVariadic, packageName);
         }
 
         private static MethodSymbol ReadMethod(BinaryReader r, TypeSymbol receiver, Dictionary<string, TypeSymbol> typeMap,
@@ -650,8 +831,17 @@ namespace Ngo.Compiler.Emit
         {
             var name = r.ReadString();
             int methodCount = r.ReadInt32();
-            var iface = new InterfaceTypeSymbol(name, new List<MethodSymbol>());
-            typeMap[name] = iface; // register before reading methods
+            // Reuse pre-registered placeholder so existing references stay valid
+            InterfaceTypeSymbol iface;
+            if (typeMap.TryGetValue(name, out var existing) && existing is InterfaceTypeSymbol existingIface)
+            {
+                iface = existingIface;
+            }
+            else
+            {
+                iface = new InterfaceTypeSymbol(name, new List<MethodSymbol>());
+            }
+            typeMap[name] = iface;
 
             for (int i = 0; i < methodCount; i++)
             {
@@ -669,8 +859,19 @@ namespace Ngo.Compiler.Emit
             var underlying = string.IsNullOrEmpty(underlyingStr)
                 ? BuiltinTypes.EmptyInterface
                 : StringToType(underlyingStr, typeMap, crossPkgResolver);
-            var namedType = new TypeSymbol(name, underlying.TypeKind, underlying);
-            typeMap[name] = namedType; // register before reading methods
+            // Reuse pre-registered placeholder so existing references stay valid
+            TypeSymbol namedType;
+            if (typeMap.TryGetValue(name, out var existing) && existing.GetType() == typeof(TypeSymbol))
+            {
+                existing.TypeKind = underlying.TypeKind;
+                existing.UnderlyingType = underlying;
+                namedType = existing;
+            }
+            else
+            {
+                namedType = new TypeSymbol(name, underlying.TypeKind, underlying);
+            }
+            typeMap[name] = namedType;
 
             int methodCount = r.ReadInt32();
             for (int i = 0; i < methodCount; i++)
@@ -703,6 +904,8 @@ namespace Ngo.Compiler.Emit
 
         private static string TypeToString(TypeSymbol type, string? currentPackagePath = null)
             => PackageMetadataSerializer.TypeToString(type, currentPackagePath);
+
+        [System.ThreadStatic] internal static string? _currentArchivePath;
 
         private static TypeSymbol StringToType(string typeStr, Dictionary<string, TypeSymbol> typeMap,
             Func<string, string, TypeSymbol?>? crossPkgResolver = null)

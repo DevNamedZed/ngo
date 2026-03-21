@@ -69,7 +69,8 @@ namespace Ngo.Compiler.Semantics
                 && argResolved is not MapTypeSymbol
                 && argResolved is not ChannelTypeSymbol
                 && argResolved.TypeKind != TypeKind.String
-                && argResolved.TypeKind != TypeKind.UntypedString)
+                && argResolved.TypeKind != TypeKind.UntypedString
+                && argResolved.TypeKind != TypeKind.Interface)
             {
                 _context.Errors.ReportError(span, ErrorCode.InvalidOperation,
                     $"Invalid argument type '{arg.Type.Name}' for len");
@@ -499,18 +500,27 @@ namespace Ngo.Compiler.Semantics
             // resolve to the constraint's structural type so builtins work correctly.
             var structural = TypeChecker.GetConstraintStructuralType(type);
             if (structural != null)
+            {
                 return structural;
+            }
 
-            // Recursively unwrap chains of named types (e.g. pallocBits → pageBits → [N]uint64)
-            var current = type.Resolved();
+            // Unwrap chains of named types to reach the concrete type
+            // (e.g. sortableSlice → []T, pallocBits → pageBits → [N]uint64)
+            var current = type;
             for (int i = 0; i < 10; i++)
             {
-                if (current != type && current.UnderlyingType == null)
-                    return current; // concrete type reached
+                var resolved = current.Resolved();
+                if (resolved != current)
+                {
+                    current = resolved;
+                    continue;
+                }
                 if (current.UnderlyingType != null)
-                    current = current.UnderlyingType.Resolved();
-                else
-                    break;
+                {
+                    current = current.UnderlyingType;
+                    continue;
+                }
+                break;
             }
             return current;
         }

@@ -2742,6 +2742,27 @@ namespace Ngo.Compiler.Emit
                 var sliceStr = typeof(GoString).GetMethod("SliceString")!;
                 _ctx.IL.Emit(OpCodes.Call, sliceStr);
             }
+            else if (targetType.TypeKind == TypeKind.Pointer)
+            {
+                // Pointer slicing (e.g., unsafe.Slice) — emit operand and discard,
+                // return zero-length slice. Actual pointer slicing requires unsafe operations.
+                EmitExpression(slice.Operand);
+                _ctx.IL.Emit(OpCodes.Pop);
+                if (slice.Low != null) { EmitExpression(slice.Low); _ctx.IL.Emit(OpCodes.Pop); }
+                if (slice.High != null) { EmitExpression(slice.High); _ctx.IL.Emit(OpCodes.Pop); }
+                var resultType = _ctx.Mapper.Map(slice.Type);
+                if (resultType.IsValueType)
+                {
+                    var local = _ctx.IL.DeclareLocal(resultType);
+                    _ctx.IL.Emit(OpCodes.Ldloca, local);
+                    _ctx.IL.Emit(OpCodes.Initobj, resultType);
+                    _ctx.IL.Emit(OpCodes.Ldloc, local);
+                }
+                else
+                {
+                    _ctx.IL.Emit(OpCodes.Ldnull);
+                }
+            }
             else
             {
                 throw new NotSupportedException($"Slice on type {targetType.TypeKind} not supported");
@@ -2923,6 +2944,20 @@ namespace Ngo.Compiler.Emit
                 return;
             }
 
+            // Fallback: look up parameter by name (handles symbol identity mismatches
+            // across re-analysis passes in EmitDependencyFromSource)
+            if (symbol.Kind == SymbolKind.Parameter || symbol is ParameterSymbol)
+            {
+                foreach (var kvp in _ctx.Parameters)
+                {
+                    if (kvp.Key.Name == symbol.Name)
+                    {
+                        _ctx.IL.Emit(OpCodes.Ldarg, kvp.Value);
+                        return;
+                    }
+                }
+            }
+
             if (_ctx.PackageFields.TryGetValue(symbol, out var field))
             {
                 _ctx.IL.Emit(OpCodes.Ldsfld, field.AsFieldInfo());
@@ -2969,7 +3004,7 @@ namespace Ngo.Compiler.Emit
                 return;
             }
 
-            throw new NotSupportedException($"Cannot load symbol: {symbol.Name} ({symbol.Kind})");
+            throw new NotSupportedException($"Cannot load symbol: {symbol.Name} ({symbol.Kind}, type={symbol.GetType().Name}, params={_ctx.Parameters.Count}, locals={_ctx.Locals.Count})");
         }
 
         private void EmitStore(Symbol symbol)

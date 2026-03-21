@@ -25,12 +25,17 @@ namespace Ngo.Runtime.Log.Slog
         public long NumAttrs() => _attrs?.Count ?? 0;
 
         [GoMethod]
-        public void Attrs(Action<GoAttr> fn)
+        public void Attrs(Func<GoAttr, bool> fn)
         {
             if (_attrs != null)
             {
                 foreach (var a in _attrs)
-                    fn(a);
+                {
+                    if (!fn(a))
+                    {
+                        return;
+                    }
+                }
             }
         }
 

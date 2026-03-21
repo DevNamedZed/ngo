@@ -172,7 +172,7 @@ namespace Ngo.Compiler.Emit
                     paramTypes[i] = _ctx.Mapper.Map(method.Parameters[i].Type);
                 }
 
-                var returnType = _ctx.Mapper.Map(method.ReturnType);
+                var returnType = _ctx.Mapper.MapReturnType(method.ReturnTypes);
                 typeBuilder.DefineMethod(
                     method.Name,
                     MethodAttributes.Public | MethodAttributes.Abstract | MethodAttributes.Virtual,
@@ -406,6 +406,17 @@ namespace Ngo.Compiler.Emit
             if (_ctx.WrapperTypes.TryGetValue(key, out var cached))
                 return cached.Type;
 
+            // Check for an existing wrapper with same name (symbol identity mismatch)
+            foreach (var existing in _ctx.WrapperTypes)
+            {
+                if (existing.Key.SourceType.Name == concreteType.Name
+                    && existing.Key.InterfaceType.Name == interfaceType.Name)
+                {
+                    _ctx.WrapperTypes[key] = existing.Value;
+                    return existing.Value.Type;
+                }
+            }
+
             var concreteClrType = _ctx.Mapper.Map(concreteType);
             var interfaceClrType = _ctx.Mapper.Map(interfaceType);
             var wrapperName = $"{concreteType.Name}__{interfaceType.Name}__Wrapper";
@@ -442,10 +453,19 @@ namespace Ngo.Compiler.Emit
                 var concreteMethod = concreteType.LookupMethod(ifaceMethod.Name);
                 FieldSymbol? embeddedField = null;
 
-                // Check promoted methods from embedded structs
-                if (concreteMethod == null && concreteType is StructTypeSymbol structType)
+                // For pointer types, look up method on element type
+                if (concreteMethod == null && concreteType is PointerTypeSymbol ptrSymbol)
                 {
-                    var promoted = structType.LookupPromotedMethod(ifaceMethod.Name);
+                    concreteMethod = ptrSymbol.ElementType.LookupMethod(ifaceMethod.Name);
+                }
+
+                // Check promoted methods from embedded structs
+                var structLookupType = concreteType is PointerTypeSymbol ptrStruct
+                    ? ptrStruct.ElementType as StructTypeSymbol
+                    : concreteType as StructTypeSymbol;
+                if (concreteMethod == null && structLookupType != null)
+                {
+                    var promoted = structLookupType.LookupPromotedMethod(ifaceMethod.Name);
                     if (promoted != null)
                     {
                         concreteMethod = promoted.Method;
@@ -453,17 +473,41 @@ namespace Ngo.Compiler.Emit
                     }
                 }
 
-                if (concreteMethod == null)
+                if (!_ctx.Methods.TryGetValue(concreteMethod ?? ifaceMethod, out var goMethod))
+                {
+                    // Method not found — emit a stub that returns default value
+                    // This prevents "method has no implementation" runtime errors
+                    var stubParamTypes = new Type[ifaceMethod.Parameters.Count];
+                    for (int i = 0; i < ifaceMethod.Parameters.Count; i++)
+                        stubParamTypes[i] = _ctx.Mapper.Map(ifaceMethod.Parameters[i].Type);
+                    var stubReturnType = _ctx.Mapper.MapReturnType(ifaceMethod.ReturnTypes);
+                    var stubMethod = wrapperBuilder.DefineMethod(
+                        ifaceMethod.Name,
+                        MethodAttributes.Public | MethodAttributes.Virtual,
+                        stubReturnType, stubParamTypes);
+                    var stubIL = stubMethod.GetILWriter();
+                    if (stubReturnType == typeof(string))
+                        stubIL.Emit(OpCodes.Ldstr, "");
+                    else if (stubReturnType == typeof(void))
+                    { /* no return value */ }
+                    else if (stubReturnType.IsValueType)
+                    {
+                        var loc = stubIL.DeclareLocal(stubReturnType);
+                        stubIL.Emit(OpCodes.Ldloca, loc);
+                        stubIL.Emit(OpCodes.Initobj, stubReturnType);
+                        stubIL.Emit(OpCodes.Ldloc, loc);
+                    }
+                    else
+                        stubIL.Emit(OpCodes.Ldnull);
+                    stubIL.Emit(OpCodes.Ret);
                     continue;
-
-                if (!_ctx.Methods.TryGetValue(concreteMethod, out var goMethod))
-                    continue;
+                }
 
                 var paramTypes = new Type[ifaceMethod.Parameters.Count];
                 for (int i = 0; i < ifaceMethod.Parameters.Count; i++)
                     paramTypes[i] = _ctx.Mapper.Map(ifaceMethod.Parameters[i].Type);
 
-                var returnType = _ctx.Mapper.Map(ifaceMethod.ReturnType);
+                var returnType = _ctx.Mapper.MapReturnType(ifaceMethod.ReturnTypes);
 
                 var methodBuilder = wrapperBuilder.DefineMethod(
                     ifaceMethod.Name,
@@ -497,7 +541,8 @@ namespace Ngo.Compiler.Emit
             }
 
             // If this wraps the error interface, override ToString() to call Error()
-            if (ReferenceEquals(interfaceType, BuiltinTypes.Error))
+            if (interfaceType.Name == "error" && interfaceType.Methods.Count == 1
+                && interfaceType.Methods[0].Name == "Error")
             {
                 var toStringBuilder = wrapperBuilder.DefineMethod(
                     "ToString",
@@ -506,16 +551,26 @@ namespace Ngo.Compiler.Emit
                     Type.EmptyTypes);
                 var tsIL = toStringBuilder.GetILWriter();
 
-                // Find the Error() method — check direct then promoted
+                // Find the Error() method — check direct, pointer element, then promoted
                 var errorMethod = concreteType.LookupMethod("Error");
                 FieldSymbol? errorEmbeddedField = null;
-                if (errorMethod == null && concreteType is StructTypeSymbol errorStructType)
+                if (errorMethod == null && concreteType is PointerTypeSymbol errorPtrType)
                 {
-                    var promoted = errorStructType.LookupPromotedMethod("Error");
-                    if (promoted != null)
+                    errorMethod = errorPtrType.ElementType.LookupMethod("Error");
+                }
+                if (errorMethod == null)
+                {
+                    var errorStructType = concreteType is PointerTypeSymbol errorPtrStruct
+                        ? errorPtrStruct.ElementType as StructTypeSymbol
+                        : concreteType as StructTypeSymbol;
+                    if (errorStructType != null)
                     {
-                        errorMethod = promoted.Method;
-                        errorEmbeddedField = promoted.EmbeddedField;
+                        var promoted = errorStructType.LookupPromotedMethod("Error");
+                        if (promoted != null)
+                        {
+                            errorMethod = promoted.Method;
+                            errorEmbeddedField = promoted.EmbeddedField;
+                        }
                     }
                 }
 

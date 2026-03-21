@@ -21,6 +21,14 @@ namespace Ngo.Runtime.Discovery
         /// <summary>Go import path of the package this type belongs to.</summary>
         public string? Package { get; set; }
 
+        /// <summary>
+        /// When true, this C# class represents a Go pointer-to-struct (*T) rather than
+        /// a struct value (T). Use for Go types that are always used via pointer receivers
+        /// and pointer parameters (e.g. big.Int, where Go code uses *big.Int everywhere).
+        /// When false (default), the C# class represents the Go struct value directly.
+        /// </summary>
+        public bool Pointer { get; set; }
+
         public GoTypeAttribute(string kind)
         {
             Kind = kind;

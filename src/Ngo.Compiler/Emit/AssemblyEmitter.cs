@@ -19,6 +19,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
 using System.Reflection.Metadata;
@@ -297,19 +298,25 @@ namespace Ngo.Compiler.Emit
                     continue;
                 }
 
-                // Try to link from .ngo archive (Sections 2+3)
-                bool linkedFromArchive = false;
+                // Try to link from .ngo archive first, then fall back to source compilation
+                bool linked2 = false;
                 if (compilationContext.ProjectRoot != null)
                 {
                     var cacheDir = NgoArchive.GetCacheDir(compilationContext.ProjectRoot);
                     var archivePath = NgoArchive.GetArchivePath(cacheDir, importPath);
-                    linkedFromArchive = ILSerializer.LinkFromArchive(archivePath, import.Package, ctx);
+                    linked2 = ILSerializer.LinkFromArchive(archivePath, import.Package, ctx);
                 }
 
-                if (!linkedFromArchive)
+                if (!linked2)
                 {
-                    compilationContext.Log.Warn($"archive link failed for '{importPath}', falling back to source compilation");
-                    EmitDependencyFromSource(importPath, import.Package, ctx, compilationContext);
+                    try
+                    {
+                        EmitDependencyFromSource(importPath, import.Package, ctx, compilationContext);
+                    }
+                    catch (Exception ex)
+                    {
+                        compilationContext.Log.Warn($"dependency emit failed for '{importPath}': {ex.Message}");
+                    }
                 }
             }
         }
@@ -347,6 +354,20 @@ namespace Ngo.Compiler.Emit
                 }
 
                 var result = SemanticAnalyzer.Analyze(trees, compilationContext);
+
+                // If analysis has errors, don't try to emit broken code
+                if (result.HasErrors)
+                {
+                    var errorCount = result.Errors.Count(e => e.Severity == ErrorSeverity.Error);
+                    var firstErr = result.Errors.FirstOrDefault(e => e.Severity == ErrorSeverity.Error);
+                    compilationContext.Log.Warn($"dependency '{importPath}' has {errorCount} errors, skipping emission. First: {firstErr?.Message}");
+                    return;
+                }
+
+                // Recursively link this dependency's own dependencies first
+                var depLinked = new HashSet<string>();
+                LinkDependencies(result.Root, ctx, compilationContext, depLinked);
+
                 EmitPackage(result.Root, ctx);
 
                 // Bridge: map original PackageSymbol's exports to the freshly emitted methods.
@@ -363,6 +384,28 @@ namespace Ngo.Compiler.Emit
                             if (kvp.Key.Name == origFunc.Name)
                             {
                                 ctx.CachedMethods[origFunc] = kvp.Value.AsMethodInfo();
+                                break;
+                            }
+                        }
+                    }
+                    else if (export.Value is Symbols.StructTypeSymbol origStruct)
+                    {
+                        // Bridge struct types: register the emitted CLR type for the original symbol
+                        foreach (var kvp in ctx.StructTypes)
+                        {
+                            if (kvp.Key.Name == origStruct.Name)
+                            {
+                                if (ctx.FinalizedTypes.Contains(kvp.Key))
+                                {
+                                    var runtimeType = kvp.Value.CreateType();
+                                    if (runtimeType != null)
+                                        ctx.Mapper.Register(origStruct, runtimeType);
+                                }
+                                else
+                                {
+                                    ctx.Mapper.Register(origStruct, kvp.Value.CreateType()!);
+                                    ctx.FinalizedTypes.Add(kvp.Key);
+                                }
                                 break;
                             }
                         }

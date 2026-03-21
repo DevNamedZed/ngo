@@ -92,5 +92,17 @@ namespace Ngo.Runtime.Rand
                 swap(i, j);
             }
         }
+
+        [GoMethod]
+        [return: GoReturn("int", "error")]
+        public (long, object?) Read(Slice<byte> p)
+        {
+            var buf = new byte[p.Len];
+            _rng.NextBytes(buf);
+            for (int i = 0; i < p.Len; i++)
+                p[i] = buf[i];
+            return (p.Len, null);
+        }
+
     }
 }

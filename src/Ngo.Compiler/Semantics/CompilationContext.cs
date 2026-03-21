@@ -67,18 +67,12 @@ namespace Ngo.Compiler.Semantics
                 return cached;
             }
 
-            for (int i = 0; i < _resolvers.Length; i++)
+            foreach (var resolver in _resolvers)
             {
-                var pkg = _resolvers[i].Resolve(importPath);
+                var pkg = resolver.Resolve(importPath);
                 if (pkg != null)
                 {
-                    // Cache results from GoPackageResolver (index 0).
-                    // Don't cache RuntimePackageResolver results (index 1+)
-                    // so GoPackageResolver gets another chance on future calls.
-                    if (i == 0)
-                    {
-                        _resolved[importPath] = pkg;
-                    }
+                    _resolved[importPath] = pkg;
                     return pkg;
                 }
             }
@@ -119,7 +113,20 @@ namespace Ngo.Compiler.Semantics
         public static string GetDefaultPackageName(string importPath)
         {
             var lastSlash = importPath.LastIndexOf('/');
-            return lastSlash >= 0 ? importPath.Substring(lastSlash + 1) : importPath;
+            var name = lastSlash >= 0 ? importPath.Substring(lastSlash + 1) : importPath;
+            // Go module convention: import paths ending in /v2, /v3, etc.
+            // use the PREVIOUS segment as the package name.
+            // e.g., "github.com/foo/bar/v2" → package name is "bar", not "v2"
+            if (name.Length >= 2 && name[0] == 'v' && char.IsDigit(name[1])
+                && int.TryParse(name.Substring(1), out _))
+            {
+                var secondLastSlash = importPath.LastIndexOf('/', lastSlash - 1);
+                if (secondLastSlash >= 0)
+                {
+                    name = importPath.Substring(secondLastSlash + 1, lastSlash - secondLastSlash - 1);
+                }
+            }
+            return name;
         }
 
         /// <summary>

@@ -3,7 +3,7 @@ using Ngo.Runtime.Discovery;
 
 namespace Ngo.Runtime.Math.Big
 {
-    [GoType("struct", Name = "Float", Package = "math/big")]
+    [GoType("struct", Name = "Float", Package = "math/big", Pointer = true)]
     public class GoFloat
     {
         internal double _value;

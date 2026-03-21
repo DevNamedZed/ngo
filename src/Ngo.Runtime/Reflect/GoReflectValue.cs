@@ -44,17 +44,24 @@ namespace Ngo.Runtime.Reflect
         // Zero value
         internal static readonly GoReflectValue InvalidValue = new(null, new GoReflectType(typeof(void), "invalid"), false);
 
+        [GoMethod]
+        [return: GoReturn("Kind")]
         public long Kind() => _type.Kind();
 
+        [GoMethod]
+        [return: GoReturn("Type")]
         public GoReflectType Type() => _type;
 
+        [GoMethod]
         public bool IsValid() => _value != null || _type.Kind() != GoReflectKinds.Invalid;
 
+        [GoMethod]
         public bool IsNil()
         {
             return _value == null;
         }
 
+        [GoMethod]
         public bool IsZero()
         {
             if (_value == null) return true;
@@ -68,6 +75,7 @@ namespace Ngo.Runtime.Reflect
             return false;
         }
 
+        [GoMethod]
         public object? Interface() => _value;
 
         public long Int()
@@ -212,6 +220,8 @@ namespace Ngo.Runtime.Reflect
             throw new GoPanicException("reflect: call of Value.Call on " + GoReflectKinds.KindToString(Kind()) + " Value");
         }
 
+        [GoMethod]
+        [return: GoReturn("Value")]
         public GoReflectValue Elem()
         {
             var k = Kind();

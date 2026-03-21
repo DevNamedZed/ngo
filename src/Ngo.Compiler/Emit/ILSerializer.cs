@@ -54,33 +54,30 @@ namespace Ngo.Compiler.Emit
             var ngoModule = new NgoModuleBuilder();
             var mapper = new TypeMapper(compilationContext);
             var ctx = new EmitContext(ngoModule, mapper, null);
-
-            // Standard 3-pass emit — NgoModuleBuilder captures everything
             EmitPackageForSerialization(result.Root, ctx);
 
-            // Write complete .ngo archive
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             using var stream = new FileStream(path, FileMode.Create, FileAccess.Write);
             using var writer = new BinaryWriter(stream);
 
-            // Header placeholder
+            // Header placeholder (8 uint32 fields after magic+version)
             writer.Write(new byte[] { (byte)'N', (byte)'G', (byte)'O', 0 });
             writer.Write(NgoArchive.CurrentVersion);
-            for (int i = 0; i < 6; i++) writer.Write((uint)0);
+            for (int i = 0; i < 8; i++) writer.Write((uint)0);
 
             // Section 1: Go metadata
             var goMetaOffset = (uint)stream.Position;
             NgoArchive.WriteGoMetadataPublic(writer, pkg, importPath);
             var goMetaLen = (uint)(stream.Position - goMetaOffset);
 
-            // Section 2: IL metadata — written directly to main stream
+            // Section 2: IL metadata
             var ilMetaOffset = (uint)stream.Position;
             using var codeStream = new MemoryStream();
             using var codeWriter = new BinaryWriter(codeStream);
             ngoModule.WriteILSections(writer, codeWriter);
             var ilMetaLen = (uint)(stream.Position - ilMetaOffset);
 
-            // Section 3: IL bytecode — append captured code bytes
+            // Section 3: IL bytecode
             var ilCodeOffset = (uint)stream.Position;
             codeWriter.Flush();
             codeStream.Position = 0;

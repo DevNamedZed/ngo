@@ -20,7 +20,13 @@ namespace Ngo.Runtime.Csv
             _writer = writer;
         }
 
-        public void Write(Slice<string> record)
+        [GoMethod]
+        [return: GoReturn("error")]
+        public object? Error() => null;
+
+        [GoMethod]
+        [return: GoReturn("error")]
+        public object? Write(Slice<string> record)
         {
             var sb = new StringBuilder();
             for (int i = 0; i < record.Len; i++)
@@ -41,17 +47,22 @@ namespace Ngo.Runtime.Csv
             sb.Append("\r\n");
             var bytes = global::System.Text.Encoding.UTF8.GetBytes(sb.ToString());
             _writer.Write(new Slice<byte>(bytes));
+            return null;
         }
 
-        public void WriteAll(Slice<Slice<string>> records)
+        [GoMethod]
+        [return: GoReturn("error")]
+        public object? WriteAll(Slice<Slice<string>> records)
         {
             for (int i = 0; i < records.Len; i++)
             {
                 Write(records[i]);
             }
             Flush();
+            return null;
         }
 
+        [GoMethod]
         public void Flush()
         {
             // No buffering in our implementation

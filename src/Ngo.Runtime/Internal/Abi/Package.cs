@@ -108,6 +108,9 @@ namespace Ngo.Runtime.Internal.Abi
         [GoField(Name = "Str")] public int Str; // NameOff
         [GoField(Name = "PtrToThis")] public int PtrToThis; // TypeOff
 
+        // Go embedding: sub-types embed abi.Type, accessible as .Type
+        [GoField(Name = "Type")] public GoType TypeEmbedded => this;
+
         [GoMethod] public long Size() => Size_;
         [GoMethod] [return: GoReturn("Kind")] public byte Kind() => (byte)(Kind_ & 31);
         [GoMethod] public bool Pointers() => PtrBytes != 0;
@@ -116,18 +119,34 @@ namespace Ngo.Runtime.Internal.Abi
         [GoMethod] public long Align() => Align_;
         [GoMethod] public long FieldAlign() => FieldAlign_;
         [GoMethod] public bool HasName() => (TFlag & 4) != 0;
+        [GoMethod] [return: GoReturn("*Type")] public GoType? Elem() => null;
+        [GoMethod] [return: GoReturn("*UncommonType")] public GoUncommonType? Uncommon() => null;
+        [GoMethod] [return: GoReturn("ChanDir")] public long ChanDir() => 0;
+        [GoMethod] [return: GoReturn("int")] public long Len() => 0;
+        [GoMethod] [return: GoReturn("uint32")] public long NumMethod() => 0;
+        [GoMethod] public bool ExportedMethods() => false;
+        [GoMethod] [return: GoReturn("*Type")] public GoType? Key() => null;
+        [GoMethod] [return: GoReturn("*Type")] public GoType? Field([GoParam("int")] long i) => null;
+        [GoMethod] public bool Comparable() => true;
+        [GoMethod] public string String() => "";
+        [GoMethod] [return: GoReturn("[]byte")] public Slice<byte> GcSlice([GoParam("uintptr")] long begin, [GoParam("uintptr")] long end) => default;
+        [GoMethod] [return: GoReturn("*Type")] public GoType Common() => this;
     }
 
     // abi.Name — type name descriptor
     [GoType("struct", Name = "Name", Package = "internal/abi")]
     public class GoName
     {
+        [GoField(Name = "Bytes")] public long Bytes; // *byte pointer
+
         [GoMethod] public string Name() => "";
         [GoMethod] public string Tag() => "";
         [GoMethod] public bool IsExported() => false;
         [GoMethod] public bool HasTag() => false;
         [GoMethod] public bool IsEmbedded() => false;
         [GoMethod] public bool IsBlank() => false;
+        [GoMethod] [return: GoReturn("int")] public long DataChecked([GoParam("int")] long off, string msg) => 0;
+        [GoMethod] [return: GoReturn("int", "int")] public (long, long) ReadVarint([GoParam("int")] long off) => (0, 0);
     }
 
     [GoType("struct", Name = "Method", Package = "internal/abi")]
@@ -146,6 +165,9 @@ namespace Ngo.Runtime.Internal.Abi
         [GoField(Name = "Mcount")] public int Mcount;
         [GoField(Name = "Xcount")] public int Xcount;
         [GoField(Name = "Moff")] public int Moff;
+
+        [GoMethod] [return: GoReturn("[]Method")] public Slice<GoMethod> Methods() => default;
+        [GoMethod] [return: GoReturn("[]Method")] public Slice<GoMethod> ExportedMethods() => default;
     }
 
     [GoType("struct", Name = "Imethod", Package = "internal/abi")]
@@ -156,39 +178,47 @@ namespace Ngo.Runtime.Internal.Abi
     }
 
     [GoType("struct", Name = "ArrayType", Package = "internal/abi")]
-    public class GoArrayType
+    public class GoArrayType : GoType
     {
-        [GoField(Name = "Elem")] public GoType? Elem;
+        [GoField(Name = "Elem")] public new GoType? Elem;
         [GoField(Name = "Slice")] public GoType? Slice;
-        [GoField(Name = "Len", Type = "uintptr")] public long Len;
+        [GoField(Name = "Len", Type = "uintptr")] public new long Len;
     }
 
     [GoType("struct", Name = "ChanType", Package = "internal/abi")]
-    public class GoChanType
+    public class GoChanType : GoType
     {
-        [GoField(Name = "Elem")] public GoType? Elem;
-        [GoField(Name = "Dir")] public long Dir;
+        [GoField(Name = "Elem")] public GoType? ChanElem;
+        [GoField(Name = "Dir")] public new long ChanDir;
     }
 
     [GoType("struct", Name = "FuncType", Package = "internal/abi")]
-    public class GoFuncType
+    public class GoFuncType : GoType
     {
         [GoField(Name = "InCount")] public int InCount;
         [GoField(Name = "OutCount")] public int OutCount;
+
+        [GoMethod] [return: GoReturn("int")] public long NumIn() => InCount;
+        [GoMethod] [return: GoReturn("int")] public long NumOut() => OutCount & ((1 << 5) - 1);
+        [GoMethod] public bool IsVariadic() => (OutCount & (1 << 7)) != 0;
+        [GoMethod] [return: GoReturn("[]*Type")] public Slice<GoType> InSlice() => default;
+        [GoMethod] [return: GoReturn("[]*Type")] public Slice<GoType> OutSlice() => default;
+        [GoMethod] [return: GoReturn("*Type")] public GoType? In([GoParam("int")] long i) => null;
+        [GoMethod] [return: GoReturn("*Type")] public GoType? Out([GoParam("int")] long i) => null;
     }
 
     [GoType("struct", Name = "InterfaceType", Package = "internal/abi")]
-    public class GoInterfaceType
+    public class GoInterfaceType : GoType
     {
         [GoField(Name = "PkgPath")] public GoName? PkgPath;
         [GoField(Name = "Methods", Type = "[]Imethod")] public Slice<GoImethod> Methods;
     }
 
     [GoType("struct", Name = "MapType", Package = "internal/abi")]
-    public class GoMapType
+    public class GoMapType : GoType
     {
-        [GoField(Name = "Key")] public GoType? Key;
-        [GoField(Name = "Elem")] public GoType? Elem;
+        [GoField(Name = "Key")] public new GoType? Key;
+        [GoField(Name = "Elem")] public new GoType? Elem;
         [GoField(Name = "Bucket")] public GoType? Bucket;
         [GoField(Name = "Hasher")] public object? Hasher;
         [GoField(Name = "KeySize")] public byte KeySize;
@@ -198,15 +228,15 @@ namespace Ngo.Runtime.Internal.Abi
     }
 
     [GoType("struct", Name = "PtrType", Package = "internal/abi")]
-    public class GoPtrType
+    public class GoPtrType : GoType
     {
-        [GoField(Name = "Elem")] public GoType? Elem;
+        [GoField(Name = "Elem")] public new GoType? Elem;
     }
 
     [GoType("struct", Name = "SliceType", Package = "internal/abi")]
-    public class GoSliceType
+    public class GoSliceType : GoType
     {
-        [GoField(Name = "Elem")] public GoType? Elem;
+        [GoField(Name = "Elem")] public new GoType? Elem;
     }
 
     [GoType("struct", Name = "StructField", Package = "internal/abi")]
@@ -215,10 +245,11 @@ namespace Ngo.Runtime.Internal.Abi
         [GoField(Name = "Name")] public GoName? Name;
         [GoField(Name = "Typ")] public GoType? Typ;
         [GoField(Name = "Offset", Type = "uintptr")] public long Offset;
+        [GoField(Name = "Embedded")] public bool Embedded;
     }
 
     [GoType("struct", Name = "StructType", Package = "internal/abi")]
-    public class GoStructType
+    public class GoStructType : GoType
     {
         [GoField(Name = "PkgPath")] public GoName? PkgPath;
         [GoField(Name = "Fields", Type = "[]StructField")] public Slice<GoStructField> Fields;

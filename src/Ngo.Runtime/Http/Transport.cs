@@ -17,6 +17,10 @@ namespace Ngo.Runtime.Http
         [GoField(Name = "MaxConnsPerHost")] public long MaxConnsPerHost { get; set; }
         [GoField(Name = "IdleConnTimeout")] public long IdleConnTimeout { get; set; }
         [GoField(Name = "ResponseHeaderTimeout")] public long ResponseHeaderTimeout { get; set; }
+        [GoField(Name = "ExpectContinueTimeout")] public long ExpectContinueTimeout { get; set; }
+        [GoField(Name = "WriteBufferSize")] public long WriteBufferSize { get; set; }
+        [GoField(Name = "ReadBufferSize")] public long ReadBufferSize { get; set; }
+        [GoField(Name = "MaxResponseHeaderBytes")] public long MaxResponseHeaderBytes { get; set; }
         [GoField(Name = "DisableKeepAlives")] public bool DisableKeepAlives { get; set; }
         [GoField(Name = "DisableCompression")] public bool DisableCompression { get; set; }
         [GoField(Name = "ForceAttemptHTTP2")] public bool ForceAttemptHTTP2 { get; set; }

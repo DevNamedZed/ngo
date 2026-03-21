@@ -758,6 +758,8 @@ namespace Ngo.Compiler.Semantics
                     }
                 }
 
+
+
                 // Check promoted methods from embedded structs
                 if (!found)
                 {
@@ -862,7 +864,8 @@ namespace Ngo.Compiler.Semantics
             for (int i = 0; i < a.ReturnTypes.Count; i++)
             {
                 if (a.ReturnTypes[i] != b.ReturnTypes[i]
-                    && !IsAssignable(a.ReturnTypes[i], b.ReturnTypes[i]))
+                    && !IsAssignable(a.ReturnTypes[i], b.ReturnTypes[i])
+                    && !TypeNamesMatch(a.ReturnTypes[i], b.ReturnTypes[i]))
                 {
                     return false;
                 }
@@ -872,7 +875,7 @@ namespace Ngo.Compiler.Semantics
             {
                 var at = a.Parameters[i].Type;
                 var bt = b.Parameters[i].Type;
-                if (at != bt && !IsAssignable(at, bt))
+                if (at != bt && !IsAssignable(at, bt) && !TypeNamesMatch(at, bt))
                 {
                     // Variadic parameter mismatch: one stores T (IsVariadic=true),
                     // the other stores []T. Unwrap slice and compare element types.
@@ -888,6 +891,28 @@ namespace Ngo.Compiler.Semantics
             }
 
             return true;
+        }
+
+        private static bool TypeNamesMatch(TypeSymbol a, TypeSymbol b)
+        {
+            // Slice types: compare element names
+            if (a is SliceTypeSymbol sa && b is SliceTypeSymbol sb)
+            {
+                return TypeNamesMatch(sa.ElementType, sb.ElementType);
+            }
+            // Pointer types: compare element names
+            if (a is PointerTypeSymbol pa && b is PointerTypeSymbol pb)
+            {
+                return TypeNamesMatch(pa.ElementType, pb.ElementType);
+            }
+            // Named types: same name means same Go type, even if resolved
+            // from different sources (Go source vs C# runtime)
+            if (a.Name == b.Name && !string.IsNullOrEmpty(a.Name)
+                && a.Name != "interface{}" && a.Name != "struct{}")
+            {
+                return true;
+            }
+            return false;
         }
 
         /// <summary>

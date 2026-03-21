@@ -171,6 +171,7 @@ namespace Ngo.Runtime.Os
         }
 
         [GoFunc]
+        [return: GoReturn("string", "bool")]
         public static (string, bool) LookupEnv(string key)
         {
             var val = Environment.GetEnvironmentVariable(key);

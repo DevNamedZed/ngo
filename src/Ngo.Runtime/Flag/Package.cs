@@ -192,7 +192,8 @@ namespace Ngo.Runtime.Flag
             return new Ptr<long>(defaultValue);
         }
 
-        public static Func<string>? Usage;
+        [GoVar(Type = "func()")]
+        public static Action? Usage;
 
         public static void StringVar(FlagStringPtr p, string name, string defaultValue, string usage)
         {

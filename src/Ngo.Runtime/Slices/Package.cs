@@ -185,6 +185,7 @@ namespace Ngo.Runtime.Slices
         }
 
         [GoFunc]
+        [return: GoReturn("int", "bool")]
         public static (long, bool) BinarySearch<T>(Slice<T> x, T target) where T : IComparable<T>
         {
             int lo = 0, hi = x.Len;
@@ -201,6 +202,7 @@ namespace Ngo.Runtime.Slices
         }
 
         [GoFunc]
+        [return: GoReturn("int", "bool")]
         public static (long, bool) BinarySearchFunc<T>(Slice<T> x, object target, Func<object, object, long> cmp)
         {
             int lo = 0, hi = x.Len;

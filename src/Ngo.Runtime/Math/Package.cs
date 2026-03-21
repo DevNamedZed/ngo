@@ -107,6 +107,7 @@ namespace Ngo.Runtime.Math
         public static long Ilogb(double x) => (long)System.Math.Floor(System.Math.Log2(System.Math.Abs(x)));
 
         [GoFunc]
+        [return: GoReturn("float64", "int")]
         public static (double, long) Frexp(double f)
         {
             if (f == 0) return (0, 0);

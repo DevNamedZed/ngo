@@ -161,6 +161,9 @@ namespace Ngo.Runtime
         /// <summary>Go string slicing s[low:high] — operates on byte indices.</summary>
         public static string SliceString(string s, int low, int high)
         {
+            // -1 sentinel means "use len(s)"
+            if (high < 0) high = s.Length;
+
             if (System.Text.Ascii.IsValid(s))
             {
                 if (low < 0 || high < low || high > s.Length)

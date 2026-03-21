@@ -34,6 +34,7 @@ namespace Ngo.Runtime.Go.Internal.Typeparams
         [GoField(Name = "Lbrack", Type = "go/token.Pos")] public long Lbrack;
         [GoField(Name = "Indices", Type = "[]go/ast.Expr")] public Slice<object?> Indices;
         [GoField(Name = "Rbrack", Type = "go/token.Pos")] public long Rbrack;
+        [GoField(Name = "Orig", Type = "go/ast.Node")] public object? Orig;
 
         [GoMethod] [return: GoReturn("go/token.Pos")] public long Pos() => Lbrack;
         [GoMethod] [return: GoReturn("go/token.Pos")] public long End() => Rbrack;

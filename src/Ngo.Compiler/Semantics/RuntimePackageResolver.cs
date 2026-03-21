@@ -312,10 +312,11 @@ namespace Ngo.Compiler.Semantics
                         goType = new InterfaceTypeSymbol(goName, new List<MethodSymbol>());
                         break;
                     default:
-                        var underlying = entry.Attribute.Underlying != null
-                            ? PackageMetadataSerializer.StringToType(entry.Attribute.Underlying, typeMap, crossPkgResolver)
-                            : BuiltinTypes.EmptyInterface;
-                        goType = new TypeSymbol(goName, underlying.TypeKind, underlying);
+                        // Defer underlying type parsing to Pass 1b when all type names are registered.
+                        // Underlying types like "func(ResponseWriter, *Request)" reference other types
+                        // from the same package that may not be declared yet.
+                        goType = new TypeSymbol(goName, TypeKind.Struct, null);
+                        goType._deferredUnderlying = entry.Attribute.Underlying;
                         break;
                 }
                 goType.PackagePath = importPath;
@@ -343,10 +344,21 @@ namespace Ngo.Compiler.Semantics
                     continue;
                 }
 
+                // Resolve deferred underlying types now that all type names are registered
+                if (goType._deferredUnderlying != null)
+                {
+                    var underlying = PackageMetadataSerializer.StringToType(
+                        goType._deferredUnderlying, typeMap, crossPkgResolver);
+                    goType.UnderlyingType = underlying;
+                    goType.TypeKind = underlying.TypeKind;
+                    goType._deferredUnderlying = null;
+                }
+
                 if (goType is StructTypeSymbol structType)
                 {
                     var fields = new List<FieldSymbol>();
-                    foreach (var fi in entry.ClrType.GetFields(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
+                    // Include inherited fields to support Go struct embedding (base class = embedded struct)
+                    foreach (var fi in entry.ClrType.GetFields(BindingFlags.Public | BindingFlags.Instance))
                     {
                         var fieldAttr = fi.GetCustomAttribute<GoFieldAttribute>();
                         if (fieldAttr == null)
@@ -359,7 +371,7 @@ namespace Ngo.Compiler.Semantics
                             : MapClrType(fi.FieldType, typeMap);
                         fields.Add(new FieldSymbol(fieldName, fieldType, fields.Count, isEmbedded: fieldAttr.Embedded));
                     }
-                    foreach (var pi in entry.ClrType.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
+                    foreach (var pi in entry.ClrType.GetProperties(BindingFlags.Public | BindingFlags.Instance))
                     {
                         var fieldAttr = pi.GetCustomAttribute<GoFieldAttribute>();
                         if (fieldAttr == null)
@@ -381,7 +393,8 @@ namespace Ngo.Compiler.Semantics
                 // For type methods, only include instance methods (not static — those are package functions)
                 // Exception: include static methods only if the class doesn't also have [GoPackage]
                 var includeStatic = entry.ClrType.GetCustomAttribute<GoPackageAttribute>() == null;
-                var methodFlags = BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly;
+                // Include inherited methods for Go struct embedding support
+                var methodFlags = BindingFlags.Public | BindingFlags.Instance;
                 if (includeStatic)
                 {
                     methodFlags |= BindingFlags.Static;
@@ -544,8 +557,22 @@ namespace Ngo.Compiler.Semantics
                 {
                     var paramTypes = new List<TypeSymbol>();
                     for (int i = 0; i < args.Length - 1; i++)
+                    {
                         paramTypes.Add(MapClrType(args[i], typeMap));
-                    var retTypes = new List<TypeSymbol> { MapClrType(args[args.Length - 1], typeMap) };
+                    }
+                    var retClrType = args[args.Length - 1];
+                    var retTypes = new List<TypeSymbol>();
+                    if (IsTupleType(retClrType))
+                    {
+                        foreach (var tupleArg in retClrType.GetGenericArguments())
+                        {
+                            retTypes.Add(MapClrType(tupleArg, typeMap));
+                        }
+                    }
+                    else
+                    {
+                        retTypes.Add(MapClrType(retClrType, typeMap));
+                    }
                     return new FunctionTypeSymbol(paramTypes, retTypes);
                 }
                 if (genDef.FullName?.StartsWith("System.Action`") == true)
@@ -565,7 +592,13 @@ namespace Ngo.Compiler.Semantics
             {
                 var name = goTypeAttr.Name ?? clrType.Name;
                 if (typeMap.TryGetValue(name, out var mapped))
+                {
+                    if (goTypeAttr.Pointer)
+                    {
+                        return new PointerTypeSymbol(mapped);
+                    }
                     return mapped;
+                }
             }
 
             return BuiltinTypes.EmptyInterface;

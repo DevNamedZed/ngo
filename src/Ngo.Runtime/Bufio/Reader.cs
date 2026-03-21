@@ -43,12 +43,12 @@ namespace Ngo.Runtime.Bufio
                 p[i] = _buf[_bufPos + i];
             _bufPos += count;
             _lastRuneSize = -1;
-            return (count, "");
+            return (count, null!);
         }
 
         [GoMethod]
         [return: GoReturn("string", "error")]
-        public (string, string) ReadString(byte delim)
+        public (string, string?) ReadString(byte delim)
         {
             var result = new List<byte>();
             while (true)
@@ -70,13 +70,13 @@ namespace Ngo.Runtime.Bufio
                 byte b = _buf[_bufPos++];
                 result.Add(b);
                 if (b == delim)
-                    return (global::System.Text.Encoding.UTF8.GetString(result.ToArray()), "");
+                    return (global::System.Text.Encoding.UTF8.GetString(result.ToArray()), null);
             }
         }
 
         [GoMethod]
         [return: GoReturn("[]byte", "bool", "error")]
-        public (Slice<byte>, bool, string) ReadLine()
+        public (Slice<byte>, bool, string?) ReadLine()
         {
             var result = new List<byte>();
             while (true)
@@ -100,7 +100,7 @@ namespace Ngo.Runtime.Bufio
                 {
                     if (result.Count > 0 && result[result.Count - 1] == (byte)'\r')
                         result.RemoveAt(result.Count - 1);
-                    return (new Slice<byte>(result.ToArray()), false, "");
+                    return (new Slice<byte>(result.ToArray()), false, null);
                 }
                 result.Add(b);
             }
@@ -108,34 +108,34 @@ namespace Ngo.Runtime.Bufio
 
         [GoMethod]
         [return: GoReturn("byte", "error")]
-        public (byte, string) ReadByte()
+        public (byte, string?) ReadByte()
         {
             if (_bufPos >= _bufLen)
             {
                 var slice = new Slice<byte>(_buf);
                 var (n, err) = _reader.Read(slice);
                 if (n == 0)
-                    return (0, err != "" ? err : "EOF");
+                    return (0, err != null ? err : "EOF");
                 _bufLen = n;
                 _bufPos = 0;
             }
 
             _lastRuneSize = -1;
-            return (_buf[_bufPos++], "");
+            return (_buf[_bufPos++], null);
         }
 
         [GoMethod]
         [return: GoReturn("rune", "int", "error")]
-        public (long, long, string) ReadRune()
+        public (long, long, string?) ReadRune()
         {
             var (b, err) = ReadByte();
-            if (err != "")
+            if (err != null)
                 return (0, 0, err);
 
             if (b < 0x80)
             {
                 _lastRuneSize = 1;
-                return (b, 1, "");
+                return (b, 1, null);
             }
 
             int size;
@@ -143,46 +143,46 @@ namespace Ngo.Runtime.Bufio
             if ((b & 0xE0) == 0xC0) { size = 2; rune = b & 0x1F; }
             else if ((b & 0xF0) == 0xE0) { size = 3; rune = b & 0x0F; }
             else if ((b & 0xF8) == 0xF0) { size = 4; rune = b & 0x07; }
-            else { _lastRuneSize = 1; return (0xFFFD, 1, ""); }
+            else { _lastRuneSize = 1; return (0xFFFD, 1, null); }
 
             for (int i = 1; i < size; i++)
             {
                 var (cb, cerr) = ReadByte();
-                if (cerr != "")
+                if (cerr != null)
                     return (0xFFFD, i, cerr);
                 rune = (rune << 6) | (long)(cb & 0x3F);
             }
 
             _lastRuneSize = size;
-            return (rune, size, "");
+            return (rune, size, null);
         }
 
         [GoMethod]
         [return: GoReturn("error")]
-        public string UnreadByte()
+        public string? UnreadByte()
         {
             if (_bufPos <= 0)
                 return "bufio: invalid use of UnreadByte";
             _bufPos--;
             _lastRuneSize = -1;
-            return "";
+            return null;
         }
 
         [GoMethod]
         [return: GoReturn("error")]
-        public string UnreadRune()
+        public string? UnreadRune()
         {
             if (_lastRuneSize < 0)
                 return "bufio: invalid use of UnreadRune";
             _bufPos -= _lastRuneSize;
             if (_bufPos < 0) _bufPos = 0;
             _lastRuneSize = -1;
-            return "";
+            return null;
         }
 
         [GoMethod]
         [return: GoReturn("[]byte", "error")]
-        public (Slice<byte>, string) Peek([GoParam("int")] long n)
+        public (Slice<byte>, string?) Peek([GoParam("int")] long n)
         {
             int count = (int)n;
             if (_bufPos >= _bufLen)
@@ -190,7 +190,7 @@ namespace Ngo.Runtime.Bufio
                 var slice = new Slice<byte>(_buf);
                 var (nr, err) = _reader.Read(slice);
                 if (nr == 0)
-                    return (default(Slice<byte>), err != "" ? err : "EOF");
+                    return (default(Slice<byte>), err != null ? err : "EOF");
                 _bufLen = nr;
                 _bufPos = 0;
             }
@@ -205,7 +205,7 @@ namespace Ngo.Runtime.Bufio
 
             var peek = new byte[count];
             Array.Copy(_buf, _bufPos, peek, 0, count);
-            return (new Slice<byte>(peek), "");
+            return (new Slice<byte>(peek), null);
         }
 
         [GoMethod]
@@ -226,7 +226,7 @@ namespace Ngo.Runtime.Bufio
 
         [GoMethod]
         [return: GoReturn("[]byte", "error")]
-        public (Slice<byte>, string) ReadBytes(byte delim)
+        public (Slice<byte>, string?) ReadBytes(byte delim)
         {
             var result = new List<byte>();
             while (true)
@@ -248,17 +248,17 @@ namespace Ngo.Runtime.Bufio
                 byte b = _buf[_bufPos++];
                 result.Add(b);
                 if (b == delim)
-                    return (new Slice<byte>(result.ToArray()), "");
+                    return (new Slice<byte>(result.ToArray()), null);
             }
         }
 
         [GoMethod]
         [return: GoReturn("[]byte", "error")]
-        public (Slice<byte>, string) ReadSlice(byte delim) => ReadBytes(delim);
+        public (Slice<byte>, string?) ReadSlice(byte delim) => ReadBytes(delim);
 
         [GoMethod]
         [return: GoReturn("int", "error")]
-        public (long, string) Discard([GoParam("int")] long n)
+        public (long, string?) Discard([GoParam("int")] long n)
         {
             long discarded = 0;
             while (discarded < n)
@@ -268,7 +268,7 @@ namespace Ngo.Runtime.Bufio
                     var slice = new Slice<byte>(_buf);
                     var (nr, err) = _reader.Read(slice);
                     if (nr == 0)
-                        return (discarded, err != "" ? err : "EOF");
+                        return (discarded, err != null ? err : "EOF");
                     _bufLen = nr;
                     _bufPos = 0;
                 }
@@ -279,12 +279,12 @@ namespace Ngo.Runtime.Bufio
                 _bufPos += skip;
                 discarded += skip;
             }
-            return (discarded, "");
+            return (discarded, null);
         }
 
         [GoMethod]
         [return: GoReturn("int64", "error")]
-        public (long, string) WriteTo([GoParam("interface{}")] IGoWriter w)
+        public (long, string?) WriteTo([GoParam("interface{}")] IGoWriter w)
         {
             long total = 0;
             while (_bufPos < _bufLen)
@@ -293,7 +293,7 @@ namespace Ngo.Runtime.Bufio
                 var (n, err) = w.Write(slice);
                 total += n;
                 _bufPos += n;
-                if (err != "")
+                if (err != null)
                     return (total, err);
             }
 
@@ -303,15 +303,15 @@ namespace Ngo.Runtime.Bufio
                 var (nr, rerr) = _reader.Read(readSlice);
                 if (nr == 0)
                 {
-                    if (rerr != "" && rerr != "EOF")
+                    if (rerr != null && rerr != "EOF")
                         return (total, rerr);
-                    return (total, "");
+                    return (total, null);
                 }
 
                 var writeSlice = new Slice<byte>(_buf, 0, nr);
                 var (nw, werr) = w.Write(writeSlice);
                 total += nw;
-                if (werr != "")
+                if (werr != null)
                     return (total, werr);
             }
         }

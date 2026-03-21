@@ -151,6 +151,7 @@ namespace Ngo.Runtime.Strings
         }
 
         [GoFunc]
+        [return: GoReturn("string", "string", "bool")]
         public static (string before, string after, bool found) Cut(string s, string sep)
         {
             int idx = s.IndexOf(sep, StringComparison.Ordinal);
@@ -343,6 +344,7 @@ namespace Ngo.Runtime.Strings
         public static string Clone(string s) => s;
 
         [GoFunc]
+        [return: GoReturn("string", "bool")]
         public static (string, bool) CutPrefix(string s, string prefix)
         {
             if (s.StartsWith(prefix))
@@ -351,6 +353,7 @@ namespace Ngo.Runtime.Strings
         }
 
         [GoFunc]
+        [return: GoReturn("string", "bool")]
         public static (string, bool) CutSuffix(string s, string suffix)
         {
             if (s.EndsWith(suffix))

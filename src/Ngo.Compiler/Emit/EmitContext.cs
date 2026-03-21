@@ -249,14 +249,29 @@ namespace Ngo.Compiler.Emit
 
         public static bool HasAnyTypeBuilderPublic(Type[] types) => HasAnyTypeBuilder(types);
 
+        private static bool IsNonRuntimeType(Type type)
+        {
+            return type is TypeBuilder
+                || type is GenericTypeParameterBuilder
+                || type is Builder.NgoProxyType;
+        }
+
         private static bool HasAnyTypeBuilder(Type[] types)
         {
             foreach (var t in types)
             {
-                if (t is TypeBuilder || t is GenericTypeParameterBuilder)
+                if (IsNonRuntimeType(t))
                     return true;
                 if (t.IsGenericType && HasTypeBuilderArgs(t))
                     return true;
+                if (t.IsArray)
+                {
+                    var elemType = t.GetElementType();
+                    if (elemType != null && IsNonRuntimeType(elemType))
+                        return true;
+                    if (elemType != null && elemType.IsGenericType && HasTypeBuilderArgs(elemType))
+                        return true;
+                }
             }
             return false;
         }
@@ -267,7 +282,7 @@ namespace Ngo.Compiler.Emit
                 return false;
             foreach (var arg in type.GetGenericArguments())
             {
-                if (arg is TypeBuilder || arg is GenericTypeParameterBuilder)
+                if (IsNonRuntimeType(arg))
                     return true;
                 if (arg.IsGenericType && HasTypeBuilderArgs(arg))
                     return true;

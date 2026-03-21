@@ -238,6 +238,11 @@ namespace Ngo.Runtime.Http
         [return: GoReturn("*url.URL", "error")]
         public static (object?, object?) ProxyFromEnvironment(Request req) => (null, null);
 
+        // http.ProxyURL(fixedURL *url.URL) func(*Request) (*url.URL, error)
+        [GoFunc]
+        [return: GoReturn("func(*Request) (*url.URL, error)")]
+        public static object? ProxyURL(object? fixedURL) => null;
+
         [GoFunc]
         public static string CanonicalHeaderKey(string s) => Net.Textproto.Package.CanonicalMIMEHeaderKey(s);
 

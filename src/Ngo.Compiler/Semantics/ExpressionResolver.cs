@@ -897,6 +897,11 @@ namespace Ngo.Compiler.Semantics
 
             // Unwrap named type to access underlying struct/slice/etc fields and methods
             var resolvedTargetType = targetType.Resolved();
+            if (resolvedTargetType == targetType && resolvedTargetType.UnderlyingType != null
+                && resolvedTargetType.GetType() == typeof(TypeSymbol))
+            {
+                resolvedTargetType = resolvedTargetType.UnderlyingType;
+            }
 
             // Extract type parameter substitution info from instantiated generic types
             IReadOnlyList<TypeParameterSymbol>? instTypeParams = null;
@@ -1825,6 +1830,12 @@ namespace Ngo.Compiler.Semantics
                     return new ErrorExpression("Invalid slice", span);
                 }
             }
+            else if (operand.Type.TypeKind == TypeKind.Interface
+                || (operand.Type is InterfaceTypeSymbol ifaceSlice && ifaceSlice.Methods.Count == 0))
+            {
+                // Slicing interface{} — Go allows this at runtime
+                resultType = operand.Type;
+            }
             else
             {
                 _context.Errors.ReportError(span, ErrorCode.InvalidSlice,
@@ -1845,14 +1856,20 @@ namespace Ngo.Compiler.Semantics
                 return new ErrorExpression("Error expression", span);
             }
 
-            // The expression must be an interface type
+            // The expression must be an interface type (or error, which our runtime
+            // represents as string but is an interface in Go)
             var exprTypeResolved = expr.Type.Resolved();
-            if (expr.Type is not InterfaceTypeSymbol
-                && exprTypeResolved is not InterfaceTypeSymbol
-                && expr.Type.TypeKind != TypeKind.Interface
-                && exprTypeResolved.TypeKind != TypeKind.Interface
-                && !(expr.Type is InstantiatedTypeSymbol instType
-                     && instType.GenericType is InterfaceTypeSymbol))
+            bool isInterface = expr.Type is InterfaceTypeSymbol
+                || exprTypeResolved is InterfaceTypeSymbol
+                || expr.Type.TypeKind == TypeKind.Interface
+                || exprTypeResolved.TypeKind == TypeKind.Interface
+                || (expr.Type is InstantiatedTypeSymbol instType
+                    && instType.GenericType is InterfaceTypeSymbol)
+                || expr.Type == BuiltinTypes.Error
+                || expr.Type.Name == "error"
+                || expr.Type.TypeKind == TypeKind.String
+                || expr.Type.TypeKind == TypeKind.UntypedString;
+            if (!isInterface)
             {
                 _context.Errors.ReportError(span, ErrorCode.InvalidTypeAssert,
                     $"Cannot type assert on non-interface type '{expr.Type.Name}'");

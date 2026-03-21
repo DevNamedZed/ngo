@@ -54,17 +54,27 @@ namespace Ngo.Runtime.Ioutil
             return r!;
         }
 
-        public static string TempDir(string dir, string pattern)
+        [GoFunc]
+        [return: GoReturn("string", "error")]
+        public static (string, object?) TempDir(string dir, string pattern)
         {
-            var path = System.IO.Path.Combine(
-                string.IsNullOrEmpty(dir) ? System.IO.Path.GetTempPath() : dir,
-                pattern + Guid.NewGuid().ToString("N").Substring(0, 8));
-            Directory.CreateDirectory(path);
-            return path;
+            try
+            {
+                var path = System.IO.Path.Combine(
+                    string.IsNullOrEmpty(dir) ? System.IO.Path.GetTempPath() : dir,
+                    pattern + Guid.NewGuid().ToString("N").Substring(0, 8));
+                Directory.CreateDirectory(path);
+                return (path, null);
+            }
+            catch (Exception ex)
+            {
+                return ("", ex.Message);
+            }
         }
 
         // ioutil.ReadDir(dirname string) ([]os.FileInfo, error)
         [GoFunc]
+        [return: GoReturn("[]os.FileInfo", "error")]
         public static (Slice<object>, object?) ReadDir(string dirname)
         {
             try
@@ -84,8 +94,8 @@ namespace Ngo.Runtime.Ioutil
             }
         }
 
-        // ioutil.TempFile(dir, pattern string) (*os.File, error)
         [GoFunc]
+        [return: GoReturn("*os.File", "error")]
         public static (object?, object?) TempFile(string dir, string pattern)
         {
             try

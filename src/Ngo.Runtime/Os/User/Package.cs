@@ -10,6 +10,7 @@ namespace Ngo.Runtime.Os.User
     public static class Package
     {
         [GoFunc]
+        [return: GoReturn("*User", "error")]
         public static (GoUser, string) Current()
         {
             var user = new GoUser
@@ -24,6 +25,7 @@ namespace Ngo.Runtime.Os.User
         }
 
         [GoFunc]
+        [return: GoReturn("*User", "error")]
         public static (GoUser, string) Lookup(string username)
         {
             // Stub: only current user is supported
@@ -33,6 +35,7 @@ namespace Ngo.Runtime.Os.User
         }
 
         [GoFunc]
+        [return: GoReturn("*User", "error")]
         public static (GoUser, string) LookupId(string uid)
         {
             // Stub
@@ -40,12 +43,14 @@ namespace Ngo.Runtime.Os.User
         }
 
         [GoFunc]
+        [return: GoReturn("*Group", "error")]
         public static (GoGroup, object?) LookupGroup(string name)
         {
             return (null!, (object?)$"group: unknown group {name}");
         }
 
         [GoFunc]
+        [return: GoReturn("*Group", "error")]
         public static (GoGroup, object?) LookupGroupId(string gid)
         {
             return (null!, (object?)$"group: unknown groupid {gid}");

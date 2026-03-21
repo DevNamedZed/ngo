@@ -645,7 +645,7 @@ static class Analyzer
         "_android.go", "_illumos.go", "_dragonfly.go", "_hurd.go",
         "_386.go", "_arm.go", "_arm64.go", "_mips.go", "_mips64.go",
         "_mipsle.go", "_mips64le.go", "_ppc64.go", "_ppc64le.go",
-        "_riscv64.go", "_s390x.go", "_wasm.go", "_loong64.go", "_nacl.go",
+        "_riscv64.go", "_s390x.go", "_wasm.go", "_loong64.go", "_nacl.go", "_zos.go",
     };
 
     // Non-target operating systems (we target linux)
@@ -653,7 +653,7 @@ static class Analyzer
     {
         "windows", "darwin", "freebsd", "openbsd", "netbsd",
         "solaris", "plan9", "aix", "ios", "js", "wasip1",
-        "android", "illumos", "dragonfly", "hurd", "nacl",
+        "android", "illumos", "dragonfly", "hurd", "zos", "nacl",
     });
 
     private static readonly string[] Platforms =
@@ -703,8 +703,6 @@ static class Analyzer
         InjectSyntheticSources(dir, trees);
 
         var moduleRoot = FindModuleRoot(dir);
-        // For stdlib packages without go.mod, use the package dir itself
-        // so GoPackageResolver is active and can find stdlib source for dependencies.
         var compilation = new CompilationContext(moduleRoot ?? dir);
 
         var result = SemanticAnalyzer.Analyze(trees, compilation);
@@ -716,10 +714,11 @@ static class Analyzer
         var current = dir;
         while (current != null)
         {
-            if (File.Exists(Path.Combine(current, "go.mod")))
+            var goModPath = Path.Combine(current, "go.mod");
+            if (File.Exists(goModPath))
                 return current;
             var parent = Path.GetDirectoryName(current);
-            if (parent == current) break;
+            if (parent == current || string.IsNullOrEmpty(parent)) break;
             current = parent;
         }
         return null;
@@ -755,6 +754,10 @@ static class Analyzer
 
     private static bool HasPlatformBuildTag(string source)
     {
+        // If //go:build is present, it is authoritative — ignore // +build lines.
+        string? goBuildExpr = null;
+        var oldBuildTags = new List<string>();
+
         var lines = source.Split('\n');
         for (int i = 0; i < Math.Min(lines.Length, 30); i++)
         {
@@ -763,27 +766,38 @@ static class Analyzer
 
             if (line.StartsWith("//go:build "))
             {
-                // New-style //go:build uses Go expression syntax: ||, &&, !, ()
-                var expr = line.Substring(11).Trim();
-                if (!EvalBuildExpression(expr))
-                    return true;
+                goBuildExpr = line.Substring(11).Trim();
             }
-            else if (line.StartsWith("// +build "))
+            else if (line.StartsWith("// +build ") || line.StartsWith("//+build "))
             {
-                // Old-style // +build uses spaces for OR, commas for AND
-                var tag = line.Substring(10).Trim();
-                var orGroups = tag.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                bool anyGroupSatisfied = false;
-                foreach (var group in orGroups)
-                {
-                    var andTerms = group.Split(',', StringSplitOptions.RemoveEmptyEntries);
-                    bool groupSatisfied = andTerms.All(t => EvalBuildTerm(t.Trim()));
-                    if (groupSatisfied) { anyGroupSatisfied = true; break; }
-                }
-                if (!anyGroupSatisfied)
-                    return true;
+                var tagStart = line.IndexOf("+build ") + 7;
+                oldBuildTags.Add(line.Substring(tagStart).Trim());
             }
         }
+
+        if (goBuildExpr != null)
+        {
+            return !EvalBuildExpression(goBuildExpr);
+        }
+
+        // Old-style: each // +build line must be satisfied (AND across lines)
+        // Within a line: spaces = OR, commas = AND
+        foreach (var tag in oldBuildTags)
+        {
+            var orGroups = tag.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            bool anyGroupSatisfied = false;
+            foreach (var group in orGroups)
+            {
+                var andTerms = group.Split(',', StringSplitOptions.RemoveEmptyEntries);
+                bool groupSatisfied = andTerms.All(t => EvalBuildTerm(t.Trim()));
+                if (groupSatisfied) { anyGroupSatisfied = true; break; }
+            }
+            if (!anyGroupSatisfied)
+            {
+                return true;
+            }
+        }
+
         return false;
     }
 
@@ -867,7 +881,7 @@ static class Analyzer
         bool active;
         if (name is "linux" or "amd64" or "unix")
             active = true;
-        else if (name is "gc" or "safe" or "disableunsafe")
+        else if (name is "gc" or "safe" or "disableunsafe" or "noasm" or "purego")
             active = true;
         else if (name.StartsWith("go1.") && int.TryParse(name.AsSpan(4), out int ver))
             active = ver <= 22;

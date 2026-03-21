@@ -34,6 +34,7 @@ namespace Ngo.Runtime.Os.Exec
         }
 
         [GoFunc]
+        [return: GoReturn("string", "error")]
         public static (string, string) LookPath(string file)
         {
             // Simple implementation: check if file exists or is in PATH

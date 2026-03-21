@@ -37,12 +37,18 @@ namespace Ngo.Runtime.Reflect
             _goName = goName ?? DeriveGoName(clrType);
         }
 
+        [GoMethod]
         public string Name() => _goName;
 
+        [GoMethod]
+        [return: GoReturn("Kind")]
         public long Kind() => DeriveKind(_clrType);
 
+        [GoMethod]
         public string String() => _goName;
 
+        [GoMethod]
+        [return: GoReturn("int")]
         public long NumField()
         {
             if (Kind() != GoReflectKinds.Struct)
@@ -50,6 +56,8 @@ namespace Ngo.Runtime.Reflect
             return _clrType.GetFields(BindingFlags.Public | BindingFlags.Instance).Length;
         }
 
+        [GoMethod]
+        [return: GoReturn("StructField")]
         public GoReflectStructField Field(long i)
         {
             if (Kind() != GoReflectKinds.Struct)
@@ -61,11 +69,53 @@ namespace Ngo.Runtime.Reflect
             return new GoReflectStructField(f.Name, new GoReflectType(f.FieldType), "", (int)i, false);
         }
 
+        [GoMethod]
         public long NumMethod()
         {
             return _clrType.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly).Length;
         }
 
+        [GoMethod]
+        [return: GoReturn("Method", "bool")]
+        public (GoReflectMethod, bool) MethodByName(string name)
+        {
+            var methods = _clrType.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly);
+            for (int i = 0; i < methods.Length; i++)
+            {
+                if (methods[i].Name == name)
+                {
+                    var method = new GoReflectMethod
+                    {
+                        Name = methods[i].Name,
+                        Type = new GoReflectType(methods[i].ReturnType),
+                        Index = i,
+                    };
+                    return (method, true);
+                }
+            }
+            return (new GoReflectMethod(), false);
+        }
+
+        [GoMethod]
+        [return: GoReturn("Method")]
+        public GoReflectMethod Method(long index)
+        {
+            var methods = _clrType.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly);
+            if (index < 0 || index >= methods.Length)
+            {
+                throw new GoPanicException("reflect: Method index out of range");
+            }
+            var mi = methods[(int)index];
+            return new GoReflectMethod
+            {
+                Name = mi.Name,
+                Type = new GoReflectType(mi.ReturnType),
+                Index = index,
+            };
+        }
+
+        [GoMethod]
+        [return: GoReturn("Type")]
         public GoReflectType Elem()
         {
             var k = Kind();
@@ -95,6 +145,8 @@ namespace Ngo.Runtime.Reflect
             throw new GoPanicException("reflect: Elem of invalid type " + _goName);
         }
 
+        [GoMethod]
+        [return: GoReturn("Type")]
         public GoReflectType Key()
         {
             if (Kind() != GoReflectKinds.Map)
@@ -104,6 +156,7 @@ namespace Ngo.Runtime.Reflect
             throw new GoPanicException("reflect: Key of non-map type " + _goName);
         }
 
+        [GoMethod]
         public long Len()
         {
             if (Kind() != GoReflectKinds.Array)
@@ -112,6 +165,7 @@ namespace Ngo.Runtime.Reflect
             return 0;
         }
 
+        [GoMethod]
         public bool Comparable()
         {
             var k = Kind();
@@ -125,7 +179,9 @@ namespace Ngo.Runtime.Reflect
                    k == GoReflectKinds.Pointer;
         }
 
+        [GoMethod]
         public bool AssignableTo(GoReflectType u) => u._clrType.IsAssignableFrom(_clrType);
+        [GoMethod]
         public bool ConvertibleTo(GoReflectType u)
         {
             if (_clrType == u._clrType)
@@ -161,8 +217,10 @@ namespace Ngo.Runtime.Reflect
                    t == typeof(int) || t == typeof(uint) || t == typeof(long) || t == typeof(ulong) ||
                    t == typeof(float) || t == typeof(double);
         }
+        [GoMethod]
         public bool Implements(GoReflectType u) => u._clrType.IsAssignableFrom(_clrType);
 
+        [GoMethod]
         public long NumIn()
         {
             if (Kind() != GoReflectKinds.Func)
@@ -290,15 +348,6 @@ namespace Ngo.Runtime.Reflect
             {
                 return (new GoReflectStructField("", new GoReflectType(typeof(object)), "", 0, false), false);
             }
-        }
-
-        [GoMethod]
-        public GoReflectMethod Method(long i)
-        {
-            var methods = _clrType.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly);
-            if (i < 0 || i >= methods.Length)
-                throw new GoPanicException("reflect: Method index out of range");
-            return new GoReflectMethod { Name = methods[(int)i].Name, Index = i };
         }
 
         internal Type ClrType => _clrType;

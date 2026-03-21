@@ -71,7 +71,7 @@ namespace Ngo.Runtime.Log.Slog
                 }
             }
 
-            rec.Attrs(attr => AppendAttr(sb, _groupPrefix, attr));
+            rec.Attrs(attr => { AppendAttr(sb, _groupPrefix, attr); return true; });
 
             sb.Append("}\n");
 

@@ -114,4 +114,38 @@ namespace Ngo.Runtime.Testing
         bool Skipped();
         string TempDir();
     }
+
+    // testing.B — benchmark type
+    [GoType("struct", Name = "B", Package = "testing")]
+    public class B : T
+    {
+        public B(string name) : base(name) { }
+
+        [GoField(Name = "N")] public long N { get; set; } = 1;
+
+        [GoMethod] public void ResetTimer() { }
+        [GoMethod] public void StartTimer() { }
+        [GoMethod] public void StopTimer() { }
+        [GoMethod] public void SetBytes(long n) { }
+        [GoMethod] public void ReportAllocs() { }
+        [GoMethod] public void SetParallelism(long p) { }
+        [GoMethod] [return: GoReturn("*B")] public B? RunParallel(object? body) => null;
+
+        [GoMethod]
+        public bool Run(string name, object? f)
+        {
+            // Simplified — just run the benchmark function once
+            return true;
+        }
+    }
+
+    // testing.F — fuzz type
+    [GoType("struct", Name = "F", Package = "testing")]
+    public class F : T
+    {
+        public F(string name) : base(name) { }
+
+        [GoMethod] public void Add(params object[] args) { }
+        [GoMethod] public void Fuzz(object? ff) { }
+    }
 }

@@ -186,7 +186,8 @@ class Program
             trees.Add(src.Tree);
         }
 
-        var result = SemanticAnalyzer.Analyze(trees, compilation, checkUnused: true);
+        // Multi-file packages: don't check unused (a var in file A may be used in file B)
+        var result = SemanticAnalyzer.Analyze(trees, compilation, checkUnused: trees.Count == 1);
 
         if (result.HasErrors)
         {
@@ -215,6 +216,7 @@ class Program
         {
             Console.Error.WriteLine($"ngo: internal compiler error during code generation");
             Console.Error.WriteLine($"  {ex.Message}");
+            Console.Error.WriteLine(ex.StackTrace);
             return 2;
         }
 
@@ -388,6 +390,7 @@ class Program
         {
             Console.Error.WriteLine($"ngo: internal compiler error during code generation");
             Console.Error.WriteLine($"  {ex.Message}");
+            Console.Error.WriteLine(ex.StackTrace);
             return 2;
         }
 

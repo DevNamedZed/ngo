@@ -97,6 +97,7 @@ namespace Ngo.Compiler.Symbols
             ["rune"] = Rune,
             ["error"] = Error,
             ["interface{}"] = EmptyInterface,
+            ["interface"] = EmptyInterface,
             ["any"] = EmptyInterface,
             ["comparable"] = EmptyInterface,
             ["untyped bool"] = UntypedBool,

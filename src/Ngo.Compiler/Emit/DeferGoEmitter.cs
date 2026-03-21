@@ -426,7 +426,35 @@ namespace Ngo.Compiler.Emit
                 // Emit the lambda body
                 var lambdaIL = lambdaMethod.GetILWriter();
 
-                if (_ctx.Methods.TryGetValue(call.Function, out var targetMethod))
+                if (call.CallTarget != null && call.CallTarget is not FunctionLiteralExpression)
+                {
+                    // Function variable call: defer cleanup() where cleanup is a local var
+                    // Capture the function value and invoke it in the lambda
+                    var funcType = _ctx.Mapper.Map(call.CallTarget.Type);
+                    var invokeMethod = EmitContext.GetMethodSafe(funcType, "Invoke");
+
+                    // Add function value as first parameter to the lambda
+                    var newParamTypes = new Type[paramTypes.Length + 1];
+                    newParamTypes[0] = funcType;
+                    Array.Copy(paramTypes, 0, newParamTypes, 1, paramTypes.Length);
+                    lambdaMethod.SetParameters(newParamTypes);
+                    paramTypes = newParamTypes;
+
+                    // Emit: load func arg, load remaining args, Callvirt Invoke
+                    lambdaIL.Emit(OpCodes.Ldarg_0); // func value
+                    for (int i = 0; i < argLocals.Count; i++)
+                        lambdaIL.Emit(OpCodes.Ldarg, i + 1);
+                    lambdaIL.Emit(OpCodes.Callvirt, invokeMethod);
+                    if (call.Function.ReturnType != BuiltinTypes.Void)
+                        lambdaIL.Emit(OpCodes.Pop);
+
+                    // Also capture the function value as a local
+                    _body.EmitExpression(call.CallTarget);
+                    var funcLocal = _ctx.IL.DeclareLocal(funcType);
+                    _ctx.IL.Emit(OpCodes.Stloc, funcLocal);
+                    argLocals.Insert(0, new CapturedLocal(funcLocal, funcType));
+                }
+                else if (_ctx.Methods.TryGetValue(call.Function, out var targetMethod))
                 {
                     // User function: load args then call
                     for (int i = 0; i < paramTypes.Length; i++)

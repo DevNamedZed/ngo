@@ -3,7 +3,7 @@ using Ngo.Runtime.Discovery;
 
 namespace Ngo.Runtime.Math.Big
 {
-    [GoType("struct", Name = "Rat", Package = "math/big")]
+    [GoType("struct", Name = "Rat", Package = "math/big", Pointer = true)]
     public class GoRat
     {
         internal BigInteger _value;
