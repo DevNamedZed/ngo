@@ -23,7 +23,7 @@ namespace Ngo.Runtime
     /// stack (e.g. &amp;x returned from a function), the value is boxed into Ptr&lt;T&gt;.
     /// For local-only pointers, codegen uses ref locals instead.
     /// </summary>
-    public sealed class Ptr<T> where T : struct
+    public sealed class Ptr<T>
     {
         public T Value;
 

@@ -205,6 +205,7 @@ namespace Ngo.Compiler.Emit
         {
             var mapper = new TypeMapper(compilationContext);
             var ctx = new EmitContext(new LiveModuleBuilder(moduleBuilder), mapper, options);
+            mapper.SetEmitContext(ctx);
 
             // Link dependency IL from .ngo archives on disk
             if (compilationContext.ProjectRoot != null)
@@ -303,8 +304,16 @@ namespace Ngo.Compiler.Emit
                 if (compilationContext.ProjectRoot != null)
                 {
                     var cacheDir = NgoArchive.GetCacheDir(compilationContext.ProjectRoot);
-                    var archivePath = NgoArchive.GetArchivePath(cacheDir, importPath);
+                    // Get source dir for versioned archive paths
+                    var sourceDir = compilationContext.GetSourceDir(importPath);
+                    var archivePath = NgoArchive.GetArchivePath(cacheDir, importPath, sourceDir);
                     linked2 = ILSerializer.LinkFromArchive(archivePath, import.Package, ctx);
+                    if (!linked2)
+                    {
+                        // Try without version (for stdlib/local packages)
+                        archivePath = NgoArchive.GetArchivePath(cacheDir, importPath);
+                        linked2 = ILSerializer.LinkFromArchive(archivePath, import.Package, ctx);
+                    }
                 }
 
                 if (!linked2)
@@ -315,7 +324,7 @@ namespace Ngo.Compiler.Emit
                     }
                     catch (Exception ex)
                     {
-                        compilationContext.Log.Warn($"dependency emit failed for '{importPath}': {ex.Message}");
+                        System.Console.Error.WriteLine($"ngo: dependency link failed for '{importPath}': {ex.GetType().Name}: {ex.Message}");
                     }
                 }
             }
@@ -368,7 +377,10 @@ namespace Ngo.Compiler.Emit
                 var depLinked = new HashSet<string>();
                 LinkDependencies(result.Root, ctx, compilationContext, depLinked);
 
+                ctx.IsDependencyEmit = true;
+
                 EmitPackage(result.Root, ctx);
+                ctx.IsDependencyEmit = false;
 
                 // Bridge: map original PackageSymbol's exports to the freshly emitted methods.
                 // The main package's AST references the ORIGINAL FunctionSymbol instances,
@@ -390,6 +402,35 @@ namespace Ngo.Compiler.Emit
                     }
                     else if (export.Value is Symbols.StructTypeSymbol origStruct)
                     {
+                        // Bridge struct methods
+                        foreach (var origMethod in origStruct.Methods)
+                        {
+                            foreach (var kvp in ctx.Methods)
+                            {
+                                if (kvp.Key.Name == origMethod.Name && kvp.Key is MethodSymbol)
+                                {
+                                    ctx.CachedMethods[origMethod] = kvp.Value.AsMethodInfo();
+                                    break;
+                                }
+                            }
+                        }
+
+                        // Bridge struct fields
+                        foreach (var origField in origStruct.Fields)
+                        {
+                            if (!ctx.StructFields.ContainsKey(origField))
+                            {
+                                foreach (var kvp in ctx.StructFields)
+                                {
+                                    if (kvp.Key.Name == origField.Name)
+                                    {
+                                        ctx.StructFields[origField] = kvp.Value;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
                         // Bridge struct types: register the emitted CLR type for the original symbol
                         foreach (var kvp in ctx.StructTypes)
                         {
@@ -414,7 +455,8 @@ namespace Ngo.Compiler.Emit
             }
             catch (Exception ex)
             {
-                compilationContext.Log.Warn($"dependency emit failed for '{importPath}': {ex.Message}");
+                System.Console.Error.WriteLine($"ngo: dependency emit failed for '{importPath}': {ex.GetType().Name}: {ex.Message}");
+                System.Console.Error.WriteLine(ex.StackTrace);
             }
         }
 
@@ -422,11 +464,24 @@ namespace Ngo.Compiler.Emit
         {
             var packageName = root.Package.Symbol.Name;
 
-            // Create the package static class
+            // Create the package static class (skip if already defined from another dependency)
             var previousPackageType = ctx.PackageType;
-            ctx.PackageType = ctx.Module.DefineType(
-                ctx.QualifyName(packageName),
-                TypeAttributes.Public | TypeAttributes.Abstract | TypeAttributes.Sealed);
+            // For dependencies, use bare package name to avoid cross-package qualification issues.
+            // For the main package, use QualifyName to support library namespace.
+            var pkgTypeName = ctx.IsDependencyEmit ? packageName : ctx.QualifyName(packageName);
+            Builder.ITypeBuilder? existingPkgType = null;
+            // Check if this package type was already created
+            if (ctx.PackageTypes.TryGetValue(pkgTypeName, out existingPkgType))
+            {
+                ctx.PackageType = existingPkgType;
+            }
+            else
+            {
+                ctx.PackageType = ctx.Module.DefineType(
+                    pkgTypeName,
+                    TypeAttributes.Public | TypeAttributes.Abstract | TypeAttributes.Sealed);
+                ctx.PackageTypes[pkgTypeName] = ctx.PackageType;
+            }
 
             var declEmitter = new DeclarationEmitter(ctx);
             ctx.DeclEmitter = declEmitter;
@@ -454,14 +509,53 @@ namespace Ngo.Compiler.Emit
                     declEmitter.PopulateStructFields(structType);
             }
 
-            // Finalize struct types and register the runtime types in the mapper
-            foreach (var kvp in ctx.StructTypes)
+            // Finalize struct types and register the runtime types in the mapper.
+            // Create types in dependency order: if struct A has a field of type struct B,
+            // B must be CreateType'd first.
             {
-                if (!ctx.FinalizedTypes.Contains(kvp.Key))
+                var remaining = new List<KeyValuePair<TypeSymbol, Builder.ITypeBuilder>>();
+                foreach (var kvp in ctx.StructTypes)
                 {
-                    var runtimeType = kvp.Value.CreateType()!;
-                    ctx.Mapper.Register(kvp.Key, runtimeType);
-                    ctx.FinalizedTypes.Add(kvp.Key);
+                    if (!ctx.FinalizedTypes.Contains(kvp.Key))
+                    {
+                        remaining.Add(kvp);
+                    }
+                }
+
+                int lastCount = remaining.Count + 1;
+                while (remaining.Count > 0 && remaining.Count < lastCount)
+                {
+                    lastCount = remaining.Count;
+                    var deferred = new List<KeyValuePair<TypeSymbol, Builder.ITypeBuilder>>();
+                    foreach (var kvp in remaining)
+                    {
+                        try
+                        {
+                            var runtimeType = kvp.Value.CreateType()!;
+                            ctx.Mapper.Register(kvp.Key, runtimeType);
+                            ctx.FinalizedTypes.Add(kvp.Key);
+                        }
+                        catch (TypeLoadException)
+                        {
+                            deferred.Add(kvp);
+                        }
+                    }
+                    remaining = deferred;
+                }
+
+                // Final pass: create any remaining types (should work now that deps are created)
+                foreach (var kvp in remaining)
+                {
+                    try
+                    {
+                        var runtimeType = kvp.Value.CreateType()!;
+                        ctx.Mapper.Register(kvp.Key, runtimeType);
+                        ctx.FinalizedTypes.Add(kvp.Key);
+                    }
+                    catch (TypeLoadException ex)
+                    {
+                        System.Console.Error.WriteLine($"ngo: struct finalize failed '{kvp.Key.Name}': {ex.Message}");
+                    }
                 }
             }
 
@@ -531,7 +625,18 @@ namespace Ngo.Compiler.Emit
                 initIL.Emit(OpCodes.Ret);
             }
 
-            ctx.PackageType.CreateType();
+            try
+            {
+                ctx.PackageType.CreateType();
+            }
+            catch (TypeLoadException) when (ctx.IsDependencyEmit)
+            {
+                // Dependency package type creation failed — methods have incomplete IL
+            }
+            catch (InvalidOperationException) when (ctx.IsDependencyEmit)
+            {
+                // Label/IL issues in dependency methods
+            }
         }
 
         /// <summary>

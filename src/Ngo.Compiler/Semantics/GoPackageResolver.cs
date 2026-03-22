@@ -782,7 +782,7 @@ namespace Ngo.Compiler.Semantics
                 }
                 else
                 {
-                    ILSerializer.WriteArchive(archivePath, pkg, importPath, result, _ctx);
+                    Emit.ILSerializer.WriteArchive(archivePath, pkg, importPath, result, _ctx);
                 }
             }
             catch (Exception ex)

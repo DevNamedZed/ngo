@@ -35,10 +35,10 @@ namespace Ngo.Runtime.Testing
             return _skipped;
         }
 
-        [GoMethod]
-        public void Log(object? msg)
+        [GoMethod(IsVariadic = true)]
+        public void Log(params object?[] args)
         {
-            _logs.Add(msg?.ToString() ?? "");
+            _logs.Add(string.Join(" ", args.Select(a => a?.ToString() ?? "<nil>")));
         }
 
         [GoMethod(IsVariadic = true)]
@@ -47,11 +47,18 @@ namespace Ngo.Runtime.Testing
             _logs.Add(Fmt.Package.Sprintf(format, args));
         }
 
-        [GoMethod]
-        public void Error(object? msg)
+        [GoMethod(IsVariadic = true)]
+        public void Error(params object?[] args)
         {
             _failed = true;
-            _logs.Add(msg?.ToString() ?? "");
+            if (args.Length == 1)
+            {
+                _logs.Add(args[0]?.ToString() ?? "");
+            }
+            else
+            {
+                _logs.Add(string.Join(" ", args.Select(a => a?.ToString() ?? "<nil>")));
+            }
         }
 
         [GoMethod(IsVariadic = true)]

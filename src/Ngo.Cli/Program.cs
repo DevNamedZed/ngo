@@ -575,6 +575,7 @@ class Program
             catch (Exception ex)
             {
                 Console.Error.WriteLine($"ngo test: compilation error: {ex.Message}");
+                Console.Error.WriteLine(ex.StackTrace);
                 return 2;
             }
 

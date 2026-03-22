@@ -55,7 +55,17 @@ namespace Ngo.Compiler.Emit
             var verificationResults = verifier.Verify(peReader);
             foreach (var result in verificationResults)
             {
-                errors.Add(result.Message);
+                var methodInfo = "unknown";
+                var metadataReader = peReader.GetMetadataReader();
+                if (!result.Method.IsNil)
+                {
+                    var methodDef = metadataReader.GetMethodDefinition(result.Method);
+                    var methodName = metadataReader.GetString(methodDef.Name);
+                    var declaringType = metadataReader.GetTypeDefinition(methodDef.GetDeclaringType());
+                    var typeName = metadataReader.GetString(declaringType.Name);
+                    methodInfo = $"{typeName}.{methodName}";
+                }
+                errors.Add($"[{methodInfo}] {result.Message}");
             }
 
             return errors;

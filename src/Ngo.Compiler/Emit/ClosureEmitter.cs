@@ -143,7 +143,7 @@ namespace Ngo.Compiler.Emit
 
         private void EmitClosureLiteral(FunctionLiteralExpression funcLit, List<Symbol> captures)
         {
-            var closureName = $"__closure_{_body.LambdaCounter++}";
+            var closureName = _ctx.QualifyWithPackage($"__closure_{_body.LambdaCounter++}");
 
             var closureBuilder = _ctx.Module.DefineType(
                 closureName,
@@ -285,7 +285,7 @@ namespace Ngo.Compiler.Emit
             }
 
             // Create a closure class that captures the receiver and forwards calls
-            var closureName = $"__methodval_{_body.LambdaCounter++}";
+            var closureName = _ctx.QualifyWithPackage($"__methodval_{_body.LambdaCounter++}");
             var receiverClrType = _ctx.Mapper.Map(mv.Receiver.Type);
 
             var closureBuilder = _ctx.Module.DefineType(

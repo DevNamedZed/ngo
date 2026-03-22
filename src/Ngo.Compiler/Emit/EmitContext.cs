@@ -67,6 +67,12 @@ namespace Ngo.Compiler.Emit
         // Loop label stack for break/continue
         public Stack<LoopLabel> LoopLabels { get; } = new();
 
+        // Whether we're emitting a dependency package (errors are recoverable)
+        public bool IsDependencyEmit { get; set; }
+
+        // Track package types already defined to avoid duplicates across dependencies
+        public Dictionary<string, ITypeBuilder> PackageTypes { get; } = new();
+
         // Fallthrough target label for switch cases
         public Label? FallthroughLabel { get; set; }
 
@@ -99,7 +105,27 @@ namespace Ngo.Compiler.Emit
         public Label DeferExitLabel { get; set; }
 
         public string QualifyName(string name) =>
-            Options.Namespace != null ? $"{Options.Namespace}.{name}" : name;
+            Options?.Namespace != null ? $"{Options.Namespace}.{name}" : name;
+
+        /// <summary>
+        /// Qualifies a name with the current package prefix. Used for types/closures
+        /// that need unique names across dependency packages.
+        /// </summary>
+        public string QualifyWithPackage(string name)
+        {
+            var baseName = QualifyName(name);
+            if (baseName != name)
+            {
+                return baseName;
+            }
+            // No namespace — use package type name to avoid cross-dependency collisions
+            var pkgName = PackageType?.AsType().Name;
+            if (pkgName != null)
+            {
+                return $"{pkgName}.{name}";
+            }
+            return name;
+        }
 
         public bool IsExported(string goName) =>
             goName.Length > 0 && char.IsUpper(goName[0]);
@@ -249,7 +275,7 @@ namespace Ngo.Compiler.Emit
 
         public static bool HasAnyTypeBuilderPublic(Type[] types) => HasAnyTypeBuilder(types);
 
-        private static bool IsNonRuntimeType(Type type)
+        public static bool IsNonRuntimeType(Type type)
         {
             return type is TypeBuilder
                 || type is GenericTypeParameterBuilder
@@ -276,7 +302,7 @@ namespace Ngo.Compiler.Emit
             return false;
         }
 
-        private static bool HasTypeBuilderArgs(Type type)
+        public static bool HasTypeBuilderArgs(Type type)
         {
             if (!type.IsGenericType || type.IsGenericTypeDefinition)
                 return false;

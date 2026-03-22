@@ -232,5 +232,24 @@ namespace Ngo.Runtime
 
             return newCap;
         }
+
+        public override string ToString()
+        {
+            if (Len == 0)
+            {
+                return "[]";
+            }
+            var sb = new System.Text.StringBuilder("[");
+            for (int i = 0; i < Len; i++)
+            {
+                if (i > 0)
+                {
+                    sb.Append(' ');
+                }
+                sb.Append(_array![_offset + i]?.ToString() ?? "<nil>");
+            }
+            sb.Append(']');
+            return sb.ToString();
+        }
     }
 }

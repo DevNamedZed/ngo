@@ -70,7 +70,7 @@ namespace Ngo.Compiler.Emit
         public bool EmitBuiltinCall(CallExpression call)
         {
             var name = call.Function.Name;
-            var pkg = call.Function.PackageName;
+            var pkg = string.IsNullOrEmpty(call.Function.PackageName) ? null : call.Function.PackageName;
 
             // Special cases that need custom emission (variadic, interface wrapping, constructors)
             if (pkg != null && TryEmitSpecialCase(call, pkg, name))
@@ -614,13 +614,96 @@ namespace Ngo.Compiler.Emit
             }
 
             var methodParams = method.GetParameters();
-            for (int i = 0; i < call.Arguments.Count; i++)
+
+            // Check if last param is params array (variadic C# method)
+            bool hasParamsArray = methodParams.Length > 0
+                && methodParams[methodParams.Length - 1].IsDefined(typeof(ParamArrayAttribute), false);
+
+            // Collect &localVar arguments for pointer writeback after call
+            var writebacks = new List<(Symbol symbol, LocalBuilder ptrLocal, Type innerType)>();
+
+            void EmitArgWithWriteback(Expression arg, Type expectedParamType)
             {
-                _body.EmitExpression(call.Arguments[i]);
-                EmitImplicitConv(paramTypes[i], methodParams[i].ParameterType);
+                if (arg is AddressOfExpression addrArg
+                    && addrArg.Operand is IdentifierExpression idArg
+                    && _ctx.Locals.TryGetValue(idArg.Symbol, out _))
+                {
+                    var innerType = _ctx.Mapper.Map(addrArg.Operand.Type);
+                    if (innerType.IsValueType)
+                    {
+                        var ptrType = typeof(Ptr<>).MakeGenericType(innerType);
+                        var ctor = EmitContext.GetConstructorSafe(ptrType, new[] { innerType });
+                        var ptrLocal = _ctx.IL.DeclareLocal(ptrType);
+
+                        _body.EmitExpression(addrArg.Operand);
+                        _ctx.IL.Emit(OpCodes.Newobj, ctor);
+                        _ctx.IL.Emit(OpCodes.Dup);
+                        _ctx.IL.Emit(OpCodes.Stloc, ptrLocal);
+
+                        writebacks.Add((idArg.Symbol, ptrLocal, innerType));
+                        return;
+                    }
+                }
+                _body.EmitExpression(arg);
+            }
+
+            if (hasParamsArray && call.Arguments.Count >= methodParams.Length - 1)
+            {
+                int fixedCount = methodParams.Length - 1;
+                var arrayElemType = methodParams[fixedCount].ParameterType.GetElementType()!;
+
+                // Emit fixed arguments
+                for (int i = 0; i < fixedCount; i++)
+                {
+                    EmitArgWithWriteback(call.Arguments[i], methodParams[i].ParameterType);
+                    EmitImplicitConv(paramTypes[i], methodParams[i].ParameterType);
+                }
+
+                // Pack variadic args into T[]
+                int varCount = call.Arguments.Count - fixedCount;
+                _ctx.IL.Emit(OpCodes.Ldc_I4, varCount);
+                _ctx.IL.Emit(OpCodes.Newarr, arrayElemType);
+                for (int i = 0; i < varCount; i++)
+                {
+                    _ctx.IL.Emit(OpCodes.Dup);
+                    _ctx.IL.Emit(OpCodes.Ldc_I4, i);
+                    _body.EmitExpression(call.Arguments[fixedCount + i]);
+                    var argClrType = _ctx.Mapper.Map(call.Arguments[fixedCount + i].Type);
+                    if (argClrType.IsValueType && arrayElemType == typeof(object))
+                    {
+                        _ctx.IL.Emit(OpCodes.Box, argClrType);
+                    }
+                    if (arrayElemType.IsValueType)
+                    {
+                        _ctx.IL.Emit(OpCodes.Stelem, arrayElemType);
+                    }
+                    else
+                    {
+                        _ctx.IL.Emit(OpCodes.Stelem_Ref);
+                    }
+                }
+            }
+            else
+            {
+                for (int i = 0; i < call.Arguments.Count; i++)
+                {
+                    EmitArgWithWriteback(call.Arguments[i], methodParams[i].ParameterType);
+                    EmitImplicitConv(paramTypes[i], methodParams[i].ParameterType);
+                }
             }
 
             _ctx.IL.Emit(OpCodes.Call, method);
+
+            // Writeback pointer modifications to local variables
+            foreach (var (symbol, ptrLocal, innerType) in writebacks)
+            {
+                var ptrType = typeof(Ptr<>).MakeGenericType(innerType);
+                var valueField = EmitContext.GetFieldSafe(ptrType, "Value");
+                _ctx.IL.Emit(OpCodes.Ldloc, ptrLocal);
+                _ctx.IL.Emit(OpCodes.Ldfld, valueField);
+                _body.EmitStore(symbol);
+            }
+
             return true;
         }
 
@@ -646,6 +729,14 @@ namespace Ngo.Compiler.Emit
             var arg = call.Arguments[0];
             var argType = arg.Type;
 
+            // Unwrap named types to find underlying slice/map/array
+            var resolvedArgType = argType;
+            while (resolvedArgType != null && resolvedArgType.GetType() == typeof(TypeSymbol)
+                   && resolvedArgType.UnderlyingType != null)
+            {
+                resolvedArgType = resolvedArgType.UnderlyingType;
+            }
+
             if (argType.TypeKind == TypeKind.String || argType.TypeKind == TypeKind.UntypedString)
             {
                 _body.EmitExpression(arg);
@@ -654,9 +745,9 @@ namespace Ngo.Compiler.Emit
                 return true;
             }
 
-            if (argType is SliceTypeSymbol)
+            if (resolvedArgType is SliceTypeSymbol || argType.TypeKind == TypeKind.Slice)
             {
-                var sliceClrType = _ctx.Mapper.Map(argType);
+                var sliceClrType = _ctx.Mapper.Map(resolvedArgType is SliceTypeSymbol ? resolvedArgType : argType);
                 _body.EmitExpressionAddress(arg, sliceClrType);
                 var lenGetter = EmitContext.GetPropertyGetterSafe(sliceClrType, "Len");
                 _ctx.IL.Emit(OpCodes.Call, lenGetter);
@@ -664,17 +755,17 @@ namespace Ngo.Compiler.Emit
                 return true;
             }
 
-            if (argType is MapTypeSymbol)
+            if (resolvedArgType is MapTypeSymbol || argType.TypeKind == TypeKind.Map)
             {
                 _body.EmitExpression(arg);
-                var mapClrType = _ctx.Mapper.Map(argType);
+                var mapClrType = _ctx.Mapper.Map(resolvedArgType is MapTypeSymbol ? resolvedArgType : argType);
                 var lenGetter = EmitContext.GetPropertyGetterSafe(mapClrType, "Len");
                 _ctx.IL.Emit(OpCodes.Call, lenGetter);
                 _ctx.IL.Emit(OpCodes.Conv_I8);
                 return true;
             }
 
-            if (argType is ArrayTypeSymbol)
+            if (resolvedArgType is ArrayTypeSymbol || argType.TypeKind == TypeKind.Array)
             {
                 _body.EmitExpression(arg);
                 _ctx.IL.Emit(OpCodes.Ldlen);
@@ -753,6 +844,18 @@ namespace Ngo.Compiler.Emit
         private bool EmitBuiltinMake(CallExpression call)
         {
             var returnType = call.Function.ReturnType;
+
+            // Unwrap named types to find underlying slice/map/channel
+            var resolved = returnType;
+            while (resolved != null && resolved.GetType() == typeof(TypeSymbol)
+                   && resolved.UnderlyingType != null)
+            {
+                resolved = resolved.UnderlyingType;
+            }
+            if (resolved != returnType && resolved != null)
+            {
+                returnType = resolved;
+            }
 
             if (returnType is SliceTypeSymbol sliceType)
             {

@@ -33,10 +33,26 @@ namespace Ngo.Compiler.Emit
         private readonly Dictionary<TypeSymbol, Type> _typeCache = new();
         private readonly CompilationContext _compilationContext;
         private readonly HashSet<TypeSymbol> _inProgress = new();
+        private EmitContext? _emitContext;
+        private readonly List<Builder.ITypeBuilder> _pendingTypeCreations = new();
 
         public TypeMapper(CompilationContext compilationContext)
         {
             _compilationContext = compilationContext;
+        }
+
+        internal void SetEmitContext(EmitContext ctx)
+        {
+            _emitContext = ctx;
+        }
+
+        internal void CreatePendingTypes()
+        {
+            foreach (var tb in _pendingTypeCreations)
+            {
+                tb.CreateType();
+            }
+            _pendingTypeCreations.Clear();
         }
 
         public void Register(TypeSymbol symbol, Type type)
@@ -46,8 +62,14 @@ namespace Ngo.Compiler.Emit
 
         public Type Map(TypeSymbol symbol)
         {
+            if (symbol == null)
+            {
+                return typeof(object);
+            }
             if (_typeCache.TryGetValue(symbol, out var cached))
+            {
                 return cached;
+            }
 
             if (!_inProgress.Add(symbol))
             {
@@ -58,7 +80,7 @@ namespace Ngo.Compiler.Emit
 
             try
             {
-                var result = MapCore(symbol);
+                var result = MapCore(symbol) ?? typeof(object);
                 _typeCache[symbol] = result;
                 return result;
             }
@@ -87,9 +109,27 @@ namespace Ngo.Compiler.Emit
                 return genericType.MakeGenericType(typeArgs);
             }
 
-            // Named type with underlying type — map through the underlying type
+            // Named type with underlying type
             if (symbol.UnderlyingType != null && symbol.GetType() == typeof(TypeSymbol))
             {
+                // For named types over composite types (slice/map/struct), resolve to CLR type
+                // so method calls work (e.g., sort.StringSlice.Sort()).
+                // For named types over primitives (time.Duration = int64), map through
+                // the underlying type to preserve arithmetic and constant behavior.
+                if (!string.IsNullOrEmpty(symbol.PackagePath))
+                {
+                    var underlyingKind = symbol.UnderlyingType.TypeKind;
+                    if (underlyingKind == TypeKind.Slice || underlyingKind == TypeKind.Map
+                        || underlyingKind == TypeKind.Struct || underlyingKind == TypeKind.Interface
+                        || underlyingKind == TypeKind.Array || underlyingKind == TypeKind.Channel)
+                    {
+                        var resolved = _compilationContext.ResolveClrType(symbol.PackagePath, symbol.Name);
+                        if (resolved != null)
+                        {
+                            return resolved;
+                        }
+                    }
+                }
                 return Map(symbol.UnderlyingType);
             }
 
@@ -159,10 +199,16 @@ namespace Ngo.Compiler.Emit
 
                 case TypeKind.Pointer:
                     var ptrType = (PointerTypeSymbol)symbol;
-                    var elemType = Map(ptrType.ElementType);
+                    var elemType = ptrType.ElementType != null ? Map(ptrType.ElementType) : typeof(object);
+                    if (elemType == null)
+                    {
+                        return typeof(object);
+                    }
                     // Reference types (classes) don't need Ptr<T> wrapping
                     if (!elemType.IsValueType && elemType is not TypeBuilder && elemType is not GenericTypeParameterBuilder)
+                    {
                         return elemType;
+                    }
                     return typeof(Ptr<>).MakeGenericType(elemType);
 
                 case TypeKind.Struct:
@@ -188,8 +234,111 @@ namespace Ngo.Compiler.Emit
                         }
                     }
 
-                    // Struct without CLR type — return object as fallback
-                    // This happens for dependency structs not yet linked via EmitDependencyFromSource
+                    // Generate a CLR value type for anonymous/unresolved structs
+                    if (symbol is StructTypeSymbol anonStruct && anonStruct.Fields.Count > 0 && _emitContext != null)
+                    {
+                        // Build a content-based name so identical anonymous structs share a type
+                        string structName;
+                        if (!string.IsNullOrEmpty(anonStruct.Name) && anonStruct.Name != "struct{}")
+                        {
+                            structName = anonStruct.Name;
+                        }
+                        else
+                        {
+                            var nameBuilder = new System.Text.StringBuilder("__anon_");
+                            foreach (var field in anonStruct.Fields)
+                            {
+                                nameBuilder.Append(field.Name);
+                                nameBuilder.Append('_');
+                                nameBuilder.Append(field.Type.Name);
+                                nameBuilder.Append('_');
+                            }
+                            structName = nameBuilder.ToString();
+                        }
+
+                        // Check if we already generated this type
+                        var qualifiedName = _emitContext.QualifyName(structName);
+                        foreach (var cached in _typeCache.Values)
+                        {
+                            if (cached != null && cached.FullName == qualifiedName)
+                            {
+                                _typeCache[symbol] = cached;
+                                // Register this struct's field symbols to point to the existing type's fields
+                                foreach (var field in anonStruct.Fields)
+                                {
+                                    if (!_emitContext.StructFields.ContainsKey(field))
+                                    {
+                                        // Find the original field symbol that maps to this field name
+                                        foreach (var existingEntry in _emitContext.StructFields)
+                                        {
+                                            if (existingEntry.Key.Name == field.Name
+                                                && existingEntry.Value.AsFieldInfo().DeclaringType == cached)
+                                            {
+                                                _emitContext.StructFields[field] = existingEntry.Value;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                return cached;
+                            }
+                        }
+                        // Check if the type already exists in the module (from another dependency emit)
+                        var qualifiedName2 = _emitContext.QualifyName(structName);
+                        foreach (var cached2 in _typeCache.Values)
+                        {
+                            if (cached2 != null && cached2.FullName == qualifiedName2)
+                            {
+                                _typeCache[symbol] = cached2;
+                                // Register fields
+                                foreach (var field in anonStruct.Fields)
+                                {
+                                    if (!_emitContext.StructFields.ContainsKey(field))
+                                    {
+                                        foreach (var existingEntry in _emitContext.StructFields)
+                                        {
+                                            if (existingEntry.Key.Name == field.Name
+                                                && existingEntry.Value.AsFieldInfo().DeclaringType?.FullName == qualifiedName2)
+                                            {
+                                                _emitContext.StructFields[field] = existingEntry.Value;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                return cached2;
+                            }
+                        }
+
+                        Builder.ITypeBuilder structBuilder;
+                        try
+                        {
+                            structBuilder = _emitContext.Module.DefineType(
+                                qualifiedName2,
+                                System.Reflection.TypeAttributes.Public
+                                | System.Reflection.TypeAttributes.Sealed,
+                                typeof(System.ValueType));
+                        }
+                        catch (ArgumentException)
+                        {
+                            // Type already exists in module — find and reuse it
+                            _typeCache[symbol] = typeof(object);
+                            return typeof(object);
+                        }
+                        foreach (var field in anonStruct.Fields)
+                        {
+                            var fieldType = Map(field.Type);
+                            var fieldBuilder = structBuilder.DefineField(
+                                field.Name,
+                                fieldType,
+                                System.Reflection.FieldAttributes.Public);
+                            _emitContext.StructFields[field] = fieldBuilder;
+                        }
+                        structBuilder.CreateType();
+                        return structBuilder.AsType();
+                    }
+
+                    // Struct without CLR type and no emit context — return object as fallback
                     return typeof(object);
 
                 case TypeKind.Interface:
@@ -223,6 +372,37 @@ namespace Ngo.Compiler.Emit
                         }
                     }
 
+                    // Anonymous or unresolved Go interface with methods:
+                    // generate a .NET interface type so wrapper types can implement it.
+                    if (ifaceType.Methods.Count > 0 && _emitContext != null)
+                    {
+                        var ifaceName = !string.IsNullOrEmpty(ifaceType.Name)
+                            ? $"I__{ifaceType.Name}"
+                            : $"I__anon_{ifaceType.GetHashCode():X8}";
+                        var ifaceBuilder = _emitContext.Module.DefineType(
+                            _emitContext.QualifyName(ifaceName),
+                            System.Reflection.TypeAttributes.Public
+                            | System.Reflection.TypeAttributes.Interface
+                            | System.Reflection.TypeAttributes.Abstract);
+                        foreach (var method in ifaceType.Methods)
+                        {
+                            var paramTypes = new Type[method.Parameters.Count];
+                            for (int idx = 0; idx < method.Parameters.Count; idx++)
+                            {
+                                paramTypes[idx] = Map(method.Parameters[idx].Type);
+                            }
+                            var returnType = MapReturnType(method.ReturnTypes);
+                            ifaceBuilder.DefineMethod(
+                                method.Name,
+                                System.Reflection.MethodAttributes.Public
+                                | System.Reflection.MethodAttributes.Virtual
+                                | System.Reflection.MethodAttributes.Abstract,
+                                returnType, paramTypes);
+                        }
+                        ifaceBuilder.CreateType();
+                        return ifaceBuilder.AsType();
+                    }
+
                     // Unresolved named interface → object (runtime dispatch)
                     return typeof(object);
 
@@ -231,7 +411,11 @@ namespace Ngo.Compiler.Emit
                     return typeof(Channel<>).MakeGenericType(Map(chanType.ElementType));
 
                 case TypeKind.Function:
-                    return MapFunctionType((FunctionTypeSymbol)symbol);
+                    if (symbol is FunctionTypeSymbol fts)
+                    {
+                        return MapFunctionType(fts);
+                    }
+                    return typeof(object);
 
                 case TypeKind.UntypedNil:
                     return typeof(object);
@@ -313,6 +497,30 @@ namespace Ngo.Compiler.Emit
         {
             var paramCount = funcType.ParameterTypes.Count;
             var hasReturn = funcType.ReturnTypes.Count > 0;
+
+            // Check if any type arg would be a TypeBuilder (circular reference)
+            bool hasTypeBuilderArg = false;
+            for (int i = 0; i < funcType.ParameterTypes.Count; i++)
+            {
+                var mapped = Map(funcType.ParameterTypes[i]);
+                if (EmitContext.IsNonRuntimeType(mapped) || (mapped.IsGenericType && EmitContext.HasTypeBuilderArgs(mapped)))
+                {
+                    hasTypeBuilderArg = true;
+                    break;
+                }
+            }
+            if (!hasTypeBuilderArg && hasReturn)
+            {
+                var retType = Map(funcType.ReturnTypes[0]);
+                if (EmitContext.IsNonRuntimeType(retType) || (retType.IsGenericType && EmitContext.HasTypeBuilderArgs(retType)))
+                {
+                    hasTypeBuilderArg = true;
+                }
+            }
+            if (hasTypeBuilderArg)
+            {
+                return typeof(Delegate);
+            }
 
             if (!hasReturn)
             {

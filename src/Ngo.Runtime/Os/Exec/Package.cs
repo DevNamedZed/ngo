@@ -20,7 +20,13 @@ namespace Ngo.Runtime.Os.Exec
             cmd.Path = name;
             var allArgs = new string[1 + (arg?.Length ?? 0)];
             allArgs[0] = name;
-            if (arg != null) Array.Copy(arg, 0, allArgs, 1, arg.Length);
+            if (arg != null)
+            {
+                for (int i = 0; i < arg.Length; i++)
+                {
+                    allArgs[i + 1] = arg[i];
+                }
+            }
             cmd.Args = new Slice<string>(allArgs);
             cmd.Env = new Slice<string>(Array.Empty<string>());
             cmd.Dir = "";

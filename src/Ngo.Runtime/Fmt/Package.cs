@@ -156,6 +156,8 @@ namespace Ngo.Runtime.Fmt
             return sb.ToString();
         }
 
+        [GoFunc(IsVariadic = true)]
+        [return: GoReturn("error")]
         public static object Errorf(string format, params object?[] args)
         {
             // Check for %w verb (error wrapping)

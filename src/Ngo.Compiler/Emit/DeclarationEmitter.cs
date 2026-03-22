@@ -62,15 +62,28 @@ namespace Ngo.Compiler.Emit
         /// </summary>
         public void DefineStructType(StructTypeSymbol structType)
         {
-            // Skip if already defined
+            // Skip if already defined (by identity or by qualified name)
             if (_ctx.StructTypes.ContainsKey(structType))
+            {
                 return;
+            }
+            var qualifiedName = _ctx.QualifyName(structType.Name);
+            foreach (var kvp in _ctx.StructTypes)
+            {
+                if (kvp.Value.AsType().FullName == qualifiedName)
+                {
+                    // Already defined under a different symbol — register the mapping
+                    _ctx.StructTypes[structType] = kvp.Value;
+                    _ctx.Mapper.Register(structType, kvp.Value.AsType());
+                    return;
+                }
+            }
 
             var typeVisibility = (_ctx.Options.IsLibrary && !_ctx.IsExported(structType.Name))
                 ? TypeAttributes.NotPublic
                 : TypeAttributes.Public;
             var typeBuilder = _ctx.Module.DefineType(
-                _ctx.QualifyName(structType.Name),
+                qualifiedName,
                 typeVisibility | TypeAttributes.SequentialLayout | TypeAttributes.Sealed,
                 typeof(System.ValueType));
 
@@ -157,11 +170,27 @@ namespace Ngo.Compiler.Emit
 
         private void EmitInterfaceType(InterfaceTypeSymbol interfaceType)
         {
+            // Skip if already defined
+            if (_ctx.InterfaceTypes.ContainsKey(interfaceType))
+            {
+                return;
+            }
+            var qualifiedIfaceName = _ctx.QualifyName(interfaceType.Name);
+            foreach (var kvp in _ctx.InterfaceTypes)
+            {
+                if (kvp.Value.AsType().FullName == qualifiedIfaceName)
+                {
+                    _ctx.InterfaceTypes[interfaceType] = kvp.Value;
+                    _ctx.Mapper.Register(interfaceType, kvp.Value.AsType());
+                    return;
+                }
+            }
+
             var typeVisibility = (_ctx.Options.IsLibrary && !_ctx.IsExported(interfaceType.Name))
                 ? TypeAttributes.NotPublic
                 : TypeAttributes.Public;
             var typeBuilder = _ctx.Module.DefineType(
-                _ctx.QualifyName(interfaceType.Name),
+                qualifiedIfaceName,
                 typeVisibility | TypeAttributes.Interface | TypeAttributes.Abstract);
 
             foreach (var method in interfaceType.Methods)
@@ -419,6 +448,7 @@ namespace Ngo.Compiler.Emit
 
             var concreteClrType = _ctx.Mapper.Map(concreteType);
             var interfaceClrType = _ctx.Mapper.Map(interfaceType);
+
             var wrapperName = $"{concreteType.Name}__{interfaceType.Name}__Wrapper";
 
             var wrapperBuilder = _ctx.Module.DefineType(
@@ -473,8 +503,80 @@ namespace Ngo.Compiler.Emit
                     }
                 }
 
-                if (!_ctx.Methods.TryGetValue(concreteMethod ?? ifaceMethod, out var goMethod))
+                IMethodBuilder? goMethod = null;
+                if (concreteMethod != null)
                 {
+                    _ctx.Methods.TryGetValue(concreteMethod, out goMethod);
+                }
+                if (goMethod == null)
+                {
+                    _ctx.Methods.TryGetValue(ifaceMethod, out goMethod);
+                }
+                if (goMethod == null)
+                {
+                    // Try CLR reflection on the concrete type for runtime methods
+                    var concreteClrType2 = _ctx.Mapper.Map(concreteType);
+                    MethodInfo? clrMethod = null;
+                    if (concreteClrType2 != typeof(object))
+                    {
+                        try
+                        {
+                            clrMethod = concreteClrType2.GetMethod(ifaceMethod.Name);
+                        }
+                        catch (NotSupportedException)
+                        {
+                            // TypeBuilder doesn't support GetMethod in some contexts
+                        }
+                    }
+                    // Also try CachedMethods
+                    if (clrMethod == null && concreteMethod != null
+                        && _ctx.CachedMethods.TryGetValue(concreteMethod, out var cachedClrMethod))
+                    {
+                        clrMethod = cachedClrMethod;
+                    }
+                    if (clrMethod != null)
+                    {
+                        // Match the CLR interface method's signature (not the Go type mapping)
+                        // to avoid type mismatches between C# annotations and Go type system
+                        var clrParams = clrMethod.GetParameters();
+                        var wrapperParamTypes = new Type[clrParams.Length];
+                        for (int pi = 0; pi < clrParams.Length; pi++)
+                        {
+                            wrapperParamTypes[pi] = clrParams[pi].ParameterType;
+                        }
+                        var wrapperReturnType = clrMethod.ReturnType;
+
+                        // Check if the interface CLR type has this method — if so, match THAT signature
+                        if (interfaceClrType.IsInterface)
+                        {
+                            var ifaceClrMethod = interfaceClrType.GetMethod(ifaceMethod.Name);
+                            if (ifaceClrMethod != null)
+                            {
+                                var ifaceClrParams = ifaceClrMethod.GetParameters();
+                                wrapperParamTypes = new Type[ifaceClrParams.Length];
+                                for (int pi = 0; pi < ifaceClrParams.Length; pi++)
+                                {
+                                    wrapperParamTypes[pi] = ifaceClrParams[pi].ParameterType;
+                                }
+                                wrapperReturnType = ifaceClrMethod.ReturnType;
+                            }
+                        }
+                        var wrapperMethod = wrapperBuilder.DefineMethod(
+                            ifaceMethod.Name,
+                            MethodAttributes.Public | MethodAttributes.Virtual,
+                            wrapperReturnType, wrapperParamTypes);
+                        var wrapperIL = wrapperMethod.GetILWriter();
+                        wrapperIL.Emit(OpCodes.Ldarg_0);
+                        wrapperIL.Emit(OpCodes.Ldfld, valueField.AsFieldInfo());
+                        for (int pi = 0; pi < ifaceMethod.Parameters.Count; pi++)
+                        {
+                            wrapperIL.Emit(OpCodes.Ldarg, pi + 1);
+                        }
+                        wrapperIL.Emit(concreteClrType2.IsValueType ? OpCodes.Call : OpCodes.Callvirt, clrMethod);
+                        wrapperIL.Emit(OpCodes.Ret);
+                        continue;
+                    }
+
                     // Method not found — emit a stub that returns default value
                     // This prevents "method has no implementation" runtime errors
                     var stubParamTypes = new Type[ifaceMethod.Parameters.Count];
@@ -590,7 +692,17 @@ namespace Ngo.Compiler.Emit
                 }
             }
 
-            var wrapperType = wrapperBuilder.CreateType()!;
+            Type wrapperType;
+            try
+            {
+                wrapperType = wrapperBuilder.CreateType()!;
+            }
+            catch (TypeLoadException)
+            {
+                // Wrapper type creation failed (method signature mismatch) — register as failed and return object
+                _ctx.WrapperTypes[key] = new WrapperTypeInfo(typeof(object), typeof(object).GetConstructors()[0]);
+                return typeof(object);
+            }
             var ctor = wrapperType.GetConstructor(new[] { concreteClrType })!;
             _ctx.WrapperTypes[key] = new WrapperTypeInfo(wrapperType, ctor);
 

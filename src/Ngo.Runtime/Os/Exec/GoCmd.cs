@@ -68,6 +68,7 @@ namespace Ngo.Runtime.Os.Exec
         }
 
         [GoMethod]
+        [return: GoReturn("error")]
         public string Run()
         {
             try
@@ -108,6 +109,7 @@ namespace Ngo.Runtime.Os.Exec
         }
 
         [GoMethod]
+        [return: GoReturn("error")]
         public string Start()
         {
             try
@@ -130,6 +132,7 @@ namespace Ngo.Runtime.Os.Exec
         }
 
         [GoMethod]
+        [return: GoReturn("error")]
         public string Wait()
         {
             if (_process == null)
@@ -167,6 +170,7 @@ namespace Ngo.Runtime.Os.Exec
         }
 
         [GoMethod]
+        [return: GoReturn("[]byte", "error")]
         public (Slice<byte>, string) Output()
         {
             try
@@ -189,6 +193,7 @@ namespace Ngo.Runtime.Os.Exec
         }
 
         [GoMethod]
+        [return: GoReturn("[]byte", "error")]
         public (Slice<byte>, string) CombinedOutput()
         {
             try

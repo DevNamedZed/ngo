@@ -43,7 +43,16 @@ namespace Ngo.Compiler.Emit
         {
             var iterableType = forRange.Iterable.Type;
 
-            if (iterableType is SliceTypeSymbol || iterableType is ArrayTypeSymbol)
+            // Unwrap named types to find underlying iterable type
+            var resolved = iterableType;
+            while (resolved != null && resolved.GetType() == typeof(TypeSymbol)
+                   && resolved.UnderlyingType != null)
+            {
+                resolved = resolved.UnderlyingType;
+            }
+
+            if (resolved is SliceTypeSymbol || resolved is ArrayTypeSymbol
+                || iterableType.TypeKind == TypeKind.Slice || iterableType.TypeKind == TypeKind.Array)
             {
                 EmitForRangeSlice(forRange);
             }
@@ -51,11 +60,11 @@ namespace Ngo.Compiler.Emit
             {
                 EmitForRangeString(forRange);
             }
-            else if (iterableType is MapTypeSymbol)
+            else if (resolved is MapTypeSymbol || iterableType.TypeKind == TypeKind.Map)
             {
                 EmitForRangeMap(forRange);
             }
-            else if (iterableType is ChannelTypeSymbol)
+            else if (resolved is ChannelTypeSymbol || iterableType.TypeKind == TypeKind.Channel)
             {
                 EmitForRangeChannel(forRange);
             }
@@ -76,10 +85,17 @@ namespace Ngo.Compiler.Emit
             var endLabel = _ctx.IL.DefineLabel();
             var continueLabel = _ctx.IL.DefineLabel();
 
-            bool isArray = forRange.Iterable.Type is ArrayTypeSymbol;
+            // Unwrap named types for slice/array operations
+            var iterSymbol = forRange.Iterable.Type;
+            var unwrapped = iterSymbol;
+            while (unwrapped != null && unwrapped.GetType() == typeof(TypeSymbol) && unwrapped.UnderlyingType != null)
+            {
+                unwrapped = unwrapped.UnderlyingType;
+            }
+            bool isArray = unwrapped is ArrayTypeSymbol;
 
-            // Emit iterable into a local
-            var sliceClrType = _ctx.Mapper.Map(forRange.Iterable.Type);
+            // Emit iterable into a local — use underlying type for Slice<T> operations
+            var sliceClrType = _ctx.Mapper.Map(unwrapped is SliceTypeSymbol || unwrapped is ArrayTypeSymbol ? unwrapped : iterSymbol);
             var sliceLocal = _ctx.IL.DeclareLocal(sliceClrType);
             _body.EmitExpression(forRange.Iterable);
             _ctx.IL.Emit(OpCodes.Stloc, sliceLocal);
@@ -114,10 +130,12 @@ namespace Ngo.Compiler.Emit
             if (forRange.Value != null)
             {
                 TypeSymbol elemTypeSymbol;
-                if (forRange.Iterable.Type is SliceTypeSymbol sts)
+                if (unwrapped is SliceTypeSymbol sts)
                     elemTypeSymbol = sts.ElementType;
+                else if (unwrapped is ArrayTypeSymbol ats)
+                    elemTypeSymbol = ats.ElementType;
                 else
-                    elemTypeSymbol = ((ArrayTypeSymbol)forRange.Iterable.Type).ElementType;
+                    elemTypeSymbol = forRange.Value.Type;
 
                 var elemClrType = _ctx.Mapper.Map(elemTypeSymbol);
 
@@ -236,7 +254,13 @@ namespace Ngo.Compiler.Emit
 
         private void EmitForRangeMap(ForRangeStatement forRange)
         {
-            var mapType = (MapTypeSymbol)forRange.Iterable.Type;
+            // Unwrap named types to find underlying MapTypeSymbol
+            var iterType = forRange.Iterable.Type;
+            while (iterType != null && iterType.GetType() == typeof(TypeSymbol) && iterType.UnderlyingType != null)
+            {
+                iterType = iterType.UnderlyingType;
+            }
+            var mapType = (MapTypeSymbol)iterType;
             var keyClrType = _ctx.Mapper.Map(mapType.KeyType);
             var valClrType = _ctx.Mapper.Map(mapType.ValueType);
             var tupleType = typeof(ValueTuple<,>).MakeGenericType(keyClrType, valClrType);
