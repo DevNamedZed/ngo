@@ -27,6 +27,7 @@ namespace Ngo.Compiler.Semantics
             if (constraint == ConstraintInfo.Any)
                 return true;
 
+
             // Type parameter with same or stronger constraint satisfies
             if (typeArg is TypeParameterSymbol tp)
             {
@@ -35,10 +36,23 @@ namespace Ngo.Compiler.Semantics
                 // comparable satisfies comparable
                 if (constraint.IsComparable && tp.Constraint.IsComparable)
                     return true;
-                // any constraint is weaker, always satisfied
+                // Type parameter always satisfies any (weakest constraint)
+                if (constraint == ConstraintInfo.Any)
+                    return true;
+                // Type param with any constraint satisfies non-comparable empty constraints
                 if (tp.Constraint == ConstraintInfo.Any && !constraint.IsComparable
                     && constraint.Methods.Count == 0 && constraint.TypeElements.Count == 0)
                     return true;
+                // Type parameter with a constraint that includes the required constraint's
+                // properties (comparable + methods + type elements) satisfies it.
+                // In generic code, type params flow through and the real check is at instantiation.
+                if (tp.Constraint.IsComparable || !constraint.IsComparable)
+                {
+                    if (constraint.Methods.Count == 0 || tp.Constraint.Methods.Count >= constraint.Methods.Count)
+                    {
+                        return true;
+                    }
+                }
 
                 // A type parameter whose union constraint elements are all present
                 // in the target constraint satisfies it (e.g., [bytes []byte | string]

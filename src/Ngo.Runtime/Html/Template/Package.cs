@@ -215,4 +215,9 @@ namespace Ngo.Runtime.Html.Template
 
     [GoType("named", Name = "Srcset", Package = "html/template", Underlying = "string")]
     public struct GoSrcset { public string Value; }
+
+    [GoType("named", Name = "FuncMap", Package = "html/template", Underlying = "map[string]interface{}")]
+    public class HtmlFuncMap : Dictionary<string, object?>
+    {
+    }
 }

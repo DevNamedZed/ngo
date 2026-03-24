@@ -166,6 +166,9 @@ namespace Ngo.Runtime.Net
         [GoConst] public static readonly long IPv4len = 4;
         [GoConst] public static readonly long IPv6len = 16;
 
+        [GoVar(Type = "IP")]
+        public static readonly Slice<byte> IPv4zero = new Slice<byte>(new byte[] { 0, 0, 0, 0 });
+
         [GoFunc]
         [return: GoReturn("IPMask")]
         public static Slice<byte> CIDRMask(long ones, long bits)
@@ -213,6 +216,13 @@ namespace Ngo.Runtime.Net
         }
 
         [GoFunc]
+        [return: GoReturn("string", "[]*SRV", "error")]
+        public static (string, Slice<GoSRV?>, object?) LookupSRV(string service, string proto, string name)
+        {
+            return ("", new Slice<GoSRV?>(Array.Empty<GoSRV?>()), null);
+        }
+
+        [GoFunc]
         [return: GoReturn("[]*MX", "error")]
         public static (Slice<GoMX?>, object?) LookupMX(string name)
         {
@@ -249,9 +259,30 @@ namespace Ngo.Runtime.Net
 
         // --- Variables ---
 
+        [GoVar] public static readonly object? DefaultResolver = null;
+
         [GoVar] public static readonly object? ErrClosed = "use of closed network connection";
+
+        [GoType("named", Name = "Buffers", Package = "net", Underlying = "[][]byte")]
+        public class GoBuffers {}
 
         [GoVar(Type = "func() ([]Addr, error)")]
         public static readonly object? InterfaceAddrs = null;
+
+        [GoFunc]
+        [return: GoReturn("*net.UDPConn", "error")]
+        public static (object?, object?) ListenUDP(string network, object? laddr) => (null, null);
+
+        [GoFunc]
+        [return: GoReturn("IP")]
+        public static object? IPv4(long a, long b, long c, long d) => null;
+
+        [GoFunc]
+        [return: GoReturn("*net.UnixConn", "error")]
+        public static (object?, object?) DialUnix(string network, object? laddr, object? raddr) => (null, null);
+
+        [GoFunc]
+        [return: GoReturn("*net.UDPConn", "error")]
+        public static (object?, object?) ListenMulticastUDP(string network, object? ifi, object? gaddr) => (null, null);
     }
 }

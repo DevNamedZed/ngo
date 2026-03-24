@@ -27,13 +27,28 @@ namespace Ngo.Runtime.Strings
         private readonly StringBuilder _sb = new();
 
         [GoMethod]
-        public void WriteString(string s) => _sb.Append(s);
+        [return: GoReturn("int", "error")]
+        public (long, object?) WriteString(string s)
+        {
+            _sb.Append(s);
+            return (s.Length, null);
+        }
 
         [GoMethod]
-        public void WriteByte([GoParam("uint8")] long b) => _sb.Append((char)(byte)b);
+        [return: GoReturn("error")]
+        public object? WriteByte([GoParam("uint8")] long b)
+        {
+            _sb.Append((char)(byte)b);
+            return null;
+        }
 
         [GoMethod]
-        public void WriteRune([GoParam("rune")] long r) => _sb.Append((char)r);
+        [return: GoReturn("int", "error")]
+        public (long, object?) WriteRune([GoParam("rune")] long r)
+        {
+            _sb.Append((char)r);
+            return (1, null);
+        }
 
         [GoMethod]
         [return: GoReturn("int", "error")]

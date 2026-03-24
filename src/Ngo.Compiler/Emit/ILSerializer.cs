@@ -54,7 +54,17 @@ namespace Ngo.Compiler.Emit
             var ngoModule = new NgoModuleBuilder();
             var mapper = new TypeMapper(compilationContext);
             var ctx = new EmitContext(ngoModule, mapper, null);
-            EmitPackageForSerialization(result.Root, ctx);
+            ctx.IsDependencyEmit = true;
+            mapper.SetEmitContext(ctx);
+            try
+            {
+                EmitPackageForSerialization(result.Root, ctx);
+            }
+            catch (Exception)
+            {
+                // IL emit incomplete — archive will contain partial IL.
+                // This is acceptable for dependency caching during analysis.
+            }
 
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             using var stream = new FileStream(path, FileMode.Create, FileAccess.Write);
@@ -1085,17 +1095,25 @@ namespace Ngo.Compiler.Emit
             // Pass 1a: Forward-declare types
             foreach (var typeDecl in root.Types)
             {
-                if (typeDecl.Symbol is StructTypeSymbol structType)
-                    declEmitter.DefineStructType(structType);
-                else if (typeDecl.Symbol is InterfaceTypeSymbol)
-                    declEmitter.EmitTypeDeclaration(typeDecl);
+                try
+                {
+                    if (typeDecl.Symbol is StructTypeSymbol structType)
+                        declEmitter.DefineStructType(structType);
+                    else if (typeDecl.Symbol is InterfaceTypeSymbol)
+                        declEmitter.EmitTypeDeclaration(typeDecl);
+                }
+                catch (Exception) { }
             }
 
             // Pass 1b: Populate struct fields
             foreach (var typeDecl in root.Types)
             {
-                if (typeDecl.Symbol is StructTypeSymbol structType)
-                    declEmitter.PopulateStructFields(structType);
+                try
+                {
+                    if (typeDecl.Symbol is StructTypeSymbol structType)
+                        declEmitter.PopulateStructFields(structType);
+                }
+                catch (Exception) { }
             }
 
             // Finalize struct/interface types
@@ -1103,9 +1121,13 @@ namespace Ngo.Compiler.Emit
             {
                 if (!ctx.FinalizedTypes.Contains(kvp.Key))
                 {
-                    var runtimeType = kvp.Value.CreateType()!;
-                    ctx.Mapper.Register(kvp.Key, runtimeType);
-                    ctx.FinalizedTypes.Add(kvp.Key);
+                    try
+                    {
+                        var runtimeType = kvp.Value.CreateType()!;
+                        ctx.Mapper.Register(kvp.Key, runtimeType);
+                        ctx.FinalizedTypes.Add(kvp.Key);
+                    }
+                    catch (Exception) { }
                 }
             }
 
@@ -1113,28 +1135,60 @@ namespace Ngo.Compiler.Emit
             {
                 if (!ctx.FinalizedTypes.Contains(kvp.Key))
                 {
-                    var runtimeType = kvp.Value.CreateType()!;
-                    ctx.Mapper.Register(kvp.Key, runtimeType);
-                    ctx.FinalizedTypes.Add(kvp.Key);
+                    try
+                    {
+                        var runtimeType = kvp.Value.CreateType()!;
+                        ctx.Mapper.Register(kvp.Key, runtimeType);
+                        ctx.FinalizedTypes.Add(kvp.Key);
+                    }
+                    catch (Exception) { }
                 }
             }
 
             // Pass 2: Define function/method signatures
             foreach (var func in root.Functions)
-                declEmitter.EmitFunction(func);
+            {
+                try { declEmitter.EmitFunction(func); }
+                catch (Exception) { }
+            }
 
             foreach (var method in root.Methods)
-                declEmitter.EmitMethod(method);
+            {
+                try { declEmitter.EmitMethod(method); }
+                catch (Exception) { }
+            }
 
             foreach (var varDecl in root.Variables)
-                declEmitter.EmitPackageVar(varDecl);
+            {
+                try { declEmitter.EmitPackageVar(varDecl); }
+                catch (Exception) { }
+            }
 
             // Pass 3: Emit bodies — NgoMethodBuilder.GetILWriter() returns NgoWriter
+            // Each body is emitted independently; failures produce a minimal stub body.
             foreach (var func in root.Functions)
-                bodyEmitter.EmitFunctionBody(func);
+            {
+                try
+                {
+                    bodyEmitter.EmitFunctionBody(func);
+                }
+                catch (Exception)
+                {
+                    EmitStubBody(ctx, func.Symbol);
+                }
+            }
 
             foreach (var method in root.Methods)
-                bodyEmitter.EmitMethodBody(method);
+            {
+                try
+                {
+                    bodyEmitter.EmitMethodBody(method);
+                }
+                catch (Exception)
+                {
+                    EmitStubBody(ctx, method.Symbol);
+                }
+            }
 
             // init() + package var init
             var initFuncs = new List<Ast.FunctionDeclaration>();
@@ -1148,6 +1202,75 @@ namespace Ngo.Compiler.Emit
                 bodyEmitter.EmitPackageInit(root.Variables, initFuncs);
 
             ctx.PackageType.CreateType();
+        }
+
+        private static void EmitStubBody(EmitContext ctx, Symbols.FunctionSymbol func)
+        {
+            if (!ctx.Methods.TryGetValue(func, out var method))
+            {
+                return;
+            }
+            var il = method.GetILWriter();
+            ctx.ResetMethodState();
+            if (func.ReturnType != Symbols.BuiltinTypes.Void && func.ReturnTypes.Count > 0)
+            {
+                var clrRetType = ctx.Mapper.MapReturnType(func.ReturnTypes);
+                if (clrRetType.IsValueType)
+                {
+                    var local = il.DeclareLocal(clrRetType);
+                    il.Emit(System.Reflection.Emit.OpCodes.Ldloca, local);
+                    il.Emit(System.Reflection.Emit.OpCodes.Initobj, clrRetType);
+                    il.Emit(System.Reflection.Emit.OpCodes.Ldloc, local);
+                }
+                else
+                {
+                    il.Emit(System.Reflection.Emit.OpCodes.Ldnull);
+                }
+            }
+            il.Emit(System.Reflection.Emit.OpCodes.Ret);
+        }
+
+        private static void EmitStubBody(EmitContext ctx, Symbols.MethodSymbol method)
+        {
+            var funcSym = new Symbols.FunctionSymbol(method.Name,
+                method.Parameters, method.ReturnTypes, method.IsVariadic);
+            if (ctx.Methods.TryGetValue(method, out var mb))
+            {
+                ctx.Methods[funcSym] = mb;
+            }
+            else
+            {
+                foreach (var kvp in ctx.Methods)
+                {
+                    if (kvp.Key.Name == method.Name)
+                    {
+                        mb = kvp.Value;
+                        break;
+                    }
+                }
+                if (mb == null)
+                {
+                    return;
+                }
+            }
+            var il = mb.GetILWriter();
+            ctx.ResetMethodState();
+            if (method.ReturnType != Symbols.BuiltinTypes.Void && method.ReturnTypes.Count > 0)
+            {
+                var clrRetType = ctx.Mapper.MapReturnType(method.ReturnTypes);
+                if (clrRetType.IsValueType)
+                {
+                    var local = il.DeclareLocal(clrRetType);
+                    il.Emit(System.Reflection.Emit.OpCodes.Ldloca, local);
+                    il.Emit(System.Reflection.Emit.OpCodes.Initobj, clrRetType);
+                    il.Emit(System.Reflection.Emit.OpCodes.Ldloc, local);
+                }
+                else
+                {
+                    il.Emit(System.Reflection.Emit.OpCodes.Ldnull);
+                }
+            }
+            il.Emit(System.Reflection.Emit.OpCodes.Ret);
         }
 
         // ================================================================

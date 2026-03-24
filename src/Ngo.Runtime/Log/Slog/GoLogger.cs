@@ -43,6 +43,30 @@ namespace Ngo.Runtime.Log.Slog
         }
 
         [GoMethod(IsVariadic = true)]
+        public void InfoContext(object? ctx, string msg, [GoParam("any")] params object[] args)
+        {
+            LogImpl(Package.LevelInfo, msg, args);
+        }
+
+        [GoMethod(IsVariadic = true)]
+        public void WarnContext(object? ctx, string msg, [GoParam("any")] params object[] args)
+        {
+            LogImpl(Package.LevelWarn, msg, args);
+        }
+
+        [GoMethod(IsVariadic = true)]
+        public void ErrorContext(object? ctx, string msg, [GoParam("any")] params object[] args)
+        {
+            LogImpl(Package.LevelError, msg, args);
+        }
+
+        [GoMethod(IsVariadic = true)]
+        public void DebugContext(object? ctx, string msg, [GoParam("any")] params object[] args)
+        {
+            LogImpl(Package.LevelDebug, msg, args);
+        }
+
+        [GoMethod(IsVariadic = true)]
         public void Log(object? ctx, [GoParam("slog.Level")] long level, string msg, [GoParam("any")] params object[] args)
         {
             LogImpl(level, msg, args);

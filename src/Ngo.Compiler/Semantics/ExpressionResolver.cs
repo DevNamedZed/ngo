@@ -649,9 +649,18 @@ namespace Ngo.Compiler.Semantics
                     return new IdentifierExpression(ptrType, ptrType, span);
                 }
 
-                if (operand.Type is PointerTypeSymbol pointerType)
+                var derefType = operand.Type;
+                if (derefType.IsAlias && derefType.UnderlyingType != null)
+                {
+                    derefType = derefType.UnderlyingType;
+                }
+                if (derefType is PointerTypeSymbol pointerType)
                 {
                     return new DerefExpression(operand, pointerType.ElementType, span);
+                }
+                if (derefType.Resolved() is PointerTypeSymbol resolvedPtrType)
+                {
+                    return new DerefExpression(operand, resolvedPtrType.ElementType, span);
                 }
 
                 // Type parameter with pointer constraint: *P where P ~*T
@@ -858,7 +867,7 @@ namespace Ngo.Compiler.Semantics
                             : typeSymbol;
                         for (int i = 0; i < method.Parameters.Count; i++)
                             paramTypes[i + 1] = method.Parameters[i].Type;
-                        var funcType = new FunctionTypeSymbol(paramTypes, method.ReturnTypes);
+                        var funcType = new FunctionTypeSymbol(paramTypes, method.ReturnTypes, method.IsVariadic);
                         return new MethodValueExpression(target, method, funcType, span,
                             isMethodExpression: true);
                     }
@@ -872,7 +881,7 @@ namespace Ngo.Compiler.Semantics
                         paramTypes[0] = receiverType;
                         for (int i = 0; i < promotedMethod.Parameters.Count; i++)
                             paramTypes[i + 1] = promotedMethod.Parameters[i].Type;
-                        var funcType = new FunctionTypeSymbol(paramTypes, promotedMethod.ReturnTypes);
+                        var funcType = new FunctionTypeSymbol(paramTypes, promotedMethod.ReturnTypes, promotedMethod.IsVariadic);
                         return new MethodValueExpression(target, promotedMethod, funcType, span,
                             isMethodExpression: true);
                     }
@@ -952,7 +961,7 @@ namespace Ngo.Compiler.Semantics
                     var returnTypes = instTypeParams != null
                         ? TypeSubstituter.SubstituteTypes(method.ReturnTypes, instTypeParams, instTypeArgs!)
                         : method.ReturnTypes;
-                    var funcType = new FunctionTypeSymbol(paramTypes, returnTypes);
+                    var funcType = new FunctionTypeSymbol(paramTypes, returnTypes, method.IsVariadic);
                     return new MethodValueExpression(target, method, funcType, span);
                 }
 
@@ -971,7 +980,7 @@ namespace Ngo.Compiler.Semantics
                     var returnTypes = instTypeParams != null
                         ? TypeSubstituter.SubstituteTypes(pm.ReturnTypes, instTypeParams, instTypeArgs!)
                         : pm.ReturnTypes;
-                    var funcType = new FunctionTypeSymbol(paramTypes, returnTypes);
+                    var funcType = new FunctionTypeSymbol(paramTypes, returnTypes, pm.IsVariadic);
                     return new MethodValueExpression(target, pm, funcType, span);
                 }
 
@@ -990,7 +999,7 @@ namespace Ngo.Compiler.Semantics
                         var paramTypes = new TypeSymbol[cm.Parameters.Count];
                         for (int i = 0; i < cm.Parameters.Count; i++)
                             paramTypes[i] = cm.Parameters[i].Type;
-                        var funcType = new FunctionTypeSymbol(paramTypes, cm.ReturnTypes);
+                        var funcType = new FunctionTypeSymbol(paramTypes, cm.ReturnTypes, cm.IsVariadic);
                         return new MethodValueExpression(target, cm, funcType, span);
                     }
                 }
@@ -999,7 +1008,13 @@ namespace Ngo.Compiler.Semantics
             // Method value on non-struct types (including interfaces)
             var typeMethod = targetType.LookupMethod(fieldName);
 
-            // Also check resolved type for methods (handles named type aliases)
+            // For type aliases, check the aliased type's methods (e.g., type X = pkg.Y)
+            if (typeMethod == null && targetType.IsAlias && targetType.UnderlyingType != null)
+            {
+                typeMethod = targetType.UnderlyingType.LookupMethod(fieldName);
+            }
+
+            // Also check resolved type for methods (handles named type definitions)
             if (typeMethod == null && resolvedTargetType != targetType)
             {
                 typeMethod = resolvedTargetType.LookupMethod(fieldName);
@@ -1010,7 +1025,7 @@ namespace Ngo.Compiler.Semantics
                 var paramTypes = new TypeSymbol[typeMethod.Parameters.Count];
                 for (int i = 0; i < typeMethod.Parameters.Count; i++)
                     paramTypes[i] = typeMethod.Parameters[i].Type;
-                var funcType = new FunctionTypeSymbol(paramTypes, typeMethod.ReturnTypes);
+                var funcType = new FunctionTypeSymbol(paramTypes, typeMethod.ReturnTypes, typeMethod.IsVariadic);
                 return new MethodValueExpression(target, typeMethod, funcType, span);
             }
 
@@ -1033,7 +1048,7 @@ namespace Ngo.Compiler.Semantics
                     {
                         paramTypes[i] = namedMethod.Parameters[i].Type;
                     }
-                    var funcType = new FunctionTypeSymbol(paramTypes, namedMethod.ReturnTypes);
+                    var funcType = new FunctionTypeSymbol(paramTypes, namedMethod.ReturnTypes, namedMethod.IsVariadic);
                     return new MethodValueExpression(target, namedMethod, funcType, span);
                 }
             }
@@ -1076,7 +1091,7 @@ namespace Ngo.Compiler.Semantics
                         var paramTypes = new TypeSymbol[method.Parameters.Count];
                         for (int i = 0; i < method.Parameters.Count; i++)
                             paramTypes[i] = method.Parameters[i].Type;
-                        var funcType = new FunctionTypeSymbol(paramTypes, method.ReturnTypes);
+                        var funcType = new FunctionTypeSymbol(paramTypes, method.ReturnTypes, method.IsVariadic);
                         return new MethodValueExpression(target, method, funcType, span);
                     }
                 }
@@ -1103,6 +1118,14 @@ namespace Ngo.Compiler.Semantics
                         }
                     }
                 }
+            }
+
+            // Type parameters: allow any field access (checked at instantiation, not definition)
+            if (resolvedTargetType is TypeParameterSymbol
+                || targetType is TypeParameterSymbol)
+            {
+                var syntheticField = new FieldSymbol(fieldName, BuiltinTypes.EmptyInterface, 0);
+                return new SelectorExpression(target, syntheticField, BuiltinTypes.EmptyInterface, span);
             }
 
             _context.Errors.ReportError(span, ErrorCode.InvalidSelector,
@@ -1548,7 +1571,7 @@ namespace Ngo.Compiler.Semantics
                     paramTypes.Add(substParams[i].Type);
                 }
 
-                var funcType = new FunctionTypeSymbol(paramTypes, substReturnTypes);
+                var funcType = new FunctionTypeSymbol(paramTypes, substReturnTypes, funcSymbol.IsVariadic);
                 return new IdentifierExpression(funcSymbol, funcType, span);
             }
 
@@ -1561,7 +1584,7 @@ namespace Ngo.Compiler.Semantics
         {
             var span = _context.SpanOf(syntax);
 
-            // Check if this is a generic function instantiation: Max[int]
+            // Check if this is a generic function or type instantiation: Max[int], Iterator[T]
             if (syntax.Expression is IdentifierNameSyntax idSyntax)
             {
                 var symbol = _context.Scope.Lookup(idSyntax.Identifier.Text);
@@ -1586,37 +1609,60 @@ namespace Ngo.Compiler.Semantics
                         paramTypes.Add(substParams[i].Type);
                     }
 
-                    var funcType = new FunctionTypeSymbol(paramTypes, substReturnTypes);
+                    var funcType = new FunctionTypeSymbol(paramTypes, substReturnTypes, funcSymbol.IsVariadic);
                     return new IdentifierExpression(funcSymbol, funcType, span);
+                }
+
+                // Generic type instantiation: Iterator[int], Set[string]
+                if (symbol is TypeSymbol typeSymbol && typeSymbol.IsGeneric)
+                {
+                    var typeArg = _typeResolver.ResolveType(syntax.Index);
+                    if (typeArg != null)
+                    {
+                        var instantiated = new InstantiatedTypeSymbol(typeSymbol, new[] { typeArg });
+                        return new IdentifierExpression(instantiated, instantiated, span);
+                    }
                 }
             }
 
             var target = ResolveExpression(syntax.Expression);
 
-            // Check if this is a generic instantiation via selector: pkg.Func[Type]
-            if (target is IdentifierExpression selectorId && selectorId.Symbol is FunctionSymbol selectorFunc)
+            // Check if this is a generic instantiation via selector: pkg.Func[Type] or pkg.Type[Arg]
+            if (target is IdentifierExpression selectorId)
             {
-                // Try resolving the index as a type argument
-                var typeArg = _typeResolver.ResolveType(syntax.Index);
-                if (typeArg != null)
+                if (selectorId.Symbol is FunctionSymbol selectorFunc)
                 {
-                    if (selectorFunc.IsGeneric)
+                    var typeArg = _typeResolver.ResolveType(syntax.Index);
+                    if (typeArg != null)
                     {
-                        var typeArgs = new[] { typeArg };
-                        var substParams = TypeSubstituter.SubstituteParams(
-                            selectorFunc.Parameters, selectorFunc.TypeParameters, typeArgs);
-                        var substReturnTypes = TypeSubstituter.SubstituteTypes(
-                            selectorFunc.ReturnTypes, selectorFunc.TypeParameters, typeArgs);
-                        var paramTypes = new List<TypeSymbol>();
-                        for (int i = 0; i < substParams.Count; i++)
-                            paramTypes.Add(substParams[i].Type);
-                        var funcType = new FunctionTypeSymbol(paramTypes, substReturnTypes);
-                        return new IdentifierExpression(selectorFunc, funcType, span);
+                        if (selectorFunc.IsGeneric)
+                        {
+                            var typeArgs = new[] { typeArg };
+                            var substParams = TypeSubstituter.SubstituteParams(
+                                selectorFunc.Parameters, selectorFunc.TypeParameters, typeArgs);
+                            var substReturnTypes = TypeSubstituter.SubstituteTypes(
+                                selectorFunc.ReturnTypes, selectorFunc.TypeParameters, typeArgs);
+                            var paramTypes = new List<TypeSymbol>();
+                            for (int i = 0; i < substParams.Count; i++)
+                            {
+                                paramTypes.Add(substParams[i].Type);
+                            }
+                            var funcType = new FunctionTypeSymbol(paramTypes, substReturnTypes, selectorFunc.IsVariadic);
+                            return new IdentifierExpression(selectorFunc, funcType, span);
+                        }
+                        else
+                        {
+                            return new IdentifierExpression(selectorFunc, _context.GetSymbolType(selectorFunc), span);
+                        }
                     }
-                    else
+                }
+                else if (selectorId.Symbol is TypeSymbol selectorType && selectorType.IsGeneric)
+                {
+                    var typeArg = _typeResolver.ResolveType(syntax.Index);
+                    if (typeArg != null)
                     {
-                        // Non-generic function with type arg — return as-is (e.g., reflect.TypeFor[T])
-                        return new IdentifierExpression(selectorFunc, _context.GetSymbolType(selectorFunc), span);
+                        var instantiated = new InstantiatedTypeSymbol(selectorType, new[] { typeArg });
+                        return new IdentifierExpression(instantiated, instantiated, span);
                     }
                 }
             }

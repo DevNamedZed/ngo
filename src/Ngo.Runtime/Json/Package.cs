@@ -494,4 +494,51 @@ namespace Ngo.Runtime.Json
         [GoMethod]
         public string Error() => $"json: unsupported type: {Type}";
     }
+
+    [GoType("struct", Name = "SyntaxError", Package = "encoding/json")]
+    public class GoSyntaxError
+    {
+        [GoField(Name = "Offset")]
+        public long Offset;
+
+        [GoMethod]
+        public string Error() => "json syntax error";
+    }
+
+    [GoType("struct", Name = "UnmarshalTypeError", Package = "encoding/json")]
+    public class GoUnmarshalTypeError
+    {
+        [GoField(Name = "Value")]
+        public string Value = "";
+
+        [GoField(Name = "Field")]
+        public string Field = "";
+
+        [GoMethod]
+        public string Error() => "json unmarshal type error";
+    }
+
+    [GoType("struct", Name = "InvalidUnmarshalError", Package = "encoding/json")]
+    public class GoInvalidUnmarshalError
+    {
+        [GoMethod]
+        public string Error() => "json invalid unmarshal error";
+    }
+
+    [GoType("struct", Name = "MarshalerError", Package = "encoding/json")]
+    public class GoMarshalerError
+    {
+        [GoMethod]
+        public string Error() => "json marshaler error";
+    }
+
+    [GoType("struct", Name = "UnsupportedValueError", Package = "encoding/json")]
+    public class GoUnsupportedValueError
+    {
+        [GoField(Name = "Str")]
+        public string Str = "";
+
+        [GoMethod]
+        public string Error() => "json unsupported value";
+    }
 }

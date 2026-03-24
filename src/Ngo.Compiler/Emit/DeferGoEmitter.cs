@@ -138,7 +138,13 @@ namespace Ngo.Compiler.Emit
         public void EmitDefer(DeferStatement defer)
         {
             if (_ctx.DeferStack == null)
+            {
+                if (_ctx.IsDependencyEmit)
+                {
+                    return;
+                }
                 throw new InvalidOperationException("Defer statement outside of defer-wrapped function");
+            }
 
             // defer f(args) → deferStack.Push(Action wrapping the call)
             // Generate a lambda method for the deferred call
@@ -153,7 +159,7 @@ namespace Ngo.Compiler.Emit
 
         public void EmitSend(SendStatement send)
         {
-            var chanType = (ChannelTypeSymbol)send.Channel.Type;
+            var chanType = (ChannelTypeSymbol)send.Channel.Type.Resolved();
             var elemClrType = _ctx.Mapper.Map(chanType.ElementType);
             var chanClrType = _ctx.Mapper.Map(chanType);
 
@@ -166,7 +172,7 @@ namespace Ngo.Compiler.Emit
 
         public void EmitReceive(ReceiveExpression recv)
         {
-            var chanType = (ChannelTypeSymbol)recv.Channel.Type;
+            var chanType = (ChannelTypeSymbol)recv.Channel.Type.Resolved();
             var elemClrType = _ctx.Mapper.Map(chanType.ElementType);
             var chanClrType = _ctx.Mapper.Map(chanType);
 
@@ -215,7 +221,7 @@ namespace Ngo.Compiler.Emit
                 var sc = select.Cases[i];
                 if (sc.IsDefault) continue;
 
-                var chanType = (ChannelTypeSymbol)sc.Channel!.Type;
+                var chanType = (ChannelTypeSymbol)sc.Channel!.Type.Resolved();
                 var chanClrType = _ctx.Mapper.Map(chanType);
 
                 _body.EmitExpression(sc.Channel);
@@ -247,7 +253,7 @@ namespace Ngo.Compiler.Emit
                 var sc = select.Cases[i];
                 if (sc.IsDefault) continue;
 
-                var chanType = (ChannelTypeSymbol)sc.Channel!.Type;
+                var chanType = (ChannelTypeSymbol)sc.Channel!.Type.Resolved();
                 var elemClrType = _ctx.Mapper.Map(chanType.ElementType);
                 var chanClrType = _ctx.Mapper.Map(chanType);
 
@@ -742,6 +748,11 @@ namespace Ngo.Compiler.Emit
                 return;
             }
 
+            if (_ctx.IsDependencyEmit)
+            {
+                il.Emit(OpCodes.Ret);
+                return;
+            }
             throw new NotSupportedException($"Builtin '{name}' not supported in defer/go context");
         }
 

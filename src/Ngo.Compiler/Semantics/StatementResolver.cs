@@ -165,6 +165,16 @@ namespace Ngo.Compiler.Semantics
                 }
             }
 
+            // Check for multi-return forwarding: return f() where f returns (T1, T2, ...)
+            if (values.Count == 1 && _context.CurrentReturnTypes.Count > 1)
+            {
+                var callReturnTypes = _context.GetCallReturnTypes(values[0]);
+                if (callReturnTypes != null && callReturnTypes.Count == _context.CurrentReturnTypes.Count)
+                {
+                    return new ReturnStatement(values, _context.SpanOf(syntax));
+                }
+            }
+
             if (values.Count != _context.CurrentReturnTypes.Count)
             {
                 if (values.Count == 0 && _context.CurrentReturnTypes.Count > 0 && !hasUnresolvedReturnTypes)

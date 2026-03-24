@@ -334,7 +334,7 @@ namespace Ngo.Compiler.Semantics
             {
                 foreach (var spec in importDecl.Specs)
                 {
-                    var path = spec.Path.Value as string ?? spec.Path.Text.Trim('"');
+                    var path = spec.Path.Value as string ?? spec.Path.Text.Trim('"').Trim('`');
                     var span = _context.SpanOf(spec);
 
                     // Handle import "C" — CGo pseudo-package
@@ -419,17 +419,16 @@ namespace Ngo.Compiler.Semantics
                         var existing = _context.Scope.Lookup(pkg.Name);
                         if (existing is PackageSymbol existingPkg)
                         {
-                            // Different packages with same local name (e.g. crypto/rand vs math/rand):
-                            // merge exports so both files' usages resolve
+                            // Different packages with same local name (e.g. encoding/json
+                            // vs internal/json): create a merged package that searches both.
+                            // Don't modify the original package (it may be shared across
+                            // compilations via runtime cache).
                             if (existingPkg.ImportPath != pkg.ImportPath)
                             {
-                                foreach (var export in pkg.Exports)
-                                {
-                                    if (!existingPkg.Exports.ContainsKey(export.Key))
-                                    {
-                                        existingPkg.AddExport(export.Value);
-                                    }
-                                }
+                                var merged = new PackageSymbol(existingPkg.Name, existingPkg.ImportPath);
+                                merged.CopyExportsFrom(existingPkg);
+                                merged.AddAlternate(pkg);
+                                _context.Scope.Replace(existingPkg.Name, merged);
                             }
                         }
                         else
@@ -1597,7 +1596,18 @@ namespace Ngo.Compiler.Semantics
                     {
                         // Embedded interface: resolve the type and merge its methods
                         var embeddedType = _typeResolver.ResolveType(embeddedSyntax);
-                        if (embeddedType is InterfaceTypeSymbol embeddedIface)
+                        // Unwrap type aliases to find the underlying interface
+                        var resolvedEmbedded = embeddedType;
+                        while (resolvedEmbedded != null && resolvedEmbedded.IsAlias
+                               && resolvedEmbedded.UnderlyingType != null)
+                        {
+                            resolvedEmbedded = resolvedEmbedded.UnderlyingType;
+                        }
+                        if (resolvedEmbedded == null)
+                        {
+                            resolvedEmbedded = embeddedType?.Resolved();
+                        }
+                        if (resolvedEmbedded is InterfaceTypeSymbol embeddedIface)
                         {
                             foreach (var m in embeddedIface.Methods)
                             {

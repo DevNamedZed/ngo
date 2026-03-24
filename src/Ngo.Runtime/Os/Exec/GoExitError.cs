@@ -13,5 +13,9 @@ namespace Ngo.Runtime.Os.Exec
 
         [GoMethod]
         public long ExitCode() => 1;
+
+        [GoMethod]
+        [return: GoReturn("interface{}")]
+        public object? Sys() => null;
     }
 }

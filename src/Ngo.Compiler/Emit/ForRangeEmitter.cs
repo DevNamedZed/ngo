@@ -74,6 +74,10 @@ namespace Ngo.Compiler.Emit
             }
             else
             {
+                if (_ctx.IsDependencyEmit)
+                {
+                    return;
+                }
                 throw new NotSupportedException($"for-range over {iterableType.TypeKind} not supported");
             }
         }
@@ -87,11 +91,7 @@ namespace Ngo.Compiler.Emit
 
             // Unwrap named types for slice/array operations
             var iterSymbol = forRange.Iterable.Type;
-            var unwrapped = iterSymbol;
-            while (unwrapped != null && unwrapped.GetType() == typeof(TypeSymbol) && unwrapped.UnderlyingType != null)
-            {
-                unwrapped = unwrapped.UnderlyingType;
-            }
+            var unwrapped = iterSymbol.Resolved();
             bool isArray = unwrapped is ArrayTypeSymbol;
 
             // Emit iterable into a local — use underlying type for Slice<T> operations
@@ -255,11 +255,7 @@ namespace Ngo.Compiler.Emit
         private void EmitForRangeMap(ForRangeStatement forRange)
         {
             // Unwrap named types to find underlying MapTypeSymbol
-            var iterType = forRange.Iterable.Type;
-            while (iterType != null && iterType.GetType() == typeof(TypeSymbol) && iterType.UnderlyingType != null)
-            {
-                iterType = iterType.UnderlyingType;
-            }
+            var iterType = forRange.Iterable.Type.Resolved();
             var mapType = (MapTypeSymbol)iterType;
             var keyClrType = _ctx.Mapper.Map(mapType.KeyType);
             var valClrType = _ctx.Mapper.Map(mapType.ValueType);
@@ -333,7 +329,7 @@ namespace Ngo.Compiler.Emit
             //     body
             //     goto loop
             //   end:
-            var chanType = (ChannelTypeSymbol)forRange.Iterable.Type;
+            var chanType = (ChannelTypeSymbol)forRange.Iterable.Type.Resolved();
             var elemClrType = _ctx.Mapper.Map(chanType.ElementType);
             var chanClrType = _ctx.Mapper.Map(chanType);
 

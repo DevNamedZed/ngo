@@ -1,3 +1,4 @@
+using System;
 using Ngo.Runtime.Discovery;
 
 namespace Ngo.Runtime.Database.Sql
@@ -10,5 +11,20 @@ namespace Ngo.Runtime.Database.Sql
 
         [GoField(Name = "Valid")]
         public bool Valid;
+
+        [GoMethod]
+        [return: GoReturn("error")]
+        public object? Scan(object? value)
+        {
+            if (value == null)
+            {
+                Bool = false;
+                Valid = false;
+                return null;
+            }
+            Bool = Convert.ToBoolean(value);
+            Valid = true;
+            return null;
+        }
     }
 }

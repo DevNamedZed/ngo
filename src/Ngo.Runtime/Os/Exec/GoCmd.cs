@@ -30,8 +30,14 @@ namespace Ngo.Runtime.Os.Exec
         [GoField]
         public object? Stderr;
 
+        [GoField(Name = "SysProcAttr", Type = "*syscall.SysProcAttr")]
+        public object? SysProcAttr;
+
         [GoField(Name = "Process", Type = "*os.Process")]
         public object? Process;
+
+        [GoField(Name = "ExtraFiles", Type = "[]*os.File")]
+        public object? ExtraFiles;
 
         private System.Diagnostics.Process? _process;
 

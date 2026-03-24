@@ -429,6 +429,10 @@ namespace Ngo.Compiler.Semantics
                     continue;
                 }
 
+                // If this directory is inside a module with a go.mod,
+                // merge that module's requirements so transitive deps resolve.
+                _moduleResolver.MergeGoModIfPresent(dir);
+
                 // Parse only to extract imports — trees are discarded immediately.
                 // They'll be re-parsed when the package is actually compiled.
                 var imports = ExtractImports(dir);
@@ -771,25 +775,11 @@ namespace Ngo.Compiler.Semantics
             _resolvedPackages[importPath] = pkg;
 
             // Write .ngo archive to disk for caching.
-            try
-            {
-                var cacheDir = NgoArchive.GetCacheDir(ProjectRoot);
-                _resolvedDirs.TryGetValue(importPath, out var writeSourceDir);
-                var archivePath = NgoArchive.GetArchivePath(cacheDir, importPath, writeSourceDir);
-                if (_isAnalyzingDag)
-                {
-                    NgoArchive.Write(archivePath, pkg, importPath);
-                }
-                else
-                {
-                    Emit.ILSerializer.WriteArchive(archivePath, pkg, importPath, result, _ctx);
-                }
-            }
-            catch (Exception ex)
-            {
-                _ctx.Log.Warn($"archive write failed for '{importPath}': {ex.Message}");
-                _ctx.Log.Warn(ex.StackTrace ?? "");
-            }
+            var cacheDir = NgoArchive.GetCacheDir(ProjectRoot);
+            _resolvedDirs.TryGetValue(importPath, out var writeSourceDir);
+            var archivePath = NgoArchive.GetArchivePath(cacheDir, importPath, writeSourceDir);
+
+            Emit.ILSerializer.WriteArchive(archivePath, pkg, importPath, result, _ctx);
         }
 
         // Current target platform — used for file filtering

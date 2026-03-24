@@ -192,6 +192,18 @@ namespace Ngo.Runtime.Flag
             return new Ptr<long>(defaultValue);
         }
 
+        [GoFunc]
+        public static void VisitAll(object? fn)
+        {
+            if (fn is Action<GoFlag> callback)
+            {
+                foreach (var kv in _flags)
+                {
+                    callback(new GoFlag { Name = kv.Key });
+                }
+            }
+        }
+
         [GoVar(Type = "func()")]
         public static Action? Usage;
 

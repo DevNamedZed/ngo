@@ -53,6 +53,13 @@ namespace Ngo.Runtime.Os
         [GoConst]
         public const string DevNull = "/dev/null";
 
+        [GoConst]
+        public const long SEEK_SET = 0;
+        [GoConst]
+        public const long SEEK_CUR = 1;
+        [GoConst]
+        public const long SEEK_END = 2;
+
         // FileMode constants
         [GoConst(Type = "FileMode")]
         public const long ModeDir = unchecked((long)0x80000000);
@@ -823,6 +830,44 @@ namespace Ngo.Runtime.Os
         {
             if (err == null) return null;
             return new GoSyscallError(syscall, err);
+        }
+
+        // os.Chdir(dir string) error
+        [GoFunc]
+        [return: GoReturn("error")]
+        public static object? Chdir(string dir)
+        {
+            try
+            {
+                Directory.SetCurrentDirectory(dir);
+                return null;
+            }
+            catch (Exception ex)
+            {
+                return ex.Message;
+            }
+        }
+
+        // os.NewFile(fd uintptr, name string) *File
+        [GoFunc]
+        [return: GoReturn("*File")]
+        public static GoFile? NewFile(long fd, string name)
+        {
+            return null;
+        }
+
+        // os.Getppid() int
+        [GoFunc]
+        public static long Getppid()
+        {
+            return 0;
+        }
+
+        // os.Geteuid() int
+        [GoFunc]
+        public static long Geteuid()
+        {
+            return 0;
         }
 
         // os.DirFS(dir string) fs.FS

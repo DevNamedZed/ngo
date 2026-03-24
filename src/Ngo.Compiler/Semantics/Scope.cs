@@ -40,6 +40,11 @@ namespace Ngo.Compiler.Semantics
             return _symbols.TryAdd(symbol.Name, symbol);
         }
 
+        public void Replace(string name, Symbol symbol)
+        {
+            _symbols[name] = symbol;
+        }
+
         public Symbol? Lookup(string name)
         {
             if (_symbols.TryGetValue(name, out var symbol))
@@ -53,11 +58,6 @@ namespace Ngo.Compiler.Semantics
         public Symbol? LookupLocal(string name)
         {
             return _symbols.TryGetValue(name, out var symbol) ? symbol : null;
-        }
-
-        public void Replace(string name, Symbol symbol)
-        {
-            _symbols[name] = symbol;
         }
 
         public IEnumerable<Symbol> DeclaredSymbols => _symbols.Values;

@@ -420,6 +420,8 @@ namespace Ngo.Compiler.Semantics
                 foreach (var mi in methods)
                 {
                     if (mi.IsSpecialName) continue; // skip property getters/setters
+                    // Skip .NET System.Object methods (GetType, ToString, Equals, GetHashCode)
+                    if (mi.DeclaringType == typeof(object)) continue;
 
                     var methodAttr = mi.GetCustomAttribute<GoMethodAttribute>();
                     var methodName = methodAttr?.Name ?? mi.Name;

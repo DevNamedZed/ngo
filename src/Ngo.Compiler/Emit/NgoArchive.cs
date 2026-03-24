@@ -320,7 +320,29 @@ namespace Ngo.Compiler.Emit
                         interfaces.Add(i);
                         break;
                     case TypeSymbol t:
-                        namedTypes.Add(t);
+                        // Type alias to anonymous struct: promote to named struct
+                        // so the archive preserves the struct's fields.
+                        if (t.IsAlias && t.UnderlyingType is StructTypeSymbol aliasedStruct
+                            && (aliasedStruct.Name == "struct" || aliasedStruct.Name == "struct{}"))
+                        {
+                            var namedStruct = new StructTypeSymbol(t.Name, aliasedStruct.Fields);
+                            foreach (var method in aliasedStruct.Methods)
+                            {
+                                namedStruct.AddMethod(method);
+                            }
+                            foreach (var method in t.Methods)
+                            {
+                                if (namedStruct.LookupMethod(method.Name) == null)
+                                {
+                                    namedStruct.AddMethod(method);
+                                }
+                            }
+                            structs.Add(namedStruct);
+                        }
+                        else
+                        {
+                            namedTypes.Add(t);
+                        }
                         break;
                     case ConstantSymbol c:
                         constants.Add(c);
@@ -415,12 +437,38 @@ namespace Ngo.Compiler.Emit
                         WalkMethods(iface.Methods);
                         break;
                     default:
-                        reachableNamedTypes.Add(type);
-                        if (type.UnderlyingType != null)
+                        // Type alias to anonymous struct: promote to named struct
+                        if (type.IsAlias && type.UnderlyingType is StructTypeSymbol anonSt
+                            && (anonSt.Name == "struct" || anonSt.Name == "struct{}"))
                         {
-                            WalkType(type.UnderlyingType);
+                            var promoted = new StructTypeSymbol(type.Name, anonSt.Fields);
+                            foreach (var method in anonSt.Methods)
+                            {
+                                promoted.AddMethod(method);
+                            }
+                            foreach (var method in type.Methods)
+                            {
+                                if (promoted.LookupMethod(method.Name) == null)
+                                {
+                                    promoted.AddMethod(method);
+                                }
+                            }
+                            reachableStructs.Add(promoted);
+                            foreach (var field in anonSt.Fields)
+                            {
+                                WalkType(field.Type);
+                            }
+                            WalkMethods(promoted.Methods);
                         }
-                        WalkMethods(type.Methods);
+                        else
+                        {
+                            reachableNamedTypes.Add(type);
+                            if (type.UnderlyingType != null)
+                            {
+                                WalkType(type.UnderlyingType);
+                            }
+                            WalkMethods(type.Methods);
+                        }
                         break;
                 }
             }

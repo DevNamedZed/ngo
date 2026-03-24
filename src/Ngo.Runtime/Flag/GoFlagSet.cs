@@ -236,6 +236,47 @@ namespace Ngo.Runtime.Flag
         }
 
         [GoMethod]
+        [return: GoReturn("*uint")]
+        public Ptr<long> Uint(string name, long value, string usage)
+        {
+            var ptr = new Ptr<long>(value);
+            _flags[name] = new FlagEntry { Type = FlagType.Int, IntPtr = ptr };
+            return ptr;
+        }
+
+        [GoMethod]
+        public void UintVar(Ptr<long> p, string name, long value, string usage)
+        {
+            p.Value = value;
+            _flags[name] = new FlagEntry { Type = FlagType.Int, IntPtr = p };
+        }
+
+        [GoMethod]
+        [return: GoReturn("*uint64")]
+        public Ptr<long> Uint64(string name, long value, string usage)
+        {
+            var ptr = new Ptr<long>(value);
+            _flags[name] = new FlagEntry { Type = FlagType.Int, IntPtr = ptr };
+            return ptr;
+        }
+
+        [GoMethod]
+        public void Uint64Var(Ptr<long> p, string name, long value, string usage)
+        {
+            p.Value = value;
+            _flags[name] = new FlagEntry { Type = FlagType.Int, IntPtr = p };
+        }
+
+        [GoMethod]
+        [return: GoReturn("*time.Duration")]
+        public Ptr<long> Duration(string name, long value, string usage)
+        {
+            var ptr = new Ptr<long>(value);
+            _flags[name] = new FlagEntry { Type = FlagType.Int, IntPtr = ptr };
+            return ptr;
+        }
+
+        [GoMethod]
         public bool Parsed() => _parsed;
 
         [GoMethod]

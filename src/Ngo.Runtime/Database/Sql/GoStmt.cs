@@ -69,5 +69,13 @@ namespace Ngo.Runtime.Database.Sql
             var (rows, err) = Query(args);
             return new GoRow(rows, err);
         }
+
+        [GoMethod]
+        [return: GoReturn("*sql.Rows", "error")]
+        public (object?, object?) QueryContext([GoParam("context.Context")] object? ctx, [GoParam("...interface{}")] params object[] args) => (null, null);
+
+        [GoMethod]
+        [return: GoReturn("sql.Result", "error")]
+        public (object?, object?) ExecContext([GoParam("context.Context")] object? ctx, [GoParam("...interface{}")] params object[] args) => (null, null);
     }
 }

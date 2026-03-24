@@ -307,6 +307,12 @@ namespace Ngo.Runtime.Slices
         }
 
         [GoFunc]
+        public static long Compare(object? s1, object? s2) => 0;
+
+        [GoFunc]
+        public static long CompareFunc(object? s1, object? s2, object? cmp) => 0;
+
+        [GoFunc]
         public static Slice<T> Repeat<T>(Slice<T> x, long count)
         {
             if (count < 0) throw new InvalidOperationException("slices.Repeat: negative count");

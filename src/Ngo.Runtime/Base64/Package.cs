@@ -24,6 +24,12 @@ namespace Ngo.Runtime.Base64
     [GoPackage("encoding/base64")]
     public static class Package
     {
+        [GoConst]
+        public const long StdPadding = '=';
+
+        [GoConst]
+        public const long NoPadding = -1;
+
         // encoding instances (exposed as package vars)
         public static readonly Encoding StdEncoding =
             new Encoding(Convert.ToBase64String, Convert.FromBase64String, false);
@@ -76,5 +82,14 @@ namespace Ngo.Runtime.Base64
                 default: return s;
             }
         }
+    }
+
+    [GoType("named", Name = "CorruptInputError", Package = "encoding/base64", Underlying = "int64")]
+    public class GoCorruptInputError
+    {
+        [GoField] public long Value;
+
+        [GoMethod]
+        public string Error() => $"illegal base64 data at input byte {Value}";
     }
 }

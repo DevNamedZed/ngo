@@ -135,6 +135,13 @@ namespace Ngo.Compiler.Emit
 
             // Create delegate from the static method
             var delegateType = _ctx.Mapper.Map(funcLit.FunctionType);
+            if (delegateType == typeof(Delegate) || delegateType == typeof(object))
+            {
+                // Circular type fallback — use Action for void, Func<object> for non-void
+                delegateType = funcLit.FunctionType.ReturnTypes.Count == 0
+                    ? typeof(Action)
+                    : typeof(Func<object>);
+            }
             _ctx.IL.Emit(OpCodes.Ldnull);
             _ctx.IL.Emit(OpCodes.Ldftn, lambdaMethod.AsMethodInfo());
             var delegateCtor = EmitContext.GetConstructorSafe(delegateType, new[] { typeof(object), typeof(IntPtr) });
@@ -260,13 +267,24 @@ namespace Ngo.Compiler.Emit
                 var runtimeField = closureType.GetField(sym.Name)!;
                 _ctx.IL.Emit(OpCodes.Ldloc, closureLocal);
                 // Load Box<T> reference directly (bypass EmitLoad which would unwrap .Value)
-                _ctx.IL.Emit(OpCodes.Ldloc, _ctx.Locals[sym]);
+                var captureLocal = ResolveLocal(sym);
+                _ctx.IL.Emit(OpCodes.Ldloc, captureLocal);
                 _ctx.IL.Emit(OpCodes.Stfld, runtimeField);
             }
 
             // Create delegate from closure instance + invoke method
             var delegateType = _ctx.Mapper.Map(funcLit.FunctionType);
-            var runtimeMethod = closureType.GetMethod("Invoke")!;
+            if (delegateType == typeof(Delegate) || delegateType == typeof(object))
+            {
+                delegateType = funcLit.FunctionType.ReturnTypes.Count == 0
+                    ? typeof(Action) : typeof(Func<object>);
+            }
+            MethodInfo? runtimeMethod = null;
+            try { runtimeMethod = closureType.GetMethod("Invoke"); } catch { }
+            if (runtimeMethod == null)
+            {
+                runtimeMethod = new Builder.NgoProxyMethodInfo(closureType, "Invoke");
+            }
             _ctx.IL.Emit(OpCodes.Ldloc, closureLocal);
             _ctx.IL.Emit(OpCodes.Ldftn, runtimeMethod);
             var delegateCtor = EmitContext.GetConstructorSafe(delegateType, new[] { typeof(object), typeof(IntPtr) });
@@ -365,6 +383,23 @@ namespace Ngo.Compiler.Emit
             return captures;
         }
 
+        private LocalBuilder ResolveLocal(Symbol sym)
+        {
+            if (_ctx.Locals.TryGetValue(sym, out var local))
+            {
+                return local;
+            }
+            foreach (var kvp in _ctx.Locals)
+            {
+                if (kvp.Key.Name == sym.Name && kvp.Key.Kind == sym.Kind)
+                {
+                    return kvp.Value;
+                }
+            }
+            throw new InvalidOperationException(
+                $"Cannot find local for captured symbol '{sym.Name}' ({sym.Kind})");
+        }
+
         public HashSet<Symbol> CollectAllCaptures(BlockStatement body)
         {
             var literals = new List<FunctionLiteralExpression>();
@@ -419,6 +454,9 @@ namespace Ngo.Compiler.Emit
                     return;
                 case VarDeclaration vd:
                     if (vd.Initializer != null) FindFunctionLiterals(vd.Initializer, result);
+                    return;
+                case MultiVarDeclaration mvd:
+                    FindFunctionLiterals(mvd.Initializer, result);
                     return;
                 case AssignmentStatement assign:
                     FindFunctionLiterals(assign.Target, result);
@@ -530,6 +568,9 @@ namespace Ngo.Compiler.Emit
                     return;
                 case VarDeclaration vd:
                     if (vd.Initializer != null) CollectReferencedSymbols(vd.Initializer, result);
+                    return;
+                case MultiVarDeclaration mvd2:
+                    CollectReferencedSymbols(mvd2.Initializer, result);
                     return;
                 case AssignmentStatement assign:
                     CollectReferencedSymbols(assign.Target, result);

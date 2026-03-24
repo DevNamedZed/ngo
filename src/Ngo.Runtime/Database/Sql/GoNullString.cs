@@ -10,5 +10,20 @@ namespace Ngo.Runtime.Database.Sql
 
         [GoField(Name = "Valid")]
         public bool Valid;
+
+        [GoMethod]
+        [return: GoReturn("error")]
+        public object? Scan(object? value)
+        {
+            if (value == null)
+            {
+                String = "";
+                Valid = false;
+                return null;
+            }
+            String = value.ToString() ?? "";
+            Valid = true;
+            return null;
+        }
     }
 }

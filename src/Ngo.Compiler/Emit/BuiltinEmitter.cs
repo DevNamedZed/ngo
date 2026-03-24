@@ -806,7 +806,7 @@ namespace Ngo.Compiler.Emit
         private bool EmitBuiltinAppend(CallExpression call)
         {
             var sliceArg = call.Arguments[0];
-            var sliceType = (SliceTypeSymbol)sliceArg.Type;
+            var sliceType = (SliceTypeSymbol)sliceArg.Type.Resolved();
             var elemClrType = _ctx.Mapper.Map(sliceType.ElementType);
             var sliceClrType = _ctx.Mapper.Map(sliceType);
 
@@ -845,17 +845,7 @@ namespace Ngo.Compiler.Emit
         {
             var returnType = call.Function.ReturnType;
 
-            // Unwrap named types to find underlying slice/map/channel
-            var resolved = returnType;
-            while (resolved != null && resolved.GetType() == typeof(TypeSymbol)
-                   && resolved.UnderlyingType != null)
-            {
-                resolved = resolved.UnderlyingType;
-            }
-            if (resolved != returnType && resolved != null)
-            {
-                returnType = resolved;
-            }
+            returnType = returnType.Resolved();
 
             if (returnType is SliceTypeSymbol sliceType)
             {
@@ -926,7 +916,7 @@ namespace Ngo.Compiler.Emit
 
         private bool EmitBuiltinCopy(CallExpression call)
         {
-            var sliceType = (SliceTypeSymbol)call.Arguments[0].Type;
+            var sliceType = (SliceTypeSymbol)call.Arguments[0].Type.Resolved();
             var elemClrType = _ctx.Mapper.Map(sliceType.ElementType);
             var sliceClrType = _ctx.Mapper.Map(sliceType);
 
@@ -955,7 +945,8 @@ namespace Ngo.Compiler.Emit
             {
                 var elemClrType = _ctx.Mapper.Map(ptrType.ElementType);
 
-                if (!elemClrType.IsValueType && elemClrType is not TypeBuilder && elemClrType is not GenericTypeParameterBuilder)
+                if (!elemClrType.IsValueType && !EmitContext.IsNonRuntimeType(elemClrType)
+                    && !EmitContext.HasTypeBuilderArgs(elemClrType))
                 {
                     var ctor = elemClrType.GetConstructor(Type.EmptyTypes);
                     if (ctor != null)

@@ -605,5 +605,59 @@ namespace Ngo.Runtime.Syscall
         // Ioctl constants
         [GoConst] public static readonly long SYS_IOCTL = 16;
         [GoConst] public static readonly long TIOCGWINSZ = 0x5413;
+        [GoConst] public static readonly long TIOCSWINSZ = 0x5414;
+        [GoConst] public static readonly long TIOCGPTN = 0x80045430;
+        [GoConst] public static readonly long TIOCSPTLCK = 0x40045431;
+
+        [GoConst] public static readonly long O_NOCTTY = 0x100;
+
+        // Epoll constants
+        [GoConst] public static readonly long EPOLLIN = 0x001;
+        [GoConst] public static readonly long EPOLLOUT = 0x004;
+        [GoConst] public static readonly long EPOLLRDHUP = 0x2000;
+        [GoConst] public static readonly long EPOLLPRI = 0x002;
+        [GoConst] public static readonly long EPOLLERR = 0x008;
+        [GoConst] public static readonly long EPOLLHUP = 0x010;
+        [GoConst] public static readonly long EPOLL_CTL_ADD = 1;
+        [GoConst] public static readonly long EPOLL_CTL_DEL = 2;
+        [GoConst] public static readonly long EPOLL_CTL_MOD = 3;
+
+        [GoFunc]
+        [return: GoReturn("error")]
+        public static object? Flock(long fd, long how) => null;
+
+        [GoFunc]
+        [return: GoReturn("int", "error")]
+        public static (long, object?) EpollCreate1(long flag) => (0, null);
+
+        [GoFunc]
+        [return: GoReturn("error")]
+        public static object? EpollCtl(long epfd, long op, long fd, object? event_) => null;
+
+        [GoFunc]
+        [return: GoReturn("int", "error")]
+        public static (long, object?) EpollWait(long epfd, object? events, long msec) => (0, null);
+
+        // Memory protection constants
+        [GoConst] public static readonly long PROT_READ = 0x1;
+        [GoConst] public static readonly long PROT_WRITE = 0x2;
+        [GoConst] public static readonly long PROT_EXEC = 0x4;
+
+        // Memory map constants
+        [GoConst] public static readonly long MAP_SHARED = 0x01;
+        [GoConst] public static readonly long MAP_PRIVATE = 0x02;
+        [GoConst] public static readonly long MAP_ANONYMOUS = 0x20;
+
+        [GoFunc]
+        [return: GoReturn("[]byte", "error")]
+        public static (Slice<byte>, object?) Mmap(long fd, long offset, long length, long prot, long flags) => (default, null);
+
+        [GoFunc]
+        [return: GoReturn("error")]
+        public static object? Munmap(Slice<byte> b) => null;
+
+        [GoFunc]
+        [return: GoReturn("error")]
+        public static object? Statfs(string path, [GoParam("*syscall.Statfs_t")] object? stat) => null;
     }
 }

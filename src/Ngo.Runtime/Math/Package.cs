@@ -43,11 +43,17 @@ namespace Ngo.Runtime.Math
         [GoFunc]
         public static double Log(double x) => System.Math.Log(x);
         [GoFunc]
+        public static double Log1p(double x) => System.Math.Log(1 + x);
+        [GoFunc]
         public static double Log2(double x) => System.Math.Log2(x);
         [GoFunc]
         public static double Log10(double x) => System.Math.Log10(x);
         [GoFunc]
         public static double Exp(double x) => System.Math.Exp(x);
+        [GoFunc]
+        public static double Exp2(double x) => System.Math.Pow(2, x);
+        [GoFunc]
+        public static double Expm1(double x) => System.Math.Exp(x) - 1;
         [GoFunc]
         public static double Mod(double x, double y) => x % y;
         [GoFunc]

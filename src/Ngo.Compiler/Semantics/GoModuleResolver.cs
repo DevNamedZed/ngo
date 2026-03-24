@@ -136,6 +136,50 @@ namespace Ngo.Compiler.Semantics
             }
         }
 
+        /// <summary>
+        /// Checks if the given directory (or a parent) has a go.mod and merges
+        /// its requirements into this resolver. Used during dependency discovery
+        /// to handle transitive deps from modules that aren't in the project's go.mod.
+        /// </summary>
+        public void MergeGoModIfPresent(string dir)
+        {
+            var current = dir;
+            for (int i = 0; i < 10; i++)
+            {
+                if (current == null)
+                {
+                    break;
+                }
+                var goModPath = Path.Combine(current, "go.mod");
+                if (File.Exists(goModPath))
+                {
+                    if (_loadedModuleGoMods.Add(goModPath))
+                    {
+                        var lines = File.ReadAllLines(goModPath);
+                        var newReqs = ParseRequirements(lines);
+                        foreach (var req in newReqs)
+                        {
+                            if (!_requirements.ContainsKey(req.Key))
+                            {
+                                _requirements[req.Key] = req.Value;
+                            }
+                            else if (CompareVersions(_requirements[req.Key], req.Value) < 0)
+                            {
+                                _requirements[req.Key] = req.Value;
+                            }
+                        }
+                    }
+                    break;
+                }
+                var parent = Path.GetDirectoryName(current);
+                if (parent == current || string.IsNullOrEmpty(parent))
+                {
+                    break;
+                }
+                current = parent;
+            }
+        }
+
         private static Dictionary<string, string> ParseRequirements(string[] lines)
         {
             var requirements = new Dictionary<string, string>();
@@ -615,9 +659,10 @@ namespace Ngo.Compiler.Semantics
                 }
             }
 
-            // Try progressively shorter module paths (longest prefix match)
+            // Try progressively shorter module paths (longest prefix match).
+            // Start at full length to handle import path = module path (no sub-package).
             var parts = importPath.Split('/');
-            for (int prefixLen = parts.Length - 1; prefixLen >= 1; prefixLen--)
+            for (int prefixLen = parts.Length; prefixLen >= 1; prefixLen--)
             {
                 var candidateModule = string.Join("/", parts, 0, prefixLen);
 

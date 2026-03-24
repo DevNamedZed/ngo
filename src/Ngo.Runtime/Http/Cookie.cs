@@ -18,6 +18,7 @@ namespace Ngo.Runtime.Http
         [GoField(Name = "SameSite")] public long SameSite { get; set; }
         [GoField(Name = "Raw")] public string Raw { get; set; } = "";
         [GoField(Name = "Unparsed")] public Slice<string> Unparsed { get; set; } = new();
+        [GoField(Name = "Partitioned")] public bool Partitioned { get; set; }
 
         [GoMethod]
         public string String() => Name + "=" + Value;

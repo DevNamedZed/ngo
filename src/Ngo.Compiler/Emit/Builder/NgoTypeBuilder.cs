@@ -62,6 +62,7 @@ namespace Ngo.Compiler.Emit.Builder
         {
             var fb = new NgoFieldBuilder(_proxyType, name, type, attrs);
             _fields.Add(fb);
+            _proxyType.AddField(name, type);
             return fb;
         }
 
@@ -69,6 +70,7 @@ namespace Ngo.Compiler.Emit.Builder
         {
             var mb = new NgoMethodBuilder(_proxyType, name, attrs, returnType, paramTypes);
             _methods.Add(mb);
+            _proxyType.AddMethod(name, returnType, paramTypes);
             return mb;
         }
 
@@ -76,6 +78,7 @@ namespace Ngo.Compiler.Emit.Builder
         {
             var mb = new NgoMethodBuilder(_proxyType, name, attrs, null, null);
             _methods.Add(mb);
+            _proxyType.AddMethod(name, null!, null!);
             return mb;
         }
 

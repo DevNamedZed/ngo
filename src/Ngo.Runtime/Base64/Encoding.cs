@@ -78,6 +78,13 @@ namespace Ngo.Runtime.Base64
         }
 
         [GoMethod]
+        [return: GoReturn("*base64.Encoding")]
+        public Encoding WithPadding([GoParam("rune")] long padding)
+        {
+            return this;
+        }
+
+        [GoMethod]
         public Encoding Strict()
         {
             // In Go, Strict() returns an Encoding that requires padding.

@@ -17,6 +17,7 @@
 // -----------------------------------------------------------------------
 
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Reflection;
 
@@ -27,6 +28,7 @@ namespace Ngo.Compiler.Emit.Builder
         private readonly string _fullName;
         private readonly string _name;
         private readonly bool _isValueType;
+        private readonly List<NgoProxyMethodInfo> _definedMethods = new();
 
         public NgoProxyType(string fullName, bool isValueType = false)
             : base(typeof(object))
@@ -35,6 +37,48 @@ namespace Ngo.Compiler.Emit.Builder
             var dot = fullName.LastIndexOf('.');
             _name = dot >= 0 ? fullName.Substring(dot + 1) : fullName;
             _isValueType = isValueType;
+        }
+
+        private readonly List<NgoProxyFieldInfo> _definedFields = new();
+
+        internal void AddMethod(string name, Type returnType, Type[] paramTypes)
+        {
+            _definedMethods.Add(new NgoProxyMethodInfo(this, name));
+        }
+
+        internal void AddField(string name, Type fieldType)
+        {
+            _definedFields.Add(new NgoProxyFieldInfo(this, name, fieldType));
+        }
+
+        public override FieldInfo? GetField(string name, BindingFlags bindingAttr)
+        {
+            foreach (var f in _definedFields)
+            {
+                if (f.Name == name)
+                {
+                    return f;
+                }
+            }
+            return null;
+        }
+
+        public override MethodInfo[] GetMethods(System.Reflection.BindingFlags bindingAttr)
+        {
+            return _definedMethods.ToArray();
+        }
+
+        protected override MethodInfo? GetMethodImpl(string name, System.Reflection.BindingFlags bindingAttr,
+            Binder? binder, CallingConventions callConvention, Type[]? types, ParameterModifier[]? modifiers)
+        {
+            foreach (var m in _definedMethods)
+            {
+                if (m.Name == name)
+                {
+                    return m;
+                }
+            }
+            return null;
         }
 
         public override string FullName => _fullName;
@@ -112,4 +156,5 @@ namespace Ngo.Compiler.Emit.Builder
         public override object[] GetCustomAttributes(Type attributeType, bool inherit) => System.Array.Empty<object>();
         public override bool IsDefined(Type attributeType, bool inherit) => false;
     }
+
 }

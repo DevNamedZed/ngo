@@ -24,6 +24,7 @@ namespace Ngo.Runtime.Http
         [GoField(Name = "Trailer")] public Header Trailer { get; set; } = new Header();
         [GoField(Name = "Response")] public object? Response { get; set; }
         [GoField(Name = "TransferEncoding")] public Slice<string> TransferEncoding { get; set; }
+        [GoField(Name = "GetBody", Type = "func() (io.ReadCloser, error)")] public object? GetBody;
 
         internal string URLPath { get; set; } = "";
 
@@ -227,6 +228,12 @@ namespace Ngo.Runtime.Http
         public object? ParseMultipartForm(long maxMemory) => null;
         [GoMethod]
         public (object?, object?) MultipartReader() => (null, null);
+        [GoMethod]
+        public bool ProtoAtLeast(long major, long minor)
+        {
+            return ProtoMajor > major || (ProtoMajor == major && ProtoMinor >= minor);
+        }
+
         [GoMethod]
         [return: GoReturn("error")]
         public object? Write(object? w) => null;

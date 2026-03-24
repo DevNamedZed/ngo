@@ -109,6 +109,12 @@ namespace Ngo.Compiler.Semantics
             // Integer cross-assignment (int ↔ int32, byte ↔ uint8, etc.)
             if (IsInteger(source) && IsInteger(target)) return true;
 
+            // Float cross-assignment (float32 ↔ float64)
+            if (IsFloat(source) && IsFloat(target)) return true;
+
+            // Complex cross-assignment (complex64 ↔ complex128)
+            if (IsComplex(source) && IsComplex(target)) return true;
+
             // string → error (our runtime represents errors as strings)
             if (IsStringToError(source, target)) return true;
 
@@ -229,8 +235,19 @@ namespace Ngo.Compiler.Semantics
 
         private static bool IsUnsafePointerAssignable(TypeSymbol source, TypeSymbol target)
         {
-            return (IsUnsafePointer(source) && (target.TypeKind == TypeKind.Pointer || IsUnsafePointer(target)))
-                || (IsUnsafePointer(target) && (source.TypeKind == TypeKind.Pointer || IsUnsafePointer(source)));
+            if (IsUnsafePointer(source)
+                && (target.TypeKind == TypeKind.Pointer || IsUnsafePointer(target)
+                    || target.TypeKind == TypeKind.Uintptr || IsInteger(target)))
+            {
+                return true;
+            }
+            if (IsUnsafePointer(target)
+                && (source.TypeKind == TypeKind.Pointer || IsUnsafePointer(source)
+                    || source.TypeKind == TypeKind.Uintptr || IsInteger(source)))
+            {
+                return true;
+            }
+            return false;
         }
 
         private static bool IsStructurallyAssignable(TypeSymbol source, TypeSymbol target)
@@ -517,6 +534,13 @@ namespace Ngo.Compiler.Semantics
                 return left;
             }
 
+            // float32 ↔ float64: Go allows mixed float operations, widening float32 to float64
+            if ((left.TypeKind == TypeKind.Float32 && right.TypeKind == TypeKind.Float64)
+                || (left.TypeKind == TypeKind.Float64 && right.TypeKind == TypeKind.Float32))
+            {
+                return left.TypeKind == TypeKind.Float64 ? left : right;
+            }
+
             return null;
         }
 
@@ -704,6 +728,7 @@ namespace Ngo.Compiler.Semantics
             if (type.IsAlias && type.UnderlyingType != null)
                 type = type.UnderlyingType;
 
+
             // Empty interface is satisfied by everything
             if (iface.Methods.Count == 0)
             {
@@ -723,7 +748,14 @@ namespace Ngo.Compiler.Semantics
                 // may not have methods — resolve to the underlying type to find them.
                 var resolvedInner = inner.Resolved();
                 if (resolvedInner != inner && inner.Methods.Count == 0 && resolvedInner.Methods.Count > 0)
+                {
                     inner = resolvedInner;
+                }
+                // For instantiated generic types, check the generic definition's methods
+                if (inner is InstantiatedTypeSymbol instInner && inner.Methods.Count == 0)
+                {
+                    inner = instInner.GenericType;
+                }
                 typeMethods = inner is InterfaceTypeSymbol ptrIface
                     ? ptrIface.Methods : inner.Methods;
                 includePointerReceivers = true;
@@ -738,14 +770,28 @@ namespace Ngo.Compiler.Semantics
                 // For named type aliases, resolve to find methods on the underlying type
                 var resolvedType = type.Resolved();
                 if (resolvedType != type && type.Methods.Count == 0 && resolvedType.Methods.Count > 0)
+                {
                     typeMethods = resolvedType.Methods;
+                }
+                else if (type is InstantiatedTypeSymbol instType && type.Methods.Count == 0)
+                {
+                    typeMethods = instType.GenericType.Methods;
+                }
                 else
+                {
                     typeMethods = type.Methods;
+                }
                 includePointerReceivers = false;
             }
 
             foreach (var required in iface.Methods)
             {
+                // Skip .NET runtime methods that leak into Go interface definitions
+                if (IsNetFrameworkMethod(required.Name))
+                {
+                    continue;
+                }
+
                 var found = false;
                 foreach (var method in typeMethods)
                 {
@@ -757,8 +803,6 @@ namespace Ngo.Compiler.Semantics
                         break;
                     }
                 }
-
-
 
                 // Check promoted methods from embedded structs
                 if (!found)
@@ -891,6 +935,13 @@ namespace Ngo.Compiler.Semantics
             }
 
             return true;
+        }
+
+        private static bool IsNetFrameworkMethod(string name)
+        {
+            return name == "GetType" || name == "ToString" || name == "Equals"
+                || name == "GetHashCode" || name == "MemberwiseClone"
+                || name == "Finalize" || name == "ReferenceEquals";
         }
 
         private static bool TypeNamesMatch(TypeSymbol a, TypeSymbol b)

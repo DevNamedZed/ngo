@@ -179,7 +179,16 @@ namespace Ngo.Compiler.Emit
                 var genericDef = type.GetGenericTypeDefinition();
                 var baseField = genericDef.GetField(name);
                 if (baseField != null)
-                    return TypeBuilder.GetField(type, baseField);
+                {
+                    try
+                    {
+                        return TypeBuilder.GetField(type, baseField);
+                    }
+                    catch (NotSupportedException)
+                    {
+                        return new Builder.NgoProxyFieldInfo(type, name, baseField.FieldType);
+                    }
+                }
             }
             return type.GetField(name)!;
         }
@@ -219,12 +228,22 @@ namespace Ngo.Compiler.Emit
                     baseMethod = genericDef.GetMethod(name);
 
                 if (baseMethod != null)
-                    return TypeBuilder.GetMethod(type, baseMethod);
+                {
+                    try
+                    {
+                        return TypeBuilder.GetMethod(type, baseMethod);
+                    }
+                    catch (NotSupportedException)
+                    {
+                        // Runtime generic with NgoProxyType args — return proxy method
+                        return new Builder.NgoProxyMethodInfo(type, name);
+                    }
+                }
             }
 
             if (paramTypes != null)
             {
-                if (paramsHaveTB)
+                if (paramsHaveTB || IsNonRuntimeType(type))
                 {
                     foreach (var m in type.GetMethods())
                     {
@@ -232,9 +251,23 @@ namespace Ngo.Compiler.Emit
                             return m;
                     }
                 }
-                return type.GetMethod(name, paramTypes)!;
+                try
+                {
+                    return type.GetMethod(name, paramTypes)!;
+                }
+                catch (NotSupportedException)
+                {
+                    return new Builder.NgoProxyMethodInfo(type, name);
+                }
             }
-            return type.GetMethod(name)!;
+            try
+            {
+                return type.GetMethod(name)!;
+            }
+            catch (NotSupportedException)
+            {
+                return new Builder.NgoProxyMethodInfo(type, name);
+            }
         }
 
         /// <summary>
@@ -249,7 +282,14 @@ namespace Ngo.Compiler.Emit
                 if (baseProp != null)
                 {
                     var baseGetter = baseProp.GetGetMethod()!;
-                    return TypeBuilder.GetMethod(type, baseGetter);
+                    try
+                    {
+                        return TypeBuilder.GetMethod(type, baseGetter);
+                    }
+                    catch (NotSupportedException)
+                    {
+                        return new Builder.NgoProxyMethodInfo(type, baseGetter.Name);
+                    }
                 }
             }
             return type.GetProperty(name)!.GetGetMethod()!;

@@ -278,6 +278,8 @@ namespace Ngo.Runtime.Unicode
         [GoVar(Type = "map[string]*RangeTable")] public static readonly object? FoldCategory = null;
         [GoVar(Type = "map[string]*RangeTable")] public static readonly object? FoldScript = null;
 
+        [GoVar(Type = "*unicode.RangeTable")] public static readonly object? Soft_Dotted = null;
+
         // SpecialCase vars
         public static readonly SpecialCase TurkishCase = new SpecialCase();
         public static readonly SpecialCase AzeriCase = new SpecialCase();

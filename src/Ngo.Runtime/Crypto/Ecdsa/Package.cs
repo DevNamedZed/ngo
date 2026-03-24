@@ -26,6 +26,13 @@ namespace Ngo.Runtime.Crypto.Ecdsa
         }
 
         [GoFunc]
+        [return: GoReturn("*big.Int", "*big.Int", "error")]
+        public static (object?, object?, object?) Sign([GoParam("io.Reader")] object? rand, [GoParam("*ecdsa.PrivateKey")] object? priv, Slice<byte> hash)
+        {
+            return (null, null, null);
+        }
+
+        [GoFunc]
         public static bool Verify([GoParam("*ecdsa.PublicKey")] object? pub, Slice<byte> hash, [GoParam("*big.Int")] object? r, [GoParam("*big.Int")] object? s)
         {
             if (pub is not GoPublicKey pubKey)

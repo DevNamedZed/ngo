@@ -26,9 +26,16 @@ namespace Ngo.Runtime.Os
     [GoType("struct", Name = "LinkError", Package = "os")]
     public sealed class GoLinkError
     {
+        [GoField(Name = "Op")]
         public string Op { get; }
+
+        [GoField(Name = "Old")]
         public string Old { get; }
+
+        [GoField(Name = "New")]
         public string New { get; }
+
+        [GoField(Name = "Err", Type = "error")]
         public object Err { get; }
 
         public GoLinkError(string op, string old, string @new, object err)

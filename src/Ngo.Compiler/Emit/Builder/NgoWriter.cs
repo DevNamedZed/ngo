@@ -422,7 +422,27 @@ namespace Ngo.Compiler.Emit.Builder
 
         internal static string GetTypeNameStatic(Type type) => GetTypeName(type);
 
+        [ThreadStatic] private static HashSet<Type>? _typeNameInProgress;
+
         private static string GetTypeName(Type type)
+        {
+            // Cycle detection for self-referencing generic types
+            _typeNameInProgress ??= new HashSet<Type>(ReferenceEqualityComparer.Instance);
+            if (!_typeNameInProgress.Add(type))
+            {
+                return type.Name ?? "$$circular";
+            }
+            try
+            {
+                return GetTypeNameCore(type);
+            }
+            finally
+            {
+                _typeNameInProgress.Remove(type);
+            }
+        }
+
+        private static string GetTypeNameCore(Type type)
         {
             if (type == typeof(void)) return "System.Void";
             if (type == typeof(object)) return "System.Object";
@@ -475,12 +495,20 @@ namespace Ngo.Compiler.Emit.Builder
 
         private static string GetCtorRef(ConstructorInfo ctor)
         {
+            if (ctor == null)
+            {
+                return "$$null::.ctor";
+            }
             var declaringType = ctor.DeclaringType;
             return GetTypeName(declaringType!) + "::.ctor";
         }
 
         private static string GetFieldRef(FieldInfo field)
         {
+            if (field == null)
+            {
+                return "$$null::$$null";
+            }
             var declaringType = field.DeclaringType;
             return GetTypeName(declaringType!) + "::" + field.Name;
         }

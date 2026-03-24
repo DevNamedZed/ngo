@@ -102,6 +102,10 @@ namespace Ngo.Runtime.Database.Sql
         public const long LevelLinearizable = 7;
     }
 
+    // sql.IsolationLevel named type
+    [GoType("named", Name = "IsolationLevel", Package = "database/sql", Underlying = "int")]
+    public class GoIsolationLevel {}
+
     // sql.DB struct
     [GoType("struct", Name = "DB", Package = "database/sql")]
     public class GoDb

@@ -52,6 +52,21 @@ namespace Ngo.Runtime.Regexp
         }
 
         [GoFunc]
+        [return: GoReturn("bool", "error")]
+        public static (bool, object?) Match(string pattern, Slice<byte> b)
+        {
+            try
+            {
+                var text = System.Text.Encoding.UTF8.GetString(b.AsSpan());
+                return (Regex.IsMatch(text, pattern), null);
+            }
+            catch (Exception ex)
+            {
+                return (false, Ngo.Runtime.Errors.Package.New(ex.Message));
+            }
+        }
+
+        [GoFunc]
         public static string QuoteMeta(string s)
         {
             return Regex.Escape(s);

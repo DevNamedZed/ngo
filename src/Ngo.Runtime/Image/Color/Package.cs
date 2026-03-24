@@ -71,6 +71,10 @@ namespace Ngo.Runtime.Image.Color
         [GoVar(Type = "color.Color")]
         public static readonly object? Opaque = new GoAlpha16 { A = 0xFFFF };
 
+        [GoFunc]
+        [return: GoReturn("color.Model")]
+        public static object? ModelFunc(object? f) => null;
+
         // Conversion functions
         [GoFunc]
         [return: GoReturn("byte", "byte", "byte", "byte")]

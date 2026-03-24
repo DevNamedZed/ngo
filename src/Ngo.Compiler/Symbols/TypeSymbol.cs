@@ -94,9 +94,12 @@ namespace Ngo.Compiler.Symbols
         /// </summary>
         public virtual TypeSymbol Resolved()
         {
-            if (UnderlyingType != null && GetType() == typeof(TypeSymbol))
-                return UnderlyingType;
-            return this;
+            var current = this;
+            while (current.UnderlyingType != null && current.GetType() == typeof(TypeSymbol))
+            {
+                current = current.UnderlyingType;
+            }
+            return current;
         }
 
         public override string ToString() => Name;

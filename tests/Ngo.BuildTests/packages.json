@@ -3,7 +3,7 @@
     "module": "github.com/360EntSecGroup-Skylar/excelize",
     "version": "v1.4.1",
     "label": "360EntSecGroup-Skylar-excelize",
-    "expect": "max:21"
+    "expect": "pass"
   },
   {
     "module": "github.com/a8m/envsubst",
@@ -63,7 +63,7 @@
     "module": "github.com/aidarkhanov/nanoid/v2",
     "version": "v2.0.5",
     "label": "aidarkhanov-nanoid-v2",
-    "expect": "max:1"
+    "expect": "pass"
   },
   {
     "module": "github.com/AlecAivazis/survey/v2",
@@ -75,7 +75,7 @@
     "module": "github.com/alecthomas/assert/v2",
     "version": "v2.11.0",
     "label": "alecthomas-assert-v2",
-    "expect": "max:15"
+    "expect": "pass"
   },
   {
     "module": "github.com/alecthomas/chroma/v2",
@@ -94,13 +94,13 @@
     "module": "github.com/alecthomas/kong",
     "version": "v1.6.1",
     "label": "alecthomas-kong",
-    "expect": "max:11"
+    "expect": "pass"
   },
   {
     "module": "github.com/alecthomas/participle/v2",
     "version": "v2.1.1",
     "label": "alecthomas-participle-v2",
-    "expect": "max:19"
+    "expect": "pass"
   },
   {
     "module": "github.com/alecthomas/repr",
@@ -136,7 +136,7 @@
     "module": "github.com/alexedwards/scs/v2",
     "version": "v2.8.0",
     "label": "alexedwards-scs-v2",
-    "expect": "max:8"
+    "expect": "pass"
   },
   {
     "module": "github.com/alexflint/go-arg",
@@ -178,25 +178,25 @@
     "module": "github.com/alphadose/haxmap",
     "version": "v1.4.1",
     "label": "alphadose-haxmap",
-    "expect": "max:83"
+    "expect": "pass"
   },
   {
     "module": "github.com/andreyvit/diff",
     "version": "v0.0.0-20170406064948-c7f18ee00883",
     "label": "andreyvit-diff",
-    "expect": "max:27"
+    "expect": "pass"
   },
   {
     "module": "github.com/andybalholm/brotli",
     "version": "v1.1.1",
     "label": "andybalholm-brotli",
-    "expect": "max:9"
+    "expect": "pass"
   },
   {
     "module": "github.com/andybalholm/cascadia",
     "version": "v1.3.3",
     "label": "andybalholm-cascadia",
-    "expect": "max:6"
+    "expect": "pass"
   },
   {
     "module": "github.com/anmitsu/go-shlex",
@@ -208,7 +208,7 @@
     "module": "github.com/antchfx/xpath",
     "version": "v1.3.3",
     "label": "antchfx-xpath",
-    "expect": "max:3"
+    "expect": "pass"
   },
   {
     "module": "github.com/anthonynsimon/bild",
@@ -298,7 +298,7 @@
     "module": "github.com/asaskevich/EventBus",
     "version": "v0.0.0-20200907212545-49d423059eef",
     "label": "asaskevich-EventBus",
-    "expect": "max:16"
+    "expect": "pass"
   },
   {
     "module": "github.com/asaskevich/govalidator",
@@ -316,7 +316,7 @@
     "module": "github.com/avast/retry-go/v4",
     "version": "v4.6.0",
     "label": "avast-retry-go",
-    "expect": "max:1"
+    "expect": "pass"
   },
   {
     "module": "github.com/avelino/slugify",
@@ -328,7 +328,7 @@
     "module": "github.com/awalterschulze/gographviz",
     "version": "v2.0.3+incompatible",
     "label": "awalterschulze-gographviz",
-    "expect": "max:144"
+    "expect": "pass"
   },
   {
     "module": "github.com/awnumar/memguard",
@@ -353,7 +353,7 @@
     "module": "github.com/aymerick/raymond",
     "version": "v2.0.2+incompatible",
     "label": "aymerick-raymond",
-    "expect": "max:130"
+    "expect": "pass"
   },
   {
     "module": "github.com/cenkalti/backoff",
@@ -365,7 +365,7 @@
     "module": "github.com/bahlo/generic-list-go",
     "version": "v0.2.0",
     "label": "bahlo-generic-list-go",
-    "expect": "max:3"
+    "expect": "pass"
   },
   {
     "module": "github.com/bamzi/jobrunner",
@@ -492,25 +492,25 @@
     "module": "github.com/brianvoe/gofakeit/v7",
     "version": "v7.2.1",
     "label": "brianvoe-gofakeit-v7",
-    "expect": "max:90"
+    "expect": "pass"
   },
   {
     "module": "github.com/bsm/ginkgo/v2",
     "version": "v2.12.0",
     "label": "bsm-ginkgo",
-    "expect": "max:1"
+    "expect": "pass"
   },
   {
     "module": "github.com/bsm/gomega",
     "version": "v1.27.10",
     "label": "bsm-gomega",
-    "expect": "max:2"
+    "expect": "pass"
   },
   {
     "module": "github.com/btcsuite/btcutil",
     "version": "v1.0.2",
     "label": "btcsuite-btcutil",
-    "expect": "max:8"
+    "expect": "pass"
   },
   {
     "module": "github.com/google/btree",
@@ -570,7 +570,7 @@
     "module": "github.com/cenkalti/backoff/v4",
     "version": "v4.3.0",
     "label": "cenkalti-backoff",
-    "expect": "max:7"
+    "expect": "pass"
   },
   {
     "module": "github.com/cenkalti/hub",
@@ -582,7 +582,7 @@
     "module": "github.com/cenkalti/rpc2",
     "version": "v1.0.3",
     "label": "cenkalti-rpc2",
-    "expect": "max:8"
+    "expect": "pass"
   },
   {
     "module": "github.com/cespare/mph",
@@ -631,7 +631,7 @@
     "module": "github.com/charmbracelet/glamour",
     "version": "v0.8.0",
     "label": "charmbracelet-glamour",
-    "expect": "max:1"
+    "expect": "pass"
   },
   {
     "module": "github.com/charmbracelet/lipgloss",
@@ -649,7 +649,7 @@
     "module": "github.com/charmbracelet/x/ansi",
     "version": "v0.6.0",
     "label": "charmbracelet-x-ansi",
-    "expect": "max:76"
+    "expect": "pass"
   },
   {
     "module": "github.com/cheggaaa/pb/v3",
@@ -668,7 +668,7 @@
     "version": "v5.2.0",
     "subPackage": "middleware",
     "label": "chi-middleware",
-    "expect": "max:26"
+    "expect": "pass"
   },
   {
     "module": "github.com/chilts/sid",
@@ -692,7 +692,7 @@
     "module": "github.com/CloudyKit/jet/v6",
     "version": "v6.2.0",
     "label": "cloudykit-jet",
-    "expect": "max:8"
+    "expect": "pass"
   },
   {
     "module": "github.com/cockroachdb/apd/v3",
@@ -722,7 +722,7 @@
     "module": "github.com/Code-Hex/go-generics-cache",
     "version": "v1.5.1",
     "label": "Code-Hex-go-generics-cache",
-    "expect": "max:21"
+    "expect": "pass"
   },
   {
     "module": "github.com/codingsince1985/checksum",
@@ -740,7 +740,7 @@
     "module": "github.com/common-nighthawk/go-figure",
     "version": "v0.0.0-20210622060536-734e95fb86be",
     "label": "common-nighthawk-go-figure",
-    "expect": "max:150"
+    "expect": "pass"
   },
   {
     "module": "github.com/sourcegraph/conc",
@@ -803,7 +803,7 @@
     "module": "github.com/corona10/goimagehash",
     "version": "v1.1.0",
     "label": "corona10-goimagehash",
-    "expect": "max:7"
+    "expect": "pass"
   },
   {
     "module": "github.com/cpuguy83/go-md2man/v2",
@@ -815,13 +815,13 @@
     "module": "github.com/creack/pty",
     "version": "v1.1.24",
     "label": "creack-pty",
-    "expect": "max:30"
+    "expect": "pass"
   },
   {
     "module": "github.com/creack/pty/v2",
     "version": "v2.0.1",
     "label": "creack-pty-v2",
-    "expect": "max:16"
+    "expect": "pass"
   },
   {
     "module": "github.com/cristalhq/aconfig",
@@ -927,14 +927,14 @@
     "module": "github.com/dgraph-io/badger/v4",
     "version": "v4.5.0",
     "label": "dgraph-io-badger-v4",
-    "expect": "max:28"
+    "expect": "pass"
   },
   {
     "module": "github.com/dgraph-io/badger/v4",
     "version": "v4.5.0",
     "subPackage": "y",
     "label": "dgraph-io-badger-y",
-    "expect": "max:116"
+    "expect": "pass"
   },
   {
     "module": "github.com/dgraph-io/ristretto",
@@ -946,7 +946,7 @@
     "module": "github.com/didip/tollbooth",
     "version": "v4.0.2+incompatible",
     "label": "didip-tollbooth",
-    "expect": "max:54"
+    "expect": "pass"
   },
   {
     "module": "github.com/didip/tollbooth/v7",
@@ -983,7 +983,7 @@
     "module": "github.com/disintegration/imaging",
     "version": "v1.6.2",
     "label": "disintegration-imaging",
-    "expect": "max:387"
+    "expect": "pass"
   },
   {
     "module": "github.com/disiqueira/gotree",
@@ -1019,7 +1019,7 @@
     "module": "github.com/dolthub/swiss",
     "version": "v0.2.1",
     "label": "dolthub-swiss",
-    "expect": "max:1"
+    "expect": "pass"
   },
   {
     "module": "github.com/dominikbraun/graph",
@@ -1037,7 +1037,7 @@
     "module": "github.com/aymerick/douceur",
     "version": "v0.2.0",
     "label": "douceur",
-    "expect": "max:6"
+    "expect": "pass"
   },
   {
     "module": "github.com/doug-martin/goqu/v9",
@@ -1326,7 +1326,7 @@
     "module": "github.com/fogleman/gg",
     "version": "v1.3.0",
     "label": "fogleman-gg",
-    "expect": "max:196"
+    "expect": "pass"
   },
   {
     "module": "github.com/frankban/quicktest",
@@ -1338,7 +1338,7 @@
     "module": "github.com/fsnotify/fsnotify",
     "version": "v1.8.0",
     "label": "fsnotify-fsnotify",
-    "expect": "max:114"
+    "expect": "pass"
   },
   {
     "module": "github.com/fxamacker/cbor/v2",
@@ -1380,7 +1380,13 @@
     "module": "github.com/ghodss/yaml",
     "version": "v1.0.0",
     "label": "ghodss-yaml",
-    "expect": "max:8"
+    "expect": "pass",
+    "deps": [
+      {
+        "module": "gopkg.in/yaml.v2",
+        "version": "v2.4.0"
+      }
+    ]
   },
   {
     "module": "github.com/gin-gonic/gin",
@@ -1407,7 +1413,7 @@
     "version": "v1.10.0",
     "subPackage": "render",
     "label": "gin-render",
-    "expect": "max:18"
+    "expect": "pass"
   },
   {
     "module": "github.com/gliderlabs/ssh",
@@ -1506,7 +1512,7 @@
     "module": "github.com/tmthrgd/go-hex",
     "version": "v0.0.0-20190904060850-447a3041c3bc",
     "label": "go-hex",
-    "expect": "max:5"
+    "expect": "pass"
   },
   {
     "module": "github.com/mitchellh/go-homedir",
@@ -1548,7 +1554,7 @@
     "module": "github.com/go-jose/go-jose/v4",
     "version": "v4.0.4",
     "label": "go-jose-go-jose-v4",
-    "expect": "max:46"
+    "expect": "pass"
   },
   {
     "module": "github.com/go-kit/log",
@@ -1597,7 +1603,7 @@
     "module": "github.com/go-openapi/jsonpointer",
     "version": "v0.21.0",
     "label": "go-openapi-jsonpointer",
-    "expect": "max:7"
+    "expect": "pass"
   },
   {
     "module": "github.com/go-openapi/jsonreference",
@@ -1621,7 +1627,7 @@
     "module": "github.com/go-openapi/strfmt",
     "version": "v0.23.0",
     "label": "go-openapi-strfmt",
-    "expect": "max:48"
+    "expect": "pass"
   },
   {
     "module": "github.com/go-openapi/swag",
@@ -1633,7 +1639,7 @@
     "module": "github.com/go-openapi/validate",
     "version": "v0.24.0",
     "label": "go-openapi-validate",
-    "expect": "max:4"
+    "expect": "pass"
   },
   {
     "module": "github.com/go-playground/form/v4",
@@ -1685,7 +1691,7 @@
     "version": "v9.7.0",
     "subPackage": "internal/pool",
     "label": "go-redis-internal-pool",
-    "expect": "max:4"
+    "expect": "pass"
   },
   {
     "module": "github.com/redis/go-redis/v9",
@@ -1729,7 +1735,7 @@
     "module": "github.com/go-sql-driver/mysql",
     "version": "v1.8.1",
     "label": "go-sql-driver-mysql",
-    "expect": "max:149"
+    "expect": "pass"
   },
   {
     "module": "github.com/go-stack/stack",
@@ -1741,7 +1747,7 @@
     "module": "github.com/go-task/slim-sprig/v3",
     "version": "v3.0.0",
     "label": "go-task-slim-sprig-v3",
-    "expect": "max:21"
+    "expect": "pass"
   },
   {
     "module": "github.com/andrew-d/go-termutil",
@@ -1802,14 +1808,14 @@
     "module": "github.com/gobwas/glob",
     "version": "v0.2.3",
     "label": "gobwas-glob",
-    "expect": "max:8"
+    "expect": "pass"
   },
   {
     "module": "github.com/gobwas/glob",
     "version": "v0.2.3",
     "subPackage": "match",
     "label": "gobwas-glob-match",
-    "expect": "max:23"
+    "expect": "pass"
   },
   {
     "module": "github.com/gobwas/httphead",
@@ -1821,13 +1827,13 @@
     "module": "github.com/gobwas/pool",
     "version": "v0.2.1",
     "label": "gobwas-pool",
-    "expect": "max:7"
+    "expect": "pass"
   },
   {
     "module": "github.com/gobwas/ws",
     "version": "v1.4.0",
     "label": "gobwas-ws",
-    "expect": "max:9"
+    "expect": "pass"
   },
   {
     "module": "github.com/gocarina/gocsv",
@@ -1839,7 +1845,7 @@
     "module": "github.com/goccy/go-json",
     "version": "v0.10.5",
     "label": "goccy-go-json",
-    "expect": "max:3"
+    "expect": "pass"
   },
   {
     "module": "github.com/goccy/go-reflect",
@@ -1851,7 +1857,7 @@
     "module": "github.com/goccy/go-yaml",
     "version": "v1.15.13",
     "label": "goccy-go-yaml",
-    "expect": "max:22"
+    "expect": "pass"
   },
   {
     "module": "github.com/gocraft/dbr/v2",
@@ -1890,13 +1896,13 @@
     "module": "github.com/gofiber/fiber/v2",
     "version": "v2.52.6",
     "label": "gofiber-fiber-v2",
-    "expect": "max:44"
+    "expect": "pass"
   },
   {
     "module": "github.com/gofrs/flock",
     "version": "v0.12.1",
     "label": "gofrs-flock",
-    "expect": "max:8"
+    "expect": "pass"
   },
   {
     "module": "github.com/gofrs/uuid",
@@ -1933,7 +1939,7 @@
     "module": "github.com/golang-jwt/jwt/v5",
     "version": "v5.2.1",
     "label": "golang-jwt-v5",
-    "expect": "max:11"
+    "expect": "pass"
   },
   {
     "module": "github.com/hashicorp/golang-lru",
@@ -2144,7 +2150,7 @@
     "module": "github.com/gorilla/schema",
     "version": "v1.4.1",
     "label": "gorilla-schema",
-    "expect": "max:1"
+    "expect": "pass"
   },
   {
     "module": "github.com/gorilla/securecookie",
@@ -2156,7 +2162,7 @@
     "module": "github.com/gorilla/sessions",
     "version": "v1.4.0",
     "label": "gorilla-sessions",
-    "expect": "max:7"
+    "expect": "pass"
   },
   {
     "module": "github.com/gorilla/websocket",
@@ -2186,13 +2192,25 @@
     "module": "github.com/gosuri/uiprogress",
     "version": "v0.0.1",
     "label": "gosuri-uiprogress",
-    "expect": "max:13"
+    "expect": "pass",
+    "deps": [
+      {
+        "module": "github.com/gosuri/uilive",
+        "version": "v0.0.4"
+      }
+    ]
   },
   {
     "module": "github.com/gosuri/uitable",
     "version": "v0.0.4",
     "label": "gosuri-uitable",
-    "expect": "max:17"
+    "expect": "pass",
+    "deps": [
+      {
+        "module": "github.com/fatih/color",
+        "version": "v1.18.0"
+      }
+    ]
   },
   {
     "module": "github.com/gookit/goutil",
@@ -2245,7 +2263,13 @@
     "module": "github.com/gyuho/goraph",
     "version": "v0.0.0-20220410190906-ad625acf7ae3",
     "label": "gyuho-goraph",
-    "expect": "max:3"
+    "expect": "pass",
+    "deps": [
+      {
+        "module": "gopkg.in/yaml.v2",
+        "version": "v2.4.0"
+      }
+    ]
   },
   {
     "module": "github.com/hako/durafmt",
@@ -2281,7 +2305,7 @@
     "module": "github.com/hashicorp/go-checkpoint",
     "version": "v0.5.0",
     "label": "hashicorp-go-checkpoint",
-    "expect": "max:4"
+    "expect": "pass"
   },
   {
     "module": "github.com/hashicorp/go-cleanhttp",
@@ -2323,13 +2347,13 @@
     "module": "github.com/hashicorp/go-getter",
     "version": "v1.7.6",
     "label": "hashicorp-go-getter",
-    "expect": "max:38"
+    "expect": "pass"
   },
   {
     "module": "github.com/hashicorp/go-getter/v2",
     "version": "v2.2.3",
     "label": "hashicorp-go-getter-v2",
-    "expect": "max:43"
+    "expect": "pass"
   },
   {
     "module": "github.com/hashicorp/go-hclog",
@@ -2371,7 +2395,7 @@
     "module": "github.com/hashicorp/go-reap",
     "version": "v0.0.0-20170704170343-bf58d8a43e7b",
     "label": "hashicorp-go-reap",
-    "expect": "max:10"
+    "expect": "pass"
   },
   {
     "module": "github.com/hashicorp/go-rootcerts",
@@ -2407,7 +2431,7 @@
     "module": "github.com/hashicorp/go-syslog",
     "version": "v1.0.0",
     "label": "hashicorp-go-syslog",
-    "expect": "max:48"
+    "expect": "pass"
   },
   {
     "module": "github.com/hashicorp/go-uuid",
@@ -2457,7 +2481,7 @@
     "module": "github.com/hashicorp/hcl/v2",
     "version": "v2.23.0",
     "label": "hashicorp-hcl-v2",
-    "expect": "max:5"
+    "expect": "pass"
   },
   {
     "module": "github.com/hashicorp/logutils",
@@ -2499,7 +2523,7 @@
     "module": "github.com/hashicorp/yamux",
     "version": "v0.1.2",
     "label": "hashicorp-yamux",
-    "expect": "max:7"
+    "expect": "pass"
   },
   {
     "module": "github.com/mitchellh/hashstructure",
@@ -2523,19 +2547,31 @@
     "module": "github.com/hibiken/asynq",
     "version": "v0.25.1",
     "label": "hibiken-asynq",
-    "expect": "max:17"
+    "expect": "pass"
   },
   {
     "module": "github.com/hokaccha/go-prettyjson",
     "version": "v0.0.0-20211117102719-0474bc63780f",
     "label": "hokaccha-go-prettyjson",
-    "expect": "max:20"
+    "expect": "pass",
+    "deps": [
+      {
+        "module": "github.com/fatih/color",
+        "version": "v1.18.0"
+      }
+    ]
   },
   {
     "module": "github.com/hpcloud/tail",
     "version": "v1.0.0",
     "label": "hpcloud-tail",
-    "expect": "max:39"
+    "expect": "pass",
+    "deps": [
+      {
+        "module": "gopkg.in/tomb.v1",
+        "version": "v1.0.0-20141024135613-dd632973f1e7"
+      }
+    ]
   },
   {
     "module": "github.com/tv42/httpunix",
@@ -2547,13 +2583,13 @@
     "module": "github.com/huandu/go-clone",
     "version": "v1.7.2",
     "label": "huandu-go-clone",
-    "expect": "max:4"
+    "expect": "pass"
   },
   {
     "module": "github.com/huandu/go-clone/generic",
     "version": "v1.7.2",
     "label": "huandu-go-clone-generic",
-    "expect": "max:12"
+    "expect": "pass"
   },
   {
     "module": "github.com/huandu/go-sqlbuilder",
@@ -2577,7 +2613,7 @@
     "module": "github.com/iancoleman/orderedmap",
     "version": "v0.3.0",
     "label": "iancoleman-orderedmap",
-    "expect": "max:6"
+    "expect": "pass"
   },
   {
     "module": "github.com/iancoleman/strcase",
@@ -2607,7 +2643,21 @@
     "module": "github.com/inconshreveable/log15",
     "version": "v2.16.0+incompatible",
     "label": "inconshreveable-log15",
-    "expect": "max:42"
+    "expect": "pass",
+    "deps": [
+      {
+        "module": "github.com/go-stack/stack",
+        "version": "v1.8.1"
+      },
+      {
+        "module": "github.com/mattn/go-colorable",
+        "version": "v0.1.14"
+      },
+      {
+        "module": "golang.org/x/term",
+        "version": "v0.27.0"
+      }
+    ]
   },
   {
     "module": "github.com/inconshreveable/mousetrap",
@@ -2619,7 +2669,7 @@
     "module": "github.com/integrii/flaggy",
     "version": "v1.5.2",
     "label": "integrii-flaggy",
-    "expect": "max:13"
+    "expect": "pass"
   },
   {
     "module": "github.com/invopop/yaml",
@@ -2643,7 +2693,7 @@
     "module": "github.com/itchyny/gojq",
     "version": "v0.12.16",
     "label": "itchyny-gojq",
-    "expect": "max:49"
+    "expect": "pass"
   },
   {
     "module": "github.com/itchyny/timefmt-go",
@@ -2679,13 +2729,13 @@
     "module": "github.com/jackc/pgtype",
     "version": "v1.14.4",
     "label": "jackc-pgtype",
-    "expect": "max:16"
+    "expect": "pass"
   },
   {
     "module": "github.com/jackc/pgx/v5",
     "version": "v5.7.2",
     "label": "jackc-pgx-v5",
-    "expect": "max:3"
+    "expect": "pass"
   },
   {
     "module": "github.com/jedib0t/go-pretty/v6",
@@ -2789,7 +2839,7 @@
     "module": "github.com/json-iterator/go",
     "version": "v1.1.12",
     "label": "json-iterator-go",
-    "expect": "max:4"
+    "expect": "pass"
   },
   {
     "module": "github.com/jszwec/csvutil",
@@ -2837,13 +2887,13 @@
     "module": "github.com/karlseguin/ccache/v3",
     "version": "v3.0.6",
     "label": "karlseguin-ccache",
-    "expect": "max:2"
+    "expect": "pass"
   },
   {
     "module": "github.com/karrick/godirwalk",
     "version": "v1.17.0",
     "label": "karrick-godirwalk",
-    "expect": "max:1"
+    "expect": "pass"
   },
   {
     "module": "github.com/kballard/go-shellquote",
@@ -2946,25 +2996,25 @@
     "module": "github.com/klauspost/cpuid/v2",
     "version": "v2.2.9",
     "label": "klauspost-cpuid-v2",
-    "expect": "max:16"
+    "expect": "pass"
   },
   {
     "module": "github.com/klauspost/crc32",
     "version": "v1.2.0",
     "label": "klauspost-crc32",
-    "expect": "max:6"
+    "expect": "pass"
   },
   {
     "module": "github.com/klauspost/pgzip",
     "version": "v1.2.6",
     "label": "klauspost-pgzip",
-    "expect": "max:22"
+    "expect": "pass"
   },
   {
     "module": "github.com/klauspost/reedsolomon",
     "version": "v1.12.4",
     "label": "klauspost-reedsolomon",
-    "expect": "max:11"
+    "expect": "pass"
   },
   {
     "module": "github.com/knadh/koanf/maps",
@@ -3055,7 +3105,7 @@
     "version": "v0.4.2",
     "subPackage": "bytes",
     "label": "labstack-gommon-bytes",
-    "expect": "max:7"
+    "expect": "pass"
   },
   {
     "module": "github.com/labstack/gommon",
@@ -3075,7 +3125,7 @@
     "module": "github.com/lann/builder",
     "version": "v0.0.0-20180802200727-47ae307949d0",
     "label": "lann-builder",
-    "expect": "max:27"
+    "expect": "pass"
   },
   {
     "module": "github.com/lann/ps",
@@ -3117,7 +3167,7 @@
     "module": "github.com/levigross/grequests",
     "version": "v0.0.0-20231203190023-9c307ef1f48d",
     "label": "levigross-grequests",
-    "expect": "max:24"
+    "expect": "pass"
   },
   {
     "module": "github.com/libdns/libdns",
@@ -3177,7 +3227,7 @@
     "module": "lukechampine.com/blake3",
     "version": "v1.3.0",
     "label": "lukechampine-blake3",
-    "expect": "max:1"
+    "expect": "pass"
   },
   {
     "module": "lukechampine.com/uint128",
@@ -3220,7 +3270,7 @@
     "module": "github.com/makeworld-the-better-one/dither/v2",
     "version": "v2.4.0",
     "label": "makeworld-dither-v2",
-    "expect": "max:98"
+    "expect": "pass"
   },
   {
     "module": "github.com/manifoldco/promptui",
@@ -3305,7 +3355,7 @@
     "module": "github.com/mattn/go-encoding",
     "version": "v0.0.2",
     "label": "mattn-go-encoding",
-    "expect": "max:11"
+    "expect": "pass"
   },
   {
     "module": "github.com/mattn/go-isatty",
@@ -3395,7 +3445,7 @@
     "module": "github.com/mgutz/ansi",
     "version": "v0.0.0-20200706080929-d51e80ef957d",
     "label": "mgutz-ansi",
-    "expect": "max:3"
+    "expect": "pass"
   },
   {
     "module": "github.com/mholt/acmez",
@@ -3528,7 +3578,7 @@
     "module": "github.com/mitchellh/gox",
     "version": "v1.0.1",
     "label": "mitchellh-gox",
-    "expect": "max:5"
+    "expect": "pass"
   },
   {
     "module": "github.com/mitchellh/hashstructure/v2",
@@ -3552,7 +3602,7 @@
     "module": "github.com/mitchellh/panicwrap",
     "version": "v1.0.0",
     "label": "mitchellh-panicwrap",
-    "expect": "max:5"
+    "expect": "pass"
   },
   {
     "module": "github.com/mitchellh/pointerstructure",
@@ -3606,7 +3656,7 @@
     "module": "github.com/mozillazg/go-slugify",
     "version": "v0.2.0",
     "label": "mozillazg-go-slugify",
-    "expect": "max:3"
+    "expect": "pass"
   },
   {
     "module": "github.com/mozillazg/go-unidecode",
@@ -3693,7 +3743,7 @@
     "module": "github.com/multiformats/go-multiaddr",
     "version": "v0.14.0",
     "label": "multiformats-go-multiaddr",
-    "expect": "max:38"
+    "expect": "pass"
   },
   {
     "module": "github.com/multiformats/go-multihash",
@@ -3742,7 +3792,7 @@
     "module": "github.com/nats-io/nkeys",
     "version": "v0.4.9",
     "label": "nats-io-nkeys",
-    "expect": "max:5"
+    "expect": "pass"
   },
   {
     "module": "github.com/nats-io/nuid",
@@ -3790,19 +3840,19 @@
     "module": "github.com/nfnt/resize",
     "version": "v0.0.0-20180221191011-83c6a9932646",
     "label": "nfnt-resize",
-    "expect": "max:538"
+    "expect": "pass"
   },
   {
     "module": "nhooyr.io/websocket",
     "version": "v1.8.17",
     "label": "nhooyr-websocket",
-    "expect": "max:20"
+    "expect": "pass"
   },
   {
     "module": "github.com/nhooyr/websocket",
     "version": "v1.8.14",
     "label": "nhooyr-websocket",
-    "expect": "max:40"
+    "expect": "pass"
   },
   {
     "module": "github.com/nightlyone/lockfile",
@@ -3814,19 +3864,19 @@
     "module": "github.com/nwaples/rardecode",
     "version": "v1.1.3",
     "label": "nwaples-rardecode",
-    "expect": "max:5"
+    "expect": "pass"
   },
   {
     "module": "github.com/nwidger/jsoncolor",
     "version": "v0.3.2",
     "label": "nwidger-jsoncolor",
-    "expect": "max:4"
+    "expect": "pass"
   },
   {
     "module": "github.com/nxadm/tail",
     "version": "v1.4.11",
     "label": "nxadm-tail",
-    "expect": "max:1"
+    "expect": "pass"
   },
   {
     "module": "github.com/ogier/pflag",
@@ -3963,13 +4013,13 @@
     "module": "github.com/PaesslerAG/gval",
     "version": "v1.2.4",
     "label": "PaesslerAG-gval",
-    "expect": "max:34"
+    "expect": "pass"
   },
   {
     "module": "github.com/PaesslerAG/jsonpath",
     "version": "v0.1.1",
     "label": "PaesslerAG-jsonpath",
-    "expect": "max:117"
+    "expect": "pass"
   },
   {
     "module": "github.com/panjf2000/ants/v2",
@@ -3987,7 +4037,7 @@
     "module": "github.com/pascaldekloe/jwt",
     "version": "v1.12.0",
     "label": "pascaldekloe-jwt",
-    "expect": "max:15"
+    "expect": "pass"
   },
   {
     "module": "github.com/pborman/getopt/v2",
@@ -4047,7 +4097,7 @@
     "module": "github.com/pierrec/lz4",
     "version": "v2.6.1+incompatible",
     "label": "pierrec-lz4",
-    "expect": "max:14"
+    "expect": "pass"
   },
   {
     "module": "github.com/pierrec/lz4/v4",
@@ -4079,7 +4129,7 @@
     "module": "github.com/pkg/profile",
     "version": "v1.7.0",
     "label": "pkg-profile",
-    "expect": "max:32"
+    "expect": "pass"
   },
   {
     "module": "github.com/pkg/diff",
@@ -4163,13 +4213,13 @@
     "version": "v0.61.0",
     "subPackage": "model",
     "label": "prometheus-common-model",
-    "expect": "max:13"
+    "expect": "pass"
   },
   {
     "module": "github.com/prometheus/procfs",
     "version": "v0.15.1",
     "label": "prometheus-procfs",
-    "expect": "max:4"
+    "expect": "pass"
   },
   {
     "module": "google.golang.org/protobuf",
@@ -4225,7 +4275,7 @@
     "module": "github.com/redis/go-redis/v9",
     "version": "v9.7.0",
     "label": "redis-go-redis",
-    "expect": "max:6"
+    "expect": "pass"
   },
   {
     "module": "github.com/redis/go-redis/v9",
@@ -4346,7 +4396,7 @@
     "module": "github.com/rs/zerolog",
     "version": "v1.33.0",
     "label": "rs-zerolog",
-    "expect": "max:228"
+    "expect": "pass"
   },
   {
     "module": "github.com/rs/zerolog",
@@ -4537,7 +4587,7 @@
     "module": "github.com/sethvargo/go-retry",
     "version": "v0.3.0",
     "label": "sethvargo-go-retry",
-    "expect": "max:1"
+    "expect": "pass"
   },
   {
     "module": "github.com/shamaton/msgpack/v2",
@@ -4568,7 +4618,7 @@
     "module": "github.com/Shopify/sarama",
     "version": "v1.38.1",
     "label": "shopify-sarama",
-    "expect": "max:11"
+    "expect": "pass"
   },
   {
     "module": "github.com/shopspring/decimal",
@@ -4586,7 +4636,7 @@
     "module": "github.com/shurcooL/githubv4",
     "version": "v0.0.0-20240727222349-48295856cce7",
     "label": "shurcooL-githubv4",
-    "expect": "max:12"
+    "expect": "pass"
   },
   {
     "module": "github.com/shurcooL/graphql",
@@ -4622,7 +4672,7 @@
     "module": "github.com/skip2/go-qrcode",
     "version": "v0.0.0-20200617195104-da1b6568686e",
     "label": "skip2-go-qrcode",
-    "expect": "max:10"
+    "expect": "pass"
   },
   {
     "module": "github.com/smallnest/ringbuffer",
@@ -4634,14 +4684,14 @@
     "module": "github.com/smallnest/safemap",
     "version": "v0.0.0-20240630003547-2b0c60c34511",
     "label": "smallnest-safemap",
-    "expect": "max:3"
+    "expect": "pass"
   },
   {
     "module": "github.com/smarty/assertions",
     "version": "v1.16.0",
     "subPackage": "internal/unit",
     "label": "smarty-assertions-unit",
-    "expect": "max:1"
+    "expect": "pass"
   },
   {
     "module": "github.com/smartystreets/goconvey",
@@ -4740,7 +4790,7 @@
     "module": "github.com/spf13/viper",
     "version": "v1.19.0",
     "label": "spf13-viper",
-    "expect": "max:15"
+    "expect": "pass"
   },
   {
     "module": "github.com/sqids/sqids-go",
@@ -4822,13 +4872,13 @@
     "module": "github.com/tdewolff/parse/v2",
     "version": "v2.7.19",
     "label": "tdewolff-parse",
-    "expect": "max:3"
+    "expect": "pass"
   },
   {
     "module": "github.com/tealeg/xlsx",
     "version": "v1.0.5",
     "label": "tealeg-xlsx",
-    "expect": "max:66"
+    "expect": "pass"
   },
   {
     "module": "github.com/templexxx/xorsimd",
@@ -4901,7 +4951,7 @@
     "module": "github.com/tidwall/btree",
     "version": "v1.7.0",
     "label": "tidwall-btree",
-    "expect": "max:27"
+    "expect": "pass"
   },
   {
     "module": "github.com/tidwall/buntdb",
@@ -4943,7 +4993,7 @@
     "module": "github.com/tidwall/pinhole",
     "version": "v0.0.0-20210130162507-d8644a7c3d19",
     "label": "tidwall-pinhole",
-    "expect": "max:33"
+    "expect": "pass"
   },
   {
     "module": "github.com/tidwall/pjson",
@@ -5031,7 +5081,7 @@
     "module": "github.com/timandy/routine",
     "version": "v1.1.4",
     "label": "timandy-routine",
-    "expect": "max:11"
+    "expect": "pass"
   },
   {
     "module": "github.com/timewasted/go-accept-headers",
@@ -5080,7 +5130,7 @@
     "module": "github.com/tklauser/numcpus",
     "version": "v0.9.0",
     "label": "tklauser-numcpus",
-    "expect": "max:10"
+    "expect": "pass"
   },
   {
     "module": "github.com/tkuchiki/go-timezone",
@@ -5147,19 +5197,25 @@
     "module": "github.com/TylerBrock/colorjson",
     "version": "v0.0.0-20200706003622-8a50f05110d2",
     "label": "TylerBrock-colorjson",
-    "expect": "max:20"
+    "expect": "pass",
+    "deps": [
+      {
+        "module": "github.com/fatih/color",
+        "version": "v1.18.0"
+      }
+    ]
   },
   {
     "module": "go.uber.org/atomic",
     "version": "v1.11.0",
     "label": "uber-atomic",
-    "expect": "max:1"
+    "expect": "pass"
   },
   {
     "module": "go.uber.org/dig",
     "version": "v1.18.0",
     "label": "uber-dig",
-    "expect": "max:1"
+    "expect": "pass"
   },
   {
     "module": "go.uber.org/fx",
@@ -5171,7 +5227,7 @@
     "module": "github.com/uber-go/atomic",
     "version": "v1.11.0",
     "label": "uber-go-atomic",
-    "expect": "max:1"
+    "expect": "pass"
   },
   {
     "module": "github.com/uber-go/multierr",
@@ -5220,26 +5276,26 @@
     "version": "v1.27.0",
     "subPackage": "zapcore",
     "label": "uber-zap-zapcore",
-    "expect": "max:51"
+    "expect": "pass"
   },
   {
     "module": "github.com/ugorji/go/codec",
     "version": "v1.2.12",
     "label": "ugorji-go-codec",
-    "expect": "max:137"
+    "expect": "pass"
   },
   {
     "module": "github.com/ulikunitz/xz",
     "version": "v0.5.12",
     "label": "ulikunitz-xz",
-    "expect": "max:17"
+    "expect": "pass"
   },
   {
     "module": "github.com/ulikunitz/xz",
     "version": "v0.5.12",
     "subPackage": "lzma",
     "label": "ulikunitz-xz-lzma",
-    "expect": "max:7"
+    "expect": "pass"
   },
   {
     "module": "github.com/ulule/limiter/v3",
@@ -5269,7 +5325,7 @@
     "module": "github.com/unrolled/secure",
     "version": "v1.17.0",
     "label": "unrolled-secure",
-    "expect": "max:8"
+    "expect": "pass"
   },
   {
     "module": "github.com/upper/db/v4",
@@ -5354,7 +5410,7 @@
     "module": "github.com/vbauerster/mpb/v8",
     "version": "v8.8.3",
     "label": "vbauerster-mpb-v8",
-    "expect": "max:16"
+    "expect": "pass"
   },
   {
     "module": "github.com/VictoriaMetrics/fastcache",
@@ -5396,7 +5452,7 @@
     "module": "github.com/wagslane/go-rabbitmq",
     "version": "v0.14.2",
     "label": "wagslane-go-rabbitmq",
-    "expect": "max:13"
+    "expect": "pass"
   },
   {
     "module": "github.com/wI2L/jsondiff",
@@ -5414,7 +5470,7 @@
     "module": "github.com/willf/bloom",
     "version": "v2.0.3+incompatible",
     "label": "willf-bloom",
-    "expect": "max:13"
+    "expect": "pass"
   },
   {
     "module": "github.com/wk8/go-ordered-map/v2",
@@ -5426,7 +5482,7 @@
     "module": "github.com/wlynxg/anet",
     "version": "v0.0.5",
     "label": "wlynxg-anet",
-    "expect": "max:5"
+    "expect": "pass"
   },
   {
     "module": "golang.org/x/crypto",
@@ -5461,14 +5517,14 @@
     "version": "v0.31.0",
     "subPackage": "chacha20",
     "label": "x-crypto-chacha20",
-    "expect": "max:2"
+    "expect": "pass"
   },
   {
     "module": "golang.org/x/crypto",
     "version": "v0.31.0",
     "subPackage": "curve25519",
     "label": "x-crypto-curve25519",
-    "expect": "max:5"
+    "expect": "pass"
   },
   {
     "module": "golang.org/x/crypto",
@@ -5503,21 +5559,21 @@
     "version": "v0.0.0-20241217172543-b2144cdd0a67",
     "subPackage": "maps",
     "label": "x-exp-maps",
-    "expect": "max:36"
+    "expect": "pass"
   },
   {
     "module": "golang.org/x/exp",
     "version": "v0.0.0-20241217172543-b2144cdd0a67",
     "subPackage": "slices",
     "label": "x-exp-slices",
-    "expect": "max:35"
+    "expect": "pass"
   },
   {
     "module": "golang.org/x/exp",
     "version": "v0.0.0-20240719175910-8a7402abbf56",
     "subPackage": "slog",
     "label": "x-exp-slog",
-    "expect": "max:17"
+    "expect": "pass"
   },
   {
     "module": "golang.org/x/net",
@@ -5531,7 +5587,7 @@
     "version": "v0.33.0",
     "subPackage": "html/atom",
     "label": "x-net-html-atom",
-    "expect": "max:1"
+    "expect": "pass"
   },
   {
     "module": "golang.org/x/sync",
@@ -5558,14 +5614,14 @@
     "module": "golang.org/x/term",
     "version": "v0.27.0",
     "label": "x-term",
-    "expect": "max:5"
+    "expect": "pass"
   },
   {
     "module": "golang.org/x/text",
     "version": "v0.21.0",
     "subPackage": "cases",
     "label": "x-text-cases",
-    "expect": "max:23"
+    "expect": "pass"
   },
   {
     "module": "golang.org/x/text",
@@ -5593,7 +5649,7 @@
     "version": "v0.21.0",
     "subPackage": "unicode/norm",
     "label": "x-text-unicode-norm",
-    "expect": "max:2"
+    "expect": "pass"
   },
   {
     "module": "golang.org/x/text",
@@ -5650,7 +5706,7 @@
     "module": "github.com/xwb1989/sqlparser",
     "version": "v0.0.0-20180606152119-120387863bf2",
     "label": "xwb1989-sqlparser",
-    "expect": "max:212"
+    "expect": "pass"
   },
   {
     "module": "github.com/yargevad/filepathx",
@@ -5716,7 +5772,7 @@
     "module": "github.com/zeebo/blake3",
     "version": "v0.2.4",
     "label": "zeebo-blake3",
-    "expect": "max:32"
+    "expect": "pass"
   },
   {
     "module": "github.com/zeebo/errs",

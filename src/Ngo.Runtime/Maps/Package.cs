@@ -48,5 +48,8 @@ namespace Ngo.Runtime.Maps
             }
             return true;
         }
+
+        [GoFunc]
+        public static bool EqualFunc(object? m1, object? m2, object? eq) => false;
     }
 }

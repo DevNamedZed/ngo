@@ -109,16 +109,24 @@ namespace Ngo.Runtime.Http
         [GoConst] public static readonly long StatusForbidden = 403;
         [GoConst] public static readonly long StatusNotFound = 404;
         [GoConst] public static readonly long StatusMethodNotAllowed = 405;
+        [GoConst] public static readonly long StatusNotAcceptable = 406;
+        [GoConst] public static readonly long StatusProxyAuthRequired = 407;
         [GoConst] public static readonly long StatusRequestTimeout = 408;
         [GoConst] public static readonly long StatusConflict = 409;
         [GoConst] public static readonly long StatusGone = 410;
+        [GoConst] public static readonly long StatusRequestEntityTooLarge = 413;
         [GoConst] public static readonly long StatusTeapot = 418;
+        [GoConst] public static readonly long StatusUnprocessableEntity = 422;
+        [GoConst] public static readonly long StatusUpgradeRequired = 426;
         [GoConst] public static readonly long StatusTooManyRequests = 429;
+        [GoConst] public static readonly long StatusUnavailableForLegalReasons = 451;
         [GoConst] public static readonly long StatusInternalServerError = 500;
         [GoConst] public static readonly long StatusNotImplemented = 501;
         [GoConst] public static readonly long StatusBadGateway = 502;
         [GoConst] public static readonly long StatusServiceUnavailable = 503;
         [GoConst] public static readonly long StatusGatewayTimeout = 504;
+        [GoConst] public static readonly long StatusHTTPVersionNotSupported = 505;
+        [GoConst] public static readonly long StatusVariantAlsoNegotiates = 506;
 
         [GoFunc]
         public static string StatusText(long code)
@@ -283,6 +291,7 @@ namespace Ngo.Runtime.Http
         [GoVar] public static readonly object? ErrNoCookie = "http: named cookie not present";
         [GoVar] public static readonly object? ErrNoLocation = "http: no Location header in response";
         [GoVar] public static readonly object? ErrNotSupported = "feature not supported";
+        [GoVar] public static readonly object ErrNotMultipart = "request Content-Type isn't multipart/form-data";
         [GoVar] public static readonly long DefaultMaxHeaderBytes = 1 << 20;
         [GoVar] public static readonly long DefaultMaxIdleConnsPerHost = 2;
 
@@ -373,6 +382,10 @@ namespace Ngo.Runtime.Http
         [GoFunc]
         public static object AllowQuerySemicolons(object h) => h;
 
+        [GoFunc]
+        [return: GoReturn("error")]
+        public static object? Serve(object? listener, object? handler) => "not implemented";
+
         [GoVar] public static readonly object? NoBody = null;
 
         [GoFunc]
@@ -428,6 +441,13 @@ namespace Ngo.Runtime.Http
 
         // ErrUseLastResponse
         [GoVar] public static readonly object? ErrUseLastResponse = "net/http: use last response";
+
+        [GoFunc]
+        [return: GoReturn("time.Time", "error")]
+        public static (object, object?) ParseTime(string text)
+        {
+            return (new Time.GoTimeValue(DateTimeOffset.MinValue), null);
+        }
     }
 
     // http.PushOptions struct

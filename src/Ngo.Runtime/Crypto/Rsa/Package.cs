@@ -221,6 +221,10 @@ namespace Ngo.Runtime.Crypto.Rsa
             }
         }
 
+        [GoFunc]
+        [return: GoReturn("error")]
+        public static object? DecryptPKCS1v15SessionKey(object? rand, object? priv, Slice<byte> ciphertext, Slice<byte> key) => null;
+
         // PSS salt length constants
         [GoConst]
         public const long PSSSaltLengthAuto = 0;

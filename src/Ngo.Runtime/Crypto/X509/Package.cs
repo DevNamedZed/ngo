@@ -8,7 +8,7 @@ using Ngo.Runtime.Discovery;
 namespace Ngo.Runtime.Crypto.X509
 {
     [GoPackage("crypto/x509")]
-    public static class Package
+    public static partial class Package
     {
         // Error variables
         [GoVar] public static readonly object? ErrUnsupportedAlgorithm = "x509: cannot verify signature: algorithm unimplemented";
@@ -495,6 +495,7 @@ namespace Ngo.Runtime.Crypto.X509
             [GoField(Name = "IPAddresses")] public Slice<object?> IPAddresses;
             [GoField(Name = "URIs")] public Slice<object?> URIs;
             [GoField(Name = "SignatureAlgorithm")] public long SignatureAlgorithm;
+            [GoField(Name = "Extensions")] public object? Extensions;
 
             [GoMethod]
             [return: GoReturn("error")]
@@ -575,6 +576,7 @@ namespace Ngo.Runtime.Crypto.X509
         [GoField(Name = "ExcludedDNSDomains")] public Slice<string> ExcludedDNSDomains;
         [GoField(Name = "PermittedDNSDomainsCritical")] public bool PermittedDNSDomainsCritical;
         [GoField(Name = "URIs")] public Slice<object?> URIs;
+        [GoField(Name = "ExtraExtensions")] public object? ExtraExtensions;
 
         [GoMethod]
         [return: GoReturn("error")]
@@ -703,5 +705,18 @@ namespace Ngo.Runtime.Crypto.X509
 
         [GoMethod]
         public string Error() => "x509: certificate signed by unknown authority";
+    }
+}
+
+namespace Ngo.Runtime.Crypto.X509
+{
+    public static partial class Package
+    {
+        [GoFunc]
+        [return: GoReturn("[]byte", "error")]
+        public static (Slice<byte>, object?) MarshalECPrivateKey([GoParam("*ecdsa.PrivateKey")] object? key)
+        {
+            return (default, null);
+        }
     }
 }

@@ -636,17 +636,19 @@ namespace Ngo.Compiler.Language
         private SyntaxKind ScanRawStringLiteral(out object? value)
         {
             _pos++; // skip opening `
-            value = null;
+            int start = _pos;
 
             while (_pos < _source.Length)
             {
                 if (_source[_pos] == '`')
                 {
+                    value = _source.Substring(start, _pos - start);
                     _pos++;
                     return SyntaxKind.RawStringLiteralToken;
                 }
                 _pos++;
             }
+            value = _source.Substring(start);
 
             return SyntaxKind.ErrorToken; // unterminated
         }

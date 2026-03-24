@@ -8,5 +8,12 @@ namespace Ngo.Runtime.Encoding.Xml
     {
         [GoField(Name = "Name")] public GoName Name;
         [GoField(Name = "Attr")] public Slice<GoAttr> Attr;
+
+        [GoMethod]
+        [return: GoReturn("xml.EndElement")]
+        public GoEndElement End()
+        {
+            return new GoEndElement { Name = Name };
+        }
     }
 }

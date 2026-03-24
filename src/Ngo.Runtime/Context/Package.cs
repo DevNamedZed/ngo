@@ -160,5 +160,9 @@ namespace Ngo.Runtime.Context
         {
             return () => false;
         }
+
+        [GoFunc]
+        [return: GoReturn("context.Context")]
+        public static object? WithoutCancel([GoParam("context.Context")] object? parent) => parent;
     }
 }

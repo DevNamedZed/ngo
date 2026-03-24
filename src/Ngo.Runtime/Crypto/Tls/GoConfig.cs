@@ -56,4 +56,15 @@ namespace Ngo.Runtime.Crypto.Tls
             };
         }
     }
+
+    [GoType("struct", Name = "ClientHelloInfo", Package = "crypto/tls")]
+    public class GoClientHelloInfo
+    {
+        [GoField(Name = "Conn", Type = "net.Conn")] public object? Conn;
+        [GoField] public string ServerName = "";
+        [GoField] public Slice<long> CipherSuites;
+        [GoField] public Slice<long> SupportedVersions;
+        [GoField] public Slice<string> SupportedProtos;
+        [GoField] public Slice<byte> SignatureSchemes;
+    }
 }

@@ -728,7 +728,7 @@ namespace Ngo.Compiler.Emit
                 // rand() uint64 — runtime random number
                 case "rand":
                     il.Emit(OpCodes.Call, typeof(System.Random).GetProperty("Shared")!.GetGetMethod()!);
-                    il.Emit(OpCodes.Call, typeof(System.Random).GetMethod("NextInt64")!);
+                    il.Emit(OpCodes.Call, typeof(System.Random).GetMethod("NextInt64", System.Type.EmptyTypes)!);
                     il.Emit(OpCodes.Ret);
                     return true;
 

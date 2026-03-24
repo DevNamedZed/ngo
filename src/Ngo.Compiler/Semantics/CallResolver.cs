@@ -1095,7 +1095,17 @@ namespace Ngo.Compiler.Semantics
             var substReturnTypes = TypeSubstituter.SubstituteTypes(
                 funcSymbol.ReturnTypes, funcSymbol.TypeParameters, typeArgs);
 
-            if (!ValidateArguments(arguments, substParams, $"Function '{funcSymbol.Name}'", span))
+            if (funcSymbol.IsVariadic)
+            {
+                int requiredCount = substParams.Count - 1;
+                if (arguments.Count < requiredCount)
+                {
+                    _context.Errors.ReportError(span, ErrorCode.WrongArgumentCount,
+                        $"Function '{funcSymbol.Name}' expects at least {requiredCount} arguments, got {arguments.Count}");
+                    return new ErrorExpression("Wrong argument count", span);
+                }
+            }
+            else if (!ValidateArguments(arguments, substParams, $"Function '{funcSymbol.Name}'", span))
             {
                 if (arguments.Count != substParams.Count)
                 {
