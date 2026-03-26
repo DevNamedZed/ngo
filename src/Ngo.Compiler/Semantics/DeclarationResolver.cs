@@ -213,8 +213,12 @@ namespace Ngo.Compiler.Semantics
             }
 
             // Post-process: fixup interfaces with embedded interfaces that had empty method sets
-            // due to forward references (e.g., boolFlag embeds Value, but Value wasn't resolved yet)
-            FixupEmbeddedInterfaces(typeSyntaxes);
+            // due to forward references (e.g., boolFlag embeds Value, but Value wasn't resolved yet).
+            // Run multiple passes to handle transitive embedding (A embeds B embeds C).
+            for (int fixupPass = 0; fixupPass < 3; fixupPass++)
+            {
+                FixupEmbeddedInterfaces(typeSyntaxes);
+            }
 
             // Post-process: upgrade named types based on structs to StructTypeSymbol
             // (must happen after all struct fields are populated)
@@ -1420,6 +1424,16 @@ namespace Ngo.Compiler.Semantics
 
                     if (!hasEmbedded) continue;
 
+                    // Push type parameters into scope for generic interfaces
+                    if (symbol.IsGeneric)
+                    {
+                        _context.PushScope("typeParamFixupIface");
+                        foreach (var tp in symbol.TypeParameters)
+                        {
+                            _context.Scope.TryDeclare(tp);
+                        }
+                    }
+
                     // Re-resolve: rebuild method list with now-populated embedded interfaces
                     var methods = new List<MethodSymbol>();
                     foreach (var member in ifaceSyntax.Members)
@@ -1443,6 +1457,11 @@ namespace Ngo.Compiler.Semantics
                         else if (member is ExpressionSyntax embeddedSyntax)
                         {
                             var embeddedType = _typeResolver.ResolveType(embeddedSyntax);
+                            // Unwrap type aliases (e.g., ExtensionDescriptor = FieldDescriptor)
+                            while (embeddedType != null && embeddedType.IsAlias && embeddedType.UnderlyingType != null)
+                            {
+                                embeddedType = embeddedType.UnderlyingType;
+                            }
                             if (embeddedType is InterfaceTypeSymbol embeddedIface)
                             {
                                 foreach (var m in embeddedIface.Methods)
@@ -1467,6 +1486,11 @@ namespace Ngo.Compiler.Semantics
                                 }
                             }
                         }
+                    }
+
+                    if (symbol.IsGeneric)
+                    {
+                        _context.PopScope();
                     }
 
                     // Only update if we found more methods than before
@@ -1594,6 +1618,14 @@ namespace Ngo.Compiler.Semantics
                     }
                     else if (member is ExpressionSyntax embeddedSyntax)
                     {
+                        // Check for 'comparable' keyword embedded in interface
+                        if (embeddedSyntax is IdentifierNameSyntax comparableId
+                            && comparableId.Identifier.Text == "comparable")
+                        {
+                            ifaceSymbol.IsComparable = true;
+                            continue;
+                        }
+
                         // Embedded interface: resolve the type and merge its methods
                         var embeddedType = _typeResolver.ResolveType(embeddedSyntax);
                         // Unwrap type aliases to find the underlying interface
@@ -1615,6 +1647,10 @@ namespace Ngo.Compiler.Semantics
                                 var promoted = new MethodSymbol(m.Name, ifaceSymbol, false,
                                     Array.Empty<TypeParameterSymbol>(), m.Parameters, m.ReturnTypes, m.IsVariadic);
                                 methods.Add(promoted);
+                            }
+                            if (embeddedIface.IsComparable)
+                            {
+                                ifaceSymbol.IsComparable = true;
                             }
                         }
                     }
@@ -1987,8 +2023,10 @@ namespace Ngo.Compiler.Semantics
                 var symbol = _context.Scope.Lookup(idSyntax.Identifier.Text);
                 if (symbol is InterfaceTypeSymbol iface)
                 {
-                    return new ConstraintInfo(iface.Name, iface.Methods,
-                        Array.Empty<TypeElement>(), isComparable: false);
+                    var constraintInfo = new ConstraintInfo(iface.Name, iface.Methods,
+                        Array.Empty<TypeElement>(), isComparable: iface.IsComparable);
+                    constraintInfo.InterfaceType = iface;
+                    return constraintInfo;
                 }
 
                 // Unknown constraint — treat as any

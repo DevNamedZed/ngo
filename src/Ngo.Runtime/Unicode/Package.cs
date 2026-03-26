@@ -280,8 +280,23 @@ namespace Ngo.Runtime.Unicode
 
         [GoVar(Type = "*unicode.RangeTable")] public static readonly object? Soft_Dotted = null;
 
+        // Unicode general category groups
+        [GoVar(Type = "*unicode.RangeTable")] public static readonly object? N = null;
+        [GoVar(Type = "*unicode.RangeTable")] public static readonly object? M = null;
+        [GoVar(Type = "*unicode.RangeTable")] public static readonly object? L = null;
+
         // SpecialCase vars
         public static readonly SpecialCase TurkishCase = new SpecialCase();
         public static readonly SpecialCase AzeriCase = new SpecialCase();
+
+        [GoFunc]
+        [return: GoReturn("bool")]
+        public static bool IsMark([GoParam("rune")] long r)
+        {
+            var category = CharUnicodeInfo.GetUnicodeCategory((char)r);
+            return category == UnicodeCategory.NonSpacingMark
+                || category == UnicodeCategory.SpacingCombiningMark
+                || category == UnicodeCategory.EnclosingMark;
+        }
     }
 }

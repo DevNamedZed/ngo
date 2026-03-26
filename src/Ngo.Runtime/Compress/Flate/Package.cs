@@ -244,6 +244,39 @@ namespace Ngo.Runtime.Compress.Flate
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
+    // flate.WriteError struct
+    [GoType("struct", Name = "WriteError", Package = "compress/flate")]
+    public class GoWriteError
+    {
+        [GoField(Name = "Err", Type = "error")] public object? Err;
+
+        [GoMethod]
+        [return: GoReturn("string")]
+        public string Error() => "flate: write error: " + (Err?.ToString() ?? "");
+    }
+
+    // flate.ReadError struct
+    [GoType("struct", Name = "ReadError", Package = "compress/flate")]
+    public class GoReadError
+    {
+        [GoField(Name = "Err", Type = "error")] public object? Err;
+
+        [GoMethod]
+        [return: GoReturn("string")]
+        public string Error() => "flate: read error: " + (Err?.ToString() ?? "");
+    }
+
+    // flate.CorruptInputError named type (int64)
+    [GoType("named", Name = "CorruptInputError", Package = "compress/flate", Underlying = "int64")]
+    public class GoCorruptInputError
+    {
+        public long Value;
+
+        [GoMethod]
+        [return: GoReturn("string")]
+        public string Error() => $"flate: corrupt input before offset {Value}";
+    }
+
     // Adapter: wraps IGoWriter as a System.IO.Stream for .NET compression APIs
     internal class GoWriterStream : Stream
     {

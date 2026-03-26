@@ -899,7 +899,10 @@ namespace Ngo.Compiler.Semantics
             var span = _context.SpanOf(syntax);
             var label = syntax.Label.Text;
             var inner = ResolveStatement(syntax.Statement);
-            if (inner == null) return null;
+            if (inner == null)
+            {
+                inner = new BlockStatement(Array.Empty<AstNode>(), span);
+            }
             return new LabeledStatement(label, inner, span);
         }
 
@@ -1026,6 +1029,14 @@ namespace Ngo.Compiler.Semantics
                         _context.Errors.ReportError(span, ErrorCode.InvalidRange,
                             $"Cannot range over type '{iterable.Type.Name}'");
                     }
+                }
+                else if (resolved is InterfaceTypeSymbol
+                    || iterable.Type is InterfaceTypeSymbol
+                    || iterable.Type.TypeKind == TypeKind.Interface)
+                {
+                    // Range over interface{} — valid at runtime if value is iterable
+                    keyType = BuiltinTypes.EmptyInterface;
+                    valueType = BuiltinTypes.EmptyInterface;
                 }
                 else
                 {

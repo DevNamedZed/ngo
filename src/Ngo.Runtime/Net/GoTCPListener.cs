@@ -47,5 +47,20 @@ namespace Ngo.Runtime.Net
         }
 
         public IGoNetAddr Addr() => new GoTCPAddr();
+
+        [GoMethod]
+        [return: GoReturn("*net.TCPConn", "error")]
+        public (object?, object?) AcceptTCP()
+        {
+            try
+            {
+                var client = _listener?.AcceptTcpClient();
+                return (client != null ? new GoTCPConn(client) : null, null);
+            }
+            catch (Exception ex)
+            {
+                return (null, ex.Message);
+            }
+        }
     }
 }

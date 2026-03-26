@@ -114,11 +114,21 @@ namespace Ngo.Runtime.Http
         [GoConst] public static readonly long StatusRequestTimeout = 408;
         [GoConst] public static readonly long StatusConflict = 409;
         [GoConst] public static readonly long StatusGone = 410;
+        [GoConst] public static readonly long StatusLengthRequired = 411;
+        [GoConst] public static readonly long StatusPreconditionFailed = 412;
         [GoConst] public static readonly long StatusRequestEntityTooLarge = 413;
+        [GoConst] public static readonly long StatusRequestURITooLong = 414;
+        [GoConst] public static readonly long StatusRequestedRangeNotSatisfiable = 416;
+        [GoConst] public static readonly long StatusExpectationFailed = 417;
         [GoConst] public static readonly long StatusTeapot = 418;
+        [GoConst] public static readonly long StatusMisdirectedRequest = 421;
         [GoConst] public static readonly long StatusUnprocessableEntity = 422;
+        [GoConst] public static readonly long StatusLocked = 423;
+        [GoConst] public static readonly long StatusFailedDependency = 424;
         [GoConst] public static readonly long StatusUpgradeRequired = 426;
+        [GoConst] public static readonly long StatusPreconditionRequired = 428;
         [GoConst] public static readonly long StatusTooManyRequests = 429;
+        [GoConst] public static readonly long StatusRequestHeaderFieldsTooLarge = 431;
         [GoConst] public static readonly long StatusUnavailableForLegalReasons = 451;
         [GoConst] public static readonly long StatusInternalServerError = 500;
         [GoConst] public static readonly long StatusNotImplemented = 501;
@@ -127,6 +137,11 @@ namespace Ngo.Runtime.Http
         [GoConst] public static readonly long StatusGatewayTimeout = 504;
         [GoConst] public static readonly long StatusHTTPVersionNotSupported = 505;
         [GoConst] public static readonly long StatusVariantAlsoNegotiates = 506;
+        [GoConst] public static readonly long StatusInsufficientStorage = 507;
+        [GoConst] public static readonly long StatusLoopDetected = 508;
+        [GoConst] public static readonly long StatusNotExtended = 510;
+        [GoConst] public static readonly long StatusNetworkAuthenticationRequired = 511;
+        [GoConst] public static readonly long StatusTooEarly = 425;
 
         [GoFunc]
         public static string StatusText(long code)
@@ -301,8 +316,6 @@ namespace Ngo.Runtime.Http
         [GoConst] public static readonly long StateHijacked = 3;
         [GoConst] public static readonly long StateClosed = 4;
 
-        [GoFunc]
-        public static string Dir(string name) => name;
 
         [GoFunc]
         public static void ServeContent(object w, object r, string name, object modtime, object content)

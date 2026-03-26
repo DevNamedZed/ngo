@@ -39,6 +39,7 @@ namespace Ngo.Runtime.Http
         }
 
         [GoMethod]
+        [return: GoReturn("context.Context")]
         public object? Context()
         {
             if (_ctx != null)
@@ -179,6 +180,16 @@ namespace Ngo.Runtime.Http
                 System.Text.Encoding.UTF8.GetBytes($"{username}:{password}"));
             Header.Set("Authorization", "Basic " + encoded);
         }
+        [GoMethod]
+        public string PostFormValue(string key)
+        {
+            if (PostForm is Url.GoValues postValues)
+            {
+                return postValues.Get(key);
+            }
+            return "";
+        }
+
         [GoMethod]
         [return: GoReturn("error")]
         public object? ParseForm()

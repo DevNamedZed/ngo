@@ -23,7 +23,7 @@ namespace Ngo.Runtime.Net
     [GoType("struct", Name = "IPAddr", Package = "net")]
     public class GoIPAddr : IGoNetAddr
     {
-        [GoField(Name = "IP")] public Slice<byte> IP { get; set; }
+        [GoField(Name = "IP", Type = "net.IP")] public Slice<byte> IP { get; set; }
         [GoField(Name = "Zone")] public string Zone { get; set; } = "";
 
         public string Network() => "ip";

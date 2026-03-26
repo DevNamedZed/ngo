@@ -31,6 +31,8 @@ namespace Ngo.Compiler.Symbols
 
         public new IReadOnlyList<MethodSymbol> Methods { get; private set; }
 
+        public bool IsComparable { get; set; }
+
         public void SetMethods(IReadOnlyList<MethodSymbol> methods)
         {
             Methods = methods;

@@ -223,8 +223,8 @@ namespace Ngo.Runtime.Syscall
 
         // Functions
         [GoFunc]
-        [return: GoReturn("int", "error")]
-        public static (long, object?) Close([GoParam("int")] long fd) => (0, null);
+        [return: GoReturn("error")]
+        public static object? Close([GoParam("int")] long fd) => null;
 
         [GoFunc]
         [return: GoReturn("int", "error")]
@@ -516,8 +516,8 @@ namespace Ngo.Runtime.Syscall
         public static object? SetsockoptIPv6Mreq([GoParam("int")] long fd, [GoParam("int")] long level, [GoParam("int")] long opt, object? mreq) => null;
 
         [GoFunc]
-        [return: GoReturn("int", "error")]
-        public static (long, object?) Recvfrom([GoParam("int")] long fd, Slice<byte> p, [GoParam("int")] long flags) => (0, null);
+        [return: GoReturn("int", "syscall.Sockaddr", "error")]
+        public static (long, object?, object?) Recvfrom([GoParam("int")] long fd, Slice<byte> p, [GoParam("int")] long flags) => (0, null, null);
 
         [GoFunc]
         [return: GoReturn("error")]
@@ -611,6 +611,12 @@ namespace Ngo.Runtime.Syscall
 
         [GoConst] public static readonly long O_NOCTTY = 0x100;
 
+        // File lock constants
+        [GoConst] public static readonly long LOCK_SH = 1;
+        [GoConst] public static readonly long LOCK_EX = 2;
+        [GoConst] public static readonly long LOCK_NB = 4;
+        [GoConst] public static readonly long LOCK_UN = 8;
+
         // Epoll constants
         [GoConst] public static readonly long EPOLLIN = 0x001;
         [GoConst] public static readonly long EPOLLOUT = 0x004;
@@ -618,6 +624,7 @@ namespace Ngo.Runtime.Syscall
         [GoConst] public static readonly long EPOLLPRI = 0x002;
         [GoConst] public static readonly long EPOLLERR = 0x008;
         [GoConst] public static readonly long EPOLLHUP = 0x010;
+        [GoConst] public static readonly long EPOLLONESHOT = 0x40000000;
         [GoConst] public static readonly long EPOLL_CTL_ADD = 1;
         [GoConst] public static readonly long EPOLL_CTL_DEL = 2;
         [GoConst] public static readonly long EPOLL_CTL_MOD = 3;
@@ -637,6 +644,41 @@ namespace Ngo.Runtime.Syscall
         [GoFunc]
         [return: GoReturn("int", "error")]
         public static (long, object?) EpollWait(long epfd, object? events, long msec) => (0, null);
+
+        // Madvise constants
+        [GoConst] public static readonly long MADV_RANDOM = 1;
+        [GoConst] public static readonly long MADV_SEQUENTIAL = 2;
+        [GoConst] public static readonly long MADV_WILLNEED = 3;
+
+        // Terminal line discipline constants
+        [GoConst] public static readonly long ISIG = 0x0001;
+        [GoConst] public static readonly long ICRNL = 0x100;
+        [GoConst] public static readonly long ICANON = 0x0002;
+        [GoConst] public static readonly long ECHO = 0x0008;
+
+        // UnixCredentials returns a socket control message encoding Ucred
+        [GoFunc]
+        [return: GoReturn("[]byte")]
+        public static Slice<byte> UnixCredentials([GoParam("*Ucred")] GoUcred? ucred) => new Slice<byte>(System.Array.Empty<byte>());
+
+        // Terminal ioctl constants
+        [GoConst] public static readonly long TCGETS = 0x5401;
+        [GoConst] public static readonly long TCSETS = 0x5402;
+
+        // Errno constants
+        [GoVar(Type = "Errno")] public static readonly object? EBADFD = 77L;
+
+        // TCP constants
+        [GoConst] public static readonly long TCP_DEFER_ACCEPT = 9;
+        [GoConst] public static readonly long SOL_TCP = 6;
+
+        // Syscall number constants
+        [GoConst] public static readonly long SYS_WRITEV = 20;
+        [GoConst] public static readonly long SYS_MADVISE = 28;
+        [GoConst] public static readonly long SYS_EVENTFD2 = 290;
+
+        // Message flags
+        [GoConst] public static readonly long MSG_CTRUNC = 8;
 
         // Memory protection constants
         [GoConst] public static readonly long PROT_READ = 0x1;
@@ -659,5 +701,54 @@ namespace Ngo.Runtime.Syscall
         [GoFunc]
         [return: GoReturn("error")]
         public static object? Statfs(string path, [GoParam("*syscall.Statfs_t")] object? stat) => null;
+
+        [GoFunc]
+        [return: GoReturn("error")]
+        public static object? Fdatasync(long fd) => null;
+
+        [GoFunc]
+        [return: GoReturn("error")]
+        public static object? Madvise(Slice<byte> b, long advice) => null;
+
+        [GoFunc]
+        [return: GoReturn("error")]
+        public static object? Fallocate(long fd, long mode, long off, long len) => null;
+
+        [GoFunc]
+        [return: GoReturn("[]byte", "error")]
+        public static (Slice<byte>, object?) UnixRights(params long[] fds) => (default, null);
+
+        [GoFunc]
+        [return: GoReturn("[]int", "error")]
+        public static (Slice<long>, object?) ParseUnixRights(object? m) => (default, null);
+
+        [GoFunc]
+        [return: GoReturn("[]SocketControlMessage", "error")]
+        public static (object?, object?) ParseSocketControlMessage(Slice<byte> b) => (null, null);
+
+        [GoFunc]
+        [return: GoReturn("int", "error")]
+        public static (long, object?) Sendfile([GoParam("int")] long outfd, [GoParam("int")] long infd, object? offset, [GoParam("int")] long count)
+        {
+            return (0, "syscall: Sendfile not supported");
+        }
+    }
+
+    [GoType("struct", Name = "Termios", Package = "syscall")]
+    public struct GoTermios
+    {
+        [GoField] public long Iflag;
+        [GoField] public long Oflag;
+        [GoField] public long Cflag;
+        [GoField] public long Lflag;
+    }
+
+    // syscall.Ucred struct
+    [GoType("struct", Name = "Ucred", Package = "syscall")]
+    public class GoUcred
+    {
+        [GoField(Name = "Pid", Type = "int32")] public int Pid;
+        [GoField(Name = "Uid", Type = "uint32")] public uint Uid;
+        [GoField(Name = "Gid", Type = "uint32")] public uint Gid;
     }
 }

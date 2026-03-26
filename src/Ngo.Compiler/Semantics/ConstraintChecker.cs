@@ -34,8 +34,32 @@ namespace Ngo.Compiler.Semantics
                 if (tp.Constraint == constraint)
                     return true;
                 // comparable satisfies comparable
-                if (constraint.IsComparable && tp.Constraint.IsComparable)
+                // Also check lazily via the stored interface reference (handles declaration ordering)
+                bool tpIsComparable = tp.Constraint.IsComparable
+                    || (tp.Constraint.InterfaceType is InterfaceTypeSymbol tpIface && tpIface.IsComparable);
+                if (constraint.IsComparable && tpIsComparable)
                     return true;
+                // Named interface constraint: interface values are always comparable in Go,
+                // and interfaces with union type elements (like ~int | ~string) contain only comparable types
+                if (constraint.IsComparable && tp.Constraint.InterfaceType != null)
+                    return true;
+                // Union constraint with all comparable element types satisfies comparable
+                if (constraint.IsComparable && tp.Constraint.TypeElements.Count > 0)
+                {
+                    bool allComparable = true;
+                    foreach (var elem in tp.Constraint.TypeElements)
+                    {
+                        if (!IsComparable(elem.Type))
+                        {
+                            allComparable = false;
+                            break;
+                        }
+                    }
+                    if (allComparable)
+                    {
+                        return true;
+                    }
+                }
                 // Type parameter always satisfies any (weakest constraint)
                 if (constraint == ConstraintInfo.Any)
                     return true;
@@ -46,7 +70,7 @@ namespace Ngo.Compiler.Semantics
                 // Type parameter with a constraint that includes the required constraint's
                 // properties (comparable + methods + type elements) satisfies it.
                 // In generic code, type params flow through and the real check is at instantiation.
-                if (tp.Constraint.IsComparable || !constraint.IsComparable)
+                if (tpIsComparable || !constraint.IsComparable)
                 {
                     if (constraint.Methods.Count == 0 || tp.Constraint.Methods.Count >= constraint.Methods.Count)
                     {

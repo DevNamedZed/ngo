@@ -165,4 +165,14 @@ namespace Ngo.Runtime.Context
         [return: GoReturn("context.Context")]
         public static object? WithoutCancel([GoParam("context.Context")] object? parent) => parent;
     }
+
+    [GoType("named", Name = "CancelFunc", Package = "context", Underlying = "func()")]
+    public class GoCancelFunc
+    {
+    }
+
+    [GoType("named", Name = "CancelCauseFunc", Package = "context", Underlying = "func(error)")]
+    public class GoCancelCauseFunc
+    {
+    }
 }

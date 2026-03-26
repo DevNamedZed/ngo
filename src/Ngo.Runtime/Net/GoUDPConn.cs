@@ -199,5 +199,19 @@ namespace Ngo.Runtime.Net
             }
             return null;
         }
+
+        [GoMethod]
+        [return: GoReturn("int", "int", "error")]
+        public (long, long, object?) WriteMsgUDP(Slice<byte> b, Slice<byte> oob, [GoParam("*net.UDPAddr")] GoUDPAddr? addr)
+        {
+            return (0, 0, (object?)"not supported");
+        }
+
+        [GoMethod]
+        [return: GoReturn("int", "int", "int", "*net.UDPAddr", "error")]
+        public (long, long, long, GoUDPAddr?, object?) ReadMsgUDP(Slice<byte> b, Slice<byte> oob)
+        {
+            return (0, 0, 0, null, (object?)"not supported");
+        }
     }
 }

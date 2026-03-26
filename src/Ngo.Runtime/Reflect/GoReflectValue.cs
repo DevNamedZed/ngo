@@ -564,9 +564,10 @@ namespace Ngo.Runtime.Reflect
         }
 
         [GoMethod]
-        public (GoReflectValue, bool) FieldByNameFunc(Func<string, bool> match)
+        [return: GoReturn("reflect.Value")]
+        public GoReflectValue FieldByNameFunc(Func<string, bool> match)
         {
-            return (GoReflectValue.InvalidValue, false);
+            return GoReflectValue.InvalidValue;
         }
 
         [GoMethod]
@@ -621,6 +622,94 @@ namespace Ngo.Runtime.Reflect
         public bool CanUint() => Kind() >= GoReflectKinds.Uint && Kind() <= GoReflectKinds.Uint64;
         [GoMethod]
         public bool CanComplex() => Kind() == GoReflectKinds.Complex64 || Kind() == GoReflectKinds.Complex128;
+
+        [GoMethod]
+        public bool TrySend(GoReflectValue x)
+        {
+            if (_value == null)
+            {
+                return false;
+            }
+            var sendMethod = _value.GetType().GetMethod("TrySend");
+            if (sendMethod != null)
+            {
+                var result = sendMethod.Invoke(_value, new[] { x.Interface() });
+                return result is bool b && b;
+            }
+            return false;
+        }
+
+        [GoMethod]
+        public (GoReflectValue, bool) TryRecv()
+        {
+            if (_value == null)
+            {
+                return (GoReflectValue.InvalidValue, false);
+            }
+            var tryReceiveMethod = _value.GetType().GetMethod("TryReceive");
+            if (tryReceiveMethod != null)
+            {
+                var result = tryReceiveMethod.Invoke(_value, null);
+                if (result != null)
+                {
+                    var resultType = result.GetType();
+                    var item1 = resultType.GetField("Item1")?.GetValue(result);
+                    var item2 = resultType.GetField("Item2")?.GetValue(result);
+                    bool ok = item2 is bool okVal && okVal;
+                    return (item1 != null ? Reflect.GoReflect.ValueOf(item1) : GoReflectValue.InvalidValue, ok);
+                }
+            }
+            return (GoReflectValue.InvalidValue, false);
+        }
+
+        [GoMethod]
+        public void SetPointer(long x)
+        {
+            if (!_canSet)
+            {
+                throw new GoPanicException("reflect: call of Value.SetPointer on unaddressable Value");
+            }
+            _value = x;
+        }
+
+        [GoMethod]
+        [return: GoReturn("[2]uintptr")]
+        public Slice<long> InterfaceData()
+        {
+            return new Slice<long>(new long[] { 0, 0 });
+        }
+
+        [GoMethod]
+        public void SetIterKey([GoParam("*MapIter")] GoReflectMapIter iter)
+        {
+            if (!_canSet)
+            {
+                throw new GoPanicException("reflect: call of Value.SetIterKey on unaddressable Value");
+            }
+        }
+
+        [GoMethod]
+        public void SetIterValue([GoParam("*MapIter")] GoReflectMapIter iter)
+        {
+            if (!_canSet)
+            {
+                throw new GoPanicException("reflect: call of Value.SetIterValue on unaddressable Value");
+            }
+        }
+
+        [GoMethod]
+        public void Close()
+        {
+            if (_value == null)
+            {
+                throw new GoPanicException("reflect: call of Value.Close on zero Value");
+            }
+            var closeMethod = _value.GetType().GetMethod("Close");
+            if (closeMethod != null)
+            {
+                closeMethod.Invoke(_value, null);
+            }
+        }
 
         [GoMethod]
         public long UnsafeAddr()

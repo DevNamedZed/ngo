@@ -292,7 +292,20 @@ namespace Ngo.Runtime.Time
         [return: GoReturn("error")]
         public object? UnmarshalBinary([GoParam("[]byte")] byte[] data)
         {
-            // Stub: no-op for sealed class
+            return null;
+        }
+
+        [GoMethod]
+        [return: GoReturn("error")]
+        public object? UnmarshalText([GoParam("[]byte")] byte[] data)
+        {
+            return null;
+        }
+
+        [GoMethod]
+        [return: GoReturn("error")]
+        public object? UnmarshalJSON([GoParam("[]byte")] byte[] data)
+        {
             return null;
         }
 

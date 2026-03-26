@@ -152,6 +152,29 @@ namespace Ngo.Runtime.Database.Sql
         }
 
         [GoMethod]
+        [return: GoReturn("[]*sql.ColumnType", "error")]
+        public (Slice<GoColumnType?>, object?) ColumnTypes()
+        {
+            if (_reader == null)
+            {
+                return (new Slice<GoColumnType?>(Array.Empty<GoColumnType?>()), null);
+            }
+            try
+            {
+                var types = new GoColumnType[_reader.FieldCount];
+                for (int i = 0; i < _reader.FieldCount; i++)
+                {
+                    types[i] = new GoColumnType();
+                }
+                return (new Slice<GoColumnType?>(types!), null);
+            }
+            catch (Exception ex)
+            {
+                return (new Slice<GoColumnType?>(Array.Empty<GoColumnType?>()), ex.Message);
+            }
+        }
+
+        [GoMethod]
         public bool NextResultSet()
         {
             if (_reader == null)

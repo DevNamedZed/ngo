@@ -320,6 +320,29 @@ namespace Ngo.Compiler.Semantics
                         break;
                 }
                 goType.PackagePath = importPath;
+
+                // Set type parameters for generic types
+                if (!string.IsNullOrEmpty(entry.Attribute.TypeParams) && goType is StructTypeSymbol genStruct)
+                {
+                    var tpNames = entry.Attribute.TypeParams.Split(',');
+                    var typeParams = new List<TypeParameterSymbol>();
+                    for (int tpIdx = 0; tpIdx < tpNames.Length; tpIdx++)
+                    {
+                        typeParams.Add(new TypeParameterSymbol(tpNames[tpIdx].Trim(), tpIdx, ConstraintInfo.Any));
+                    }
+                    genStruct.SetTypeParameters(typeParams);
+                }
+                else if (!string.IsNullOrEmpty(entry.Attribute.TypeParams) && goType is InterfaceTypeSymbol genIface)
+                {
+                    var tpNames = entry.Attribute.TypeParams.Split(',');
+                    var typeParams = new List<TypeParameterSymbol>();
+                    for (int tpIdx = 0; tpIdx < tpNames.Length; tpIdx++)
+                    {
+                        typeParams.Add(new TypeParameterSymbol(tpNames[tpIdx].Trim(), tpIdx, ConstraintInfo.Any));
+                    }
+                    genIface.SetTypeParameters(typeParams);
+                }
+
                 typeMap[goName] = goType;
                 pkg.AddExport(goType);
 
@@ -456,7 +479,16 @@ namespace Ngo.Compiler.Semantics
                 TypeSymbol goType;
                 if (paramAttr != null)
                 {
-                    goType = PackageMetadataSerializer.StringToType(paramAttr.Type, typeMap, crossPkgResolver);
+                    var goParamType = paramAttr.Type;
+                    if (goParamType.StartsWith("..."))
+                    {
+                        var elementType = PackageMetadataSerializer.StringToType(goParamType.Substring(3), typeMap, crossPkgResolver);
+                        goType = new SliceTypeSymbol(elementType);
+                    }
+                    else
+                    {
+                        goType = PackageMetadataSerializer.StringToType(goParamType, typeMap, crossPkgResolver);
+                    }
                 }
                 else if (isVariadic && i == parameters.Length - 1 && pi.ParameterType.IsArray)
                 {

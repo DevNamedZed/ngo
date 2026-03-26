@@ -44,6 +44,7 @@ namespace Ngo.Compiler.Emit
                 PointerTypeSymbol ptr => $"*{TypeToString(ptr.ElementType, currentPackagePath)}",
                 ChannelTypeSymbol chan => $"chan {TypeToString(chan.ElementType, currentPackagePath)}",
                 FunctionTypeSymbol funcType => SerializeFuncType(funcType, currentPackagePath),
+                InstantiatedTypeSymbol inst => SerializeInstantiatedType(inst, currentPackagePath),
                 InterfaceTypeSymbol iface when iface == BuiltinTypes.EmptyInterface || iface.Methods.Count == 0 => "interface{}",
                 InterfaceTypeSymbol iface when iface == BuiltinTypes.Error
                     || (iface.Name == "error" && iface.Methods.Count == 1 && iface.Methods[0].Name == "Error") => "error",
@@ -57,6 +58,23 @@ namespace Ngo.Compiler.Emit
                     => type.PackagePath + ":" + type.Name,
                 _ => type.Name,
             };
+        }
+
+        private static string SerializeInstantiatedType(InstantiatedTypeSymbol inst, string? currentPackagePath = null)
+        {
+            // Serialize as "BaseType«Arg1,Arg2»" using guillemets to avoid ambiguity with []
+            var baseName = !string.IsNullOrEmpty(inst.GenericType.PackagePath)
+                && inst.GenericType.PackagePath != currentPackagePath
+                ? inst.GenericType.PackagePath + ":" + inst.GenericType.Name
+                : inst.GenericType.Name;
+
+            var args = new string[inst.TypeArguments.Count];
+            for (int i = 0; i < inst.TypeArguments.Count; i++)
+            {
+                args[i] = TypeToString(inst.TypeArguments[i], currentPackagePath);
+            }
+
+            return baseName + "«" + string.Join(",", args) + "»";
         }
 
         private static string SerializeFuncType(FunctionTypeSymbol funcType, string? currentPackagePath = null)
@@ -165,6 +183,27 @@ namespace Ngo.Compiler.Emit
             if (typeStr.StartsWith("func("))
                 return ParseFuncType(typeStr, knownTypes, crossPkgResolver);
 
+            // Instantiated generic type: "BaseType«Arg1,Arg2»" or "pkg:BaseType«Arg1,Arg2»"
+            if (typeStr.Contains('«'))
+            {
+                var guilIdx = typeStr.IndexOf('«');
+                var baseStr = typeStr.Substring(0, guilIdx);
+                var argsStr = typeStr.Substring(guilIdx + 1).TrimEnd('»');
+
+                var baseType = StringToType(baseStr, knownTypes, crossPkgResolver);
+                if (baseType != null)
+                {
+                    var argParts = SplitTypeArgs(argsStr);
+                    var typeArgs = new List<TypeSymbol>();
+                    foreach (var argStr in argParts)
+                    {
+                        typeArgs.Add(StringToType(argStr.Trim(), knownTypes, crossPkgResolver)
+                            ?? BuiltinTypes.EmptyInterface);
+                    }
+                    return new InstantiatedTypeSymbol(baseType, typeArgs);
+                }
+            }
+
             // Fully-qualified cross-package type: "github.com/foo/bar:TypeName"
             if (crossPkgResolver != null && typeStr.Contains(':'))
             {
@@ -196,6 +235,34 @@ namespace Ngo.Compiler.Emit
 
             // Unknown — return as an empty struct
             return new StructTypeSymbol(typeStr, System.Array.Empty<FieldSymbol>());
+        }
+
+        private static List<string> SplitTypeArgs(string argsStr)
+        {
+            var result = new List<string>();
+            int depth = 0;
+            int start = 0;
+            for (int i = 0; i < argsStr.Length; i++)
+            {
+                if (argsStr[i] == '«' || argsStr[i] == '[' || argsStr[i] == '(')
+                {
+                    depth++;
+                }
+                else if (argsStr[i] == '»' || argsStr[i] == ']' || argsStr[i] == ')')
+                {
+                    depth--;
+                }
+                else if (argsStr[i] == ',' && depth == 0)
+                {
+                    result.Add(argsStr.Substring(start, i - start));
+                    start = i + 1;
+                }
+            }
+            if (start < argsStr.Length)
+            {
+                result.Add(argsStr.Substring(start));
+            }
+            return result;
         }
 
         private static MapTypeParts ParseMapType(string typeStr, Dictionary<string, TypeSymbol>? knownTypes,
@@ -257,9 +324,35 @@ namespace Ngo.Compiler.Emit
             if (!string.IsNullOrEmpty(paramStr))
             {
                 var paramParts = SplitTypeList(paramStr);
+                // Two-pass approach to handle grouped params like "network, address string".
+                // After comma-split: ["network", "address string"].
+                // StripParamName("address string") → "string" (name was stripped).
+                // StripParamName("network") → "network" (no space, unchanged).
+                // The bare "network" is a grouped param name that borrows the type from the next part.
+                // Key invariant: a bare part is a grouped name only if the NEXT part had its name
+                // stripped (i.e., the next original DID contain a space and was changed by StripParamName).
+                // This avoids misidentifying type-only params like "ResponseWriter" as grouped names.
+                var trimmedOriginals = new string[paramParts.Count];
+                var strippedParts = new string[paramParts.Count];
                 for (int i = 0; i < paramParts.Count; i++)
                 {
-                    var paramPart = paramParts[i].Trim();
+                    trimmedOriginals[i] = paramParts[i].Trim();
+                    strippedParts[i] = StripParamName(trimmedOriginals[i]);
+                }
+                // Propagate types backward for grouped param names.
+                for (int i = paramParts.Count - 2; i >= 0; i--)
+                {
+                    bool thisPartIsUnchangedBareWord = strippedParts[i] == trimmedOriginals[i]
+                        && IsBareIdentifier(strippedParts[i]);
+                    bool nextPartHadNameStripped = strippedParts[i + 1] != trimmedOriginals[i + 1];
+                    if (thisPartIsUnchangedBareWord && nextPartHadNameStripped)
+                    {
+                        strippedParts[i] = strippedParts[i + 1];
+                    }
+                }
+                for (int i = 0; i < strippedParts.Length; i++)
+                {
+                    var paramPart = strippedParts[i].Trim();
                     if (paramPart.StartsWith("..."))
                     {
                         isVariadic = true;
@@ -290,6 +383,39 @@ namespace Ngo.Compiler.Emit
             return new FunctionTypeSymbol(paramTypes, returnTypes, isVariadic);
         }
 
+        /// <summary>
+        /// Returns true if the string is a bare identifier (a single Go identifier with no type annotation).
+        /// Such bare parts appear in grouped params like "network, address string" after splitting:
+        /// "network" is a bare identifier that needs to inherit the type from the following param.
+        /// </summary>
+        private static bool IsBareIdentifier(string part)
+        {
+            if (string.IsNullOrEmpty(part)) return false;
+            if (part.StartsWith("...") || part.StartsWith("*") || part.StartsWith("func(")
+                || part.StartsWith("map[") || part.StartsWith("chan ") || part.StartsWith("<-chan ")
+                || part.StartsWith("[") || part.Contains(".") || part.Contains(" ") || part.Contains("("))
+            {
+                return false;
+            }
+            return true;
+        }
+
+        private static string StripParamName(string paramPart)
+        {
+            var spaceIdx = paramPart.IndexOf(' ');
+            if (spaceIdx > 0 && !paramPart.StartsWith("func(") && !paramPart.StartsWith("map[")
+                && !paramPart.StartsWith("chan ") && !paramPart.StartsWith("<-chan "))
+            {
+                var beforeSpace = paramPart.Substring(0, spaceIdx);
+                if (!beforeSpace.Contains('[') && !beforeSpace.Contains('*')
+                    && !beforeSpace.Contains('.') && !beforeSpace.Contains('('))
+                {
+                    return paramPart.Substring(spaceIdx + 1).Trim();
+                }
+            }
+            return paramPart;
+        }
+
         private static string PackagePathLastSegment(string packagePath)
         {
             return Ngo.Compiler.Semantics.CompilationContext.GetDefaultPackageName(packagePath);
@@ -302,8 +428,8 @@ namespace Ngo.Compiler.Emit
             int start = 0;
             for (int i = 0; i < s.Length; i++)
             {
-                if (s[i] == '(' || s[i] == '[') depth++;
-                else if (s[i] == ')' || s[i] == ']') depth--;
+                if (s[i] == '(' || s[i] == '[' || s[i] == '\u00AB') depth++;
+                else if (s[i] == ')' || s[i] == ']' || s[i] == '\u00BB') depth--;
                 else if (s[i] == ',' && depth == 0)
                 {
                     result.Add(s.Substring(start, i - start));

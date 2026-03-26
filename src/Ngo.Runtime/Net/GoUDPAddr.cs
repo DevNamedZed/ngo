@@ -23,7 +23,7 @@ namespace Ngo.Runtime.Net
     [GoType("struct", Name = "UDPAddr", Package = "net")]
     public class GoUDPAddr : IGoNetAddr
     {
-        [GoField(Name = "IP")] public Slice<byte> IP { get; set; }
+        [GoField(Name = "IP", Type = "net.IP")] public Slice<byte> IP { get; set; }
         [GoField(Name = "Port")] public long Port { get; set; }
         [GoField(Name = "Zone")] public string Zone { get; set; } = "";
 

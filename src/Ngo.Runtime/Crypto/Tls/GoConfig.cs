@@ -55,6 +55,9 @@ namespace Ngo.Runtime.Crypto.Tls
                 Time = Time,
             };
         }
+
+        [GoMethod]
+        public void BuildNameToCertificate() {}
     }
 
     [GoType("struct", Name = "ClientHelloInfo", Package = "crypto/tls")]
@@ -66,5 +69,15 @@ namespace Ngo.Runtime.Crypto.Tls
         [GoField] public Slice<long> SupportedVersions;
         [GoField] public Slice<string> SupportedProtos;
         [GoField] public Slice<byte> SignatureSchemes;
+        [GoField(Name = "SupportedCurves")] public Slice<long> SupportedCurves;
+        [GoField(Name = "SupportedPoints")] public Slice<byte> SupportedPoints;
+
+        [GoMethod]
+        [return: GoReturn("context.Context")]
+        public object? Context() => null;
+
+        [GoMethod]
+        [return: GoReturn("error")]
+        public object? SupportsCertificate([GoParam("*tls.Certificate")] object? certificate) => null;
     }
 }

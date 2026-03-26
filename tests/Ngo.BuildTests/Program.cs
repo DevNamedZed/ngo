@@ -41,6 +41,7 @@ if (options.ShowHelp)
     Console.WriteLine("Options:");
     Console.WriteLine("  -f, --filter <text>   Filter by name/module");
     Console.WriteLine("  -v, --verbose         Show passing tests");
+    Console.WriteLine("  --show-errors         With -v, print individual errors for PASS packages");
     Console.WriteLine("  --pass                Only run pass-expected tests");
     Console.WriteLine("  --fail                Only run fail-expected tests");
     Console.WriteLine("  --go-version <ver>    Go version for stdlib (default: from stdlib.json)");
@@ -133,6 +134,13 @@ static int RunPackages(Options options)
             {
                 var errSuffix = errors.Count > 0 ? $" ({errors.Count} errors)" : "";
                 Console.WriteLine($"  PASS  {pkg.label}{errSuffix}");
+                if (options.ShowErrors && errors.Count > 0)
+                {
+                    foreach (var err in errors.Take(15))
+                        Console.WriteLine($"         {err.Code}: {err.Message} ({err.Location})");
+                    if (errors.Count > 15)
+                        Console.WriteLine($"         ... and {errors.Count - 15} more");
+                }
             }
         }
         else
@@ -329,6 +337,9 @@ static Options ParseArgs(string[] args)
             case "--verbose" or "-v":
                 opts.Verbose = true;
                 break;
+            case "--show-errors":
+                opts.ShowErrors = true;
+                break;
             case "--pass":
                 opts.PassOnly = true;
                 break;
@@ -365,6 +376,7 @@ class Options
     public string? Command;
     public string? Filter;
     public bool Verbose;
+    public bool ShowErrors;
     public bool PassOnly;
     public bool FailOnly;
     public string? GoVersion;

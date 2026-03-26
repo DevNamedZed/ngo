@@ -130,6 +130,20 @@ namespace Ngo.Runtime.Net
             }
         }
 
+        [GoMethod]
+        [return: GoReturn("int", "int", "error")]
+        public (long, long, object?) WriteMsgUnix(Slice<byte> b, Slice<byte> oob, [GoParam("*net.UnixAddr")] GoUnixAddr? addr)
+        {
+            return (0, 0, (object?)"not supported");
+        }
+
+        [GoMethod]
+        [return: GoReturn("int", "int", "int", "*net.UnixAddr", "error")]
+        public (long, long, long, GoUnixAddr?, object?) ReadMsgUnix(Slice<byte> b, Slice<byte> oob)
+        {
+            return (0, 0, 0, null, (object?)"not supported");
+        }
+
         /// <summary>
         /// Dial a Unix domain socket.
         /// </summary>

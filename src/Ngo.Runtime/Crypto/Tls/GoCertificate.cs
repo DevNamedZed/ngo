@@ -7,7 +7,10 @@ namespace Ngo.Runtime.Crypto.Tls
     public class GoCertificate
     {
         [GoField(Name = "Certificate")] public Slice<Slice<byte>> Certificate_;
-        [GoField(Name = "PrivateKey")] public object? PrivateKey; // crypto.PrivateKey
-        [GoField(Name = "Leaf")] public object? Leaf; // *x509.Certificate
+        [GoField(Name = "PrivateKey")] public object? PrivateKey;
+        [GoField(Name = "OCSPStaple")] public Slice<byte> OCSPStaple;
+        [GoField(Name = "SignedCertificateTimestamps")] public Slice<Slice<byte>> SignedCertificateTimestamps;
+        [GoField(Name = "Leaf")] public object? Leaf;
+        [GoField(Name = "SupportedSignatureAlgorithms")] public Slice<long> SupportedSignatureAlgorithms;
     }
 }

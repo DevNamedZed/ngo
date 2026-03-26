@@ -135,6 +135,19 @@ namespace Ngo.Compiler.Symbols
                 {
                     embeddedType = inst.Resolved();
                 }
+                // Unwrap named type definitions (e.g., type authDecV10 authDec → authDec)
+                if (embeddedType is not StructTypeSymbol)
+                {
+                    var resolved = embeddedType.Resolved();
+                    if (resolved != embeddedType && resolved is StructTypeSymbol)
+                    {
+                        embeddedType = resolved;
+                    }
+                    else if (embeddedType.UnderlyingType is StructTypeSymbol)
+                    {
+                        embeddedType = embeddedType.UnderlyingType;
+                    }
+                }
                 if (embeddedType is StructTypeSymbol embeddedStruct)
                 {
                     var inner = embeddedStruct.LookupField(name);

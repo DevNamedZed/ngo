@@ -110,6 +110,12 @@ namespace Ngo.Runtime.Io
     {
     }
 
+    /// <summary>Go io.ReadWriteSeeker interface = Reader + Writer + Seeker</summary>
+    [GoType("interface", Package = "io", Name = "ReadWriteSeeker")]
+    public interface IGoReadWriteSeeker : IGoReader, IGoWriter, IGoSeeker
+    {
+    }
+
     /// <summary>Go io.WriterTo interface - WriteTo(w Writer) (int64, error)</summary>
     [GoType("interface", Package = "io", Name = "WriterTo")]
     public interface IGoWriterTo

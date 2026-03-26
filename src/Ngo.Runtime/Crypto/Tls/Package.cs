@@ -46,6 +46,18 @@ namespace Ngo.Runtime.Crypto.Tls
         public const long TLS_AES_256_GCM_SHA384 = 0x1302;
         [GoConst(Type = "uint16")]
         public const long TLS_CHACHA20_POLY1305_SHA256 = 0x1303;
+        [GoConst(Type = "uint16")]
+        public const long TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305 = 0xCCA9;
+        [GoConst(Type = "uint16")]
+        public const long TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305 = 0xCCA8;
+        [GoConst(Type = "uint16")]
+        public const long TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA = 0xc014;
+        [GoConst(Type = "uint16")]
+        public const long TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA = 0xc013;
+        [GoConst(Type = "uint16")]
+        public const long TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA = 0xc00a;
+        [GoConst(Type = "uint16")]
+        public const long TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA = 0xc009;
 
         // Client auth type constants
         [GoConst(Type = "tls.ClientAuthType")]
@@ -242,6 +254,22 @@ namespace Ngo.Runtime.Crypto.Tls
             };
         }
 
+        // tls.CipherSuites() []*CipherSuite
+        [GoFunc]
+        [return: GoReturn("[]*tls.CipherSuite")]
+        public static Slice<GoCipherSuite?> CipherSuites()
+        {
+            return new Slice<GoCipherSuite?>(Array.Empty<GoCipherSuite?>());
+        }
+
+        // tls.InsecureCipherSuites() []*CipherSuite
+        [GoFunc]
+        [return: GoReturn("[]*tls.CipherSuite")]
+        public static Slice<GoCipherSuite?> InsecureCipherSuites()
+        {
+            return new Slice<GoCipherSuite?>(Array.Empty<GoCipherSuite?>());
+        }
+
         private static SslProtocols MapTlsVersion(GoConfig? config)
         {
             if (config == null)
@@ -268,5 +296,14 @@ namespace Ngo.Runtime.Crypto.Tls
 
             return protocols == 0 ? SslProtocols.None : protocols;
         }
+    }
+
+    [GoType("struct", Name = "CipherSuite", Package = "crypto/tls")]
+    public class GoCipherSuite
+    {
+        [GoField(Name = "ID")] public long ID;
+        [GoField(Name = "Name")] public string Name = "";
+        [GoField(Name = "SupportedVersions")] public Slice<long> SupportedVersions;
+        [GoField(Name = "Insecure")] public bool Insecure;
     }
 }

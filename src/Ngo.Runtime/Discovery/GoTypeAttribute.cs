@@ -29,6 +29,9 @@ namespace Ngo.Runtime.Discovery
         /// </summary>
         public bool Pointer { get; set; }
 
+        /// <summary>Comma-separated type parameter names for generic types (e.g., "T" or "K,V").</summary>
+        public string? TypeParams { get; set; }
+
         public GoTypeAttribute(string kind)
         {
             Kind = kind;

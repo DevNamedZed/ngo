@@ -515,7 +515,10 @@ namespace Ngo.Compiler.Semantics
 
 
                     // Array equality: same element type and length
-                    if (left is ArrayTypeSymbol leftArr && right is ArrayTypeSymbol rightArr
+                    // Also handle named array types (e.g., SpanID == [8]byte{})
+                    var leftForArr = left is ArrayTypeSymbol ? left : (left.UnderlyingType as ArrayTypeSymbol ?? left.Resolved() as ArrayTypeSymbol);
+                    var rightForArr = right is ArrayTypeSymbol ? right : (right.UnderlyingType as ArrayTypeSymbol ?? right.Resolved() as ArrayTypeSymbol);
+                    if (leftForArr is ArrayTypeSymbol leftArr && rightForArr is ArrayTypeSymbol rightArr
                         && leftArr.Length == rightArr.Length
                         && TypeChecker.CommonType(leftArr.ElementType, rightArr.ElementType) != null)
                     {
@@ -560,6 +563,19 @@ namespace Ngo.Compiler.Semantics
                     {
                         return BuiltinTypes.UntypedBool;
                     }
+
+                    // Named type compared with untyped constant (e.g., Accuracy == 0)
+                    if ((left.TypeKind == TypeKind.UntypedInt || left.TypeKind == TypeKind.UntypedFloat)
+                        && TypeChecker.IsNumeric(right))
+                    {
+                        return BuiltinTypes.UntypedBool;
+                    }
+                    if ((right.TypeKind == TypeKind.UntypedInt || right.TypeKind == TypeKind.UntypedFloat)
+                        && TypeChecker.IsNumeric(left))
+                    {
+                        return BuiltinTypes.UntypedBool;
+                    }
+
 
                     return null;
 
@@ -836,11 +852,18 @@ namespace Ngo.Compiler.Semantics
                 return new ErrorExpression("Error target", span);
             }
 
-            // Method expression: Type.Method → func(receiver, args...) returns
-            if (target is IdentifierExpression typeId && typeId.Symbol is TypeSymbol typeSymbol)
+            // Method expression: Type.Method or (*Type).Method → func(receiver, args...) returns
+            TypeSymbol typeSymbol = null;
+            if (target is IdentifierExpression typeId && typeId.Symbol is TypeSymbol ts)
+            {
+                typeSymbol = ts;
+            }
+
+            if (typeSymbol != null)
             {
                 // (*T).Method — pointer type method expression
                 StructTypeSymbol methodExprStruct = null;
+                TypeSymbol methodExprNamedType = null;
                 TypeSymbol receiverType = typeSymbol;
                 if (typeSymbol is PointerTypeSymbol ptrTypeExpr)
                 {
@@ -848,11 +871,39 @@ namespace Ngo.Compiler.Semantics
                     while (baseType.UnderlyingType != null && baseType is not StructTypeSymbol)
                         baseType = baseType.UnderlyingType;
                     if (baseType is StructTypeSymbol ptrStruct)
+                    {
                         methodExprStruct = ptrStruct;
+                    }
+                    else if (ptrTypeExpr.ElementType.Methods.Count > 0)
+                    {
+                        methodExprNamedType = ptrTypeExpr.ElementType;
+                    }
                 }
                 else if (typeSymbol is StructTypeSymbol directStruct)
                 {
                     methodExprStruct = directStruct;
+                }
+                else if (typeSymbol.Methods.Count > 0)
+                {
+                    methodExprNamedType = typeSymbol;
+                }
+
+                // Handle method expressions on non-struct named types (e.g., type Class string)
+                if (methodExprNamedType != null)
+                {
+                    var namedMethod = methodExprNamedType.LookupMethod(fieldName);
+                    if (namedMethod != null)
+                    {
+                        var paramTypes = new TypeSymbol[namedMethod.Parameters.Count + 1];
+                        paramTypes[0] = receiverType;
+                        for (int i = 0; i < namedMethod.Parameters.Count; i++)
+                        {
+                            paramTypes[i + 1] = namedMethod.Parameters[i].Type;
+                        }
+                        var funcType = new FunctionTypeSymbol(paramTypes, namedMethod.ReturnTypes, namedMethod.IsVariadic);
+                        return new MethodValueExpression(target, namedMethod, funcType, span,
+                            isMethodExpression: true);
+                    }
                 }
 
                 if (methodExprStruct != null)
@@ -910,6 +961,25 @@ namespace Ngo.Compiler.Semantics
                 && resolvedTargetType.GetType() == typeof(TypeSymbol))
             {
                 resolvedTargetType = resolvedTargetType.UnderlyingType;
+            }
+
+            // Auto-deref after resolving named types (e.g., type Response *http.Response)
+            if (resolvedTargetType is PointerTypeSymbol resolvedPtr)
+            {
+                var ptrElement = resolvedPtr.ElementType;
+                resolvedTargetType = ptrElement.Resolved();
+                if (resolvedTargetType == ptrElement
+                    && resolvedTargetType.UnderlyingType != null
+                    && resolvedTargetType.GetType() == typeof(TypeSymbol))
+                {
+                    resolvedTargetType = resolvedTargetType.UnderlyingType;
+                }
+                // Preserve the named type for method lookup (e.g., *net.IP → IP has methods)
+                if (ptrElement != resolvedTargetType)
+                {
+                    targetType = ptrElement;
+                }
+                target = new DerefExpression(target, resolvedTargetType, target.Span);
             }
 
             // Extract type parameter substitution info from instantiated generic types
@@ -1037,8 +1107,11 @@ namespace Ngo.Compiler.Semantics
             }
 
             // Named slice/map/channel types can have methods — check them
+            // Also check when the underlying type is slice/map/channel but the named type has Struct kind
             if (targetType.TypeKind == TypeKind.Slice || targetType.TypeKind == TypeKind.Map ||
-                targetType.TypeKind == TypeKind.Channel)
+                targetType.TypeKind == TypeKind.Channel
+                || (resolvedTargetType is SliceTypeSymbol || resolvedTargetType is MapTypeSymbol
+                    || resolvedTargetType is ChannelTypeSymbol))
             {
                 var namedMethod = targetType.LookupMethod(fieldName);
                 if (namedMethod != null)
@@ -1201,6 +1274,17 @@ namespace Ngo.Compiler.Semantics
             // Check the type directly, or its underlying type for named types
             var resolvedType = type.Resolved();
 
+            // InstantiatedTypeSymbol: resolve to underlying structural type
+            if (resolvedType is InstantiatedTypeSymbol instComp)
+            {
+                var underlying = instComp.GenericType.Resolved();
+                if (underlying is StructTypeSymbol || underlying is SliceTypeSymbol
+                    || underlying is MapTypeSymbol || underlying is ArrayTypeSymbol)
+                {
+                    resolvedType = underlying;
+                }
+            }
+
             if (resolvedType is StructTypeSymbol structType)
             {
                 return ResolveStructCompositeLiteral(structType, syntax, span, type);
@@ -1219,6 +1303,32 @@ namespace Ngo.Compiler.Semantics
             if (resolvedType is MapTypeSymbol mapType)
             {
                 return ResolveMapCompositeLiteral(mapType, syntax, span, type);
+            }
+
+            // Type parameter with structural constraint: Slice ~[]T allows Slice{}
+            if (resolvedType is TypeParameterSymbol compTypeParam)
+            {
+                var structural = TypeChecker.GetConstraintStructuralType(compTypeParam);
+                if (structural != null)
+                {
+                    var resolvedStructural = structural.Resolved();
+                    if (resolvedStructural is SliceTypeSymbol csSlice)
+                    {
+                        return ResolveSliceCompositeLiteral(csSlice, syntax, span, type);
+                    }
+                    if (resolvedStructural is MapTypeSymbol csMap)
+                    {
+                        return ResolveMapCompositeLiteral(csMap, syntax, span, type);
+                    }
+                    if (resolvedStructural is StructTypeSymbol csStruct)
+                    {
+                        return ResolveStructCompositeLiteral(csStruct, syntax, span, type);
+                    }
+                    if (resolvedStructural is ArrayTypeSymbol csArray)
+                    {
+                        return ResolveArrayCompositeLiteral(csArray, syntax, span, type);
+                    }
+                }
             }
 
             _context.Errors.ReportError(span, ErrorCode.InvalidCompositeLiteral,
@@ -1320,6 +1430,23 @@ namespace Ngo.Compiler.Semantics
             if (element is CompositeLiteralSyntax innerLit && innerLit.Type == null)
             {
                 var resolvedElemType = elementType.UnderlyingType ?? elementType;
+                // For instantiated generic types (e.g., edges[T] = []edge[T]),
+                // resolve the generic base to find the underlying structural type
+                if (resolvedElemType is InstantiatedTypeSymbol instElem)
+                {
+                    var genBase = instElem.GenericType;
+                    var baseUnderlying = genBase.UnderlyingType ?? genBase.Resolved();
+                    if (baseUnderlying is SliceTypeSymbol || baseUnderlying is StructTypeSymbol
+                        || baseUnderlying is MapTypeSymbol || baseUnderlying is ArrayTypeSymbol)
+                    {
+                        resolvedElemType = baseUnderlying;
+                    }
+                }
+                // Also check if resolvedElemType is a plain TypeSymbol wrapping a structural type
+                if (resolvedElemType.GetType() == typeof(TypeSymbol) && resolvedElemType.UnderlyingType != null)
+                {
+                    resolvedElemType = resolvedElemType.UnderlyingType;
+                }
                 var innerSpan = _context.SpanOf(element);
 
                 if (resolvedElemType is StructTypeSymbol structType)
@@ -1706,7 +1833,8 @@ namespace Ngo.Compiler.Semantics
 
             if (resolvedTargetType is SliceTypeSymbol sliceType)
             {
-                if (!TypeChecker.IsInteger(index.Type) && index.Type != TypeSymbol.Error)
+                if (!TypeChecker.IsInteger(index.Type) && index.Type != TypeSymbol.Error
+                    && index.Type is not TypeParameterSymbol)
                 {
                     _context.Errors.ReportError(_context.SpanOf(syntax.Index), ErrorCode.InvalidIndex,
                         $"Index must be an integer, got '{index.Type.Name}'");
@@ -1788,6 +1916,12 @@ namespace Ngo.Compiler.Semantics
                 {
                     return new Ast.IndexExpression(target, index, commonElement, span);
                 }
+            }
+
+            // interface{}/any values may hold maps or slices at runtime — allow indexing
+            if (resolvedTargetType is InterfaceTypeSymbol emptyIfaceIdx && emptyIfaceIdx.Methods.Count == 0)
+            {
+                return new Ast.IndexExpression(target, index, BuiltinTypes.EmptyInterface, span);
             }
 
             _context.Errors.ReportError(span, ErrorCode.InvalidIndex,

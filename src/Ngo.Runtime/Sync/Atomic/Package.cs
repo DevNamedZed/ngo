@@ -197,4 +197,171 @@ namespace Ngo.Runtime.Sync.Atomic
             return Interlocked.Exchange(ref addr.Value, @new);
         }
     }
+
+    [GoType("struct", Name = "Uintptr", Package = "sync/atomic")]
+    public class GoAtomicUintptr
+    {
+        private long _value;
+
+        [GoMethod]
+        public long Load() => Interlocked.Read(ref _value);
+
+        [GoMethod]
+        public void Store(long val) => Interlocked.Exchange(ref _value, val);
+
+        [GoMethod]
+        public long Add(long delta) => Interlocked.Add(ref _value, delta);
+
+        [GoMethod]
+        public long Swap(long val) => Interlocked.Exchange(ref _value, val);
+
+        [GoMethod]
+        public bool CompareAndSwap(long old, long @new) =>
+            Interlocked.CompareExchange(ref _value, @new, old) == old;
+    }
+
+    [GoType("struct", Name = "Pointer", Package = "sync/atomic")]
+    public class GoAtomicPointer
+    {
+        private object? _value;
+
+        [GoMethod]
+        public object? Load() => Volatile.Read(ref _value);
+
+        [GoMethod]
+        public void Store(object? val) => Volatile.Write(ref _value, val);
+
+        [GoMethod]
+        public object? Swap(object? val) => Interlocked.Exchange(ref _value, val);
+
+        [GoMethod]
+        public bool CompareAndSwap(object? old, object? @new) =>
+            Interlocked.CompareExchange(ref _value, @new, old) == old;
+    }
+
+    [GoType("struct", Name = "Int32", Package = "sync/atomic")]
+    public class GoAtomicInt32
+    {
+        private int _value;
+
+        [GoMethod]
+        public long Load() => Interlocked.CompareExchange(ref _value, 0, 0);
+
+        [GoMethod]
+        public void Store(long val) => Interlocked.Exchange(ref _value, (int)val);
+
+        [GoMethod]
+        public long Add(long delta) => Interlocked.Add(ref _value, (int)delta);
+
+        [GoMethod]
+        public long Swap(long val) => Interlocked.Exchange(ref _value, (int)val);
+
+        [GoMethod]
+        public bool CompareAndSwap(long old, long @new) =>
+            Interlocked.CompareExchange(ref _value, (int)@new, (int)old) == (int)old;
+    }
+
+    [GoType("struct", Name = "Int64", Package = "sync/atomic")]
+    public class GoAtomicInt64
+    {
+        private long _value;
+
+        [GoMethod]
+        public long Load() => Interlocked.Read(ref _value);
+
+        [GoMethod]
+        public void Store(long val) => Interlocked.Exchange(ref _value, val);
+
+        [GoMethod]
+        public long Add(long delta) => Interlocked.Add(ref _value, delta);
+
+        [GoMethod]
+        public long Swap(long val) => Interlocked.Exchange(ref _value, val);
+
+        [GoMethod]
+        public bool CompareAndSwap(long old, long @new) =>
+            Interlocked.CompareExchange(ref _value, @new, old) == old;
+    }
+
+    [GoType("struct", Name = "Uint32", Package = "sync/atomic")]
+    public class GoAtomicUint32
+    {
+        private int _value;
+
+        [GoMethod]
+        public long Load() => (uint)Interlocked.CompareExchange(ref _value, 0, 0);
+
+        [GoMethod]
+        public void Store(long val) => Interlocked.Exchange(ref _value, (int)val);
+
+        [GoMethod]
+        public long Add(long delta) => (uint)Interlocked.Add(ref _value, (int)delta);
+
+        [GoMethod]
+        public long Swap(long val) => (uint)Interlocked.Exchange(ref _value, (int)val);
+
+        [GoMethod]
+        public bool CompareAndSwap(long old, long @new) =>
+            Interlocked.CompareExchange(ref _value, (int)@new, (int)old) == (int)old;
+    }
+
+    [GoType("struct", Name = "Uint64", Package = "sync/atomic")]
+    public class GoAtomicUint64
+    {
+        private long _value;
+
+        [GoMethod]
+        public long Load() => Interlocked.Read(ref _value);
+
+        [GoMethod]
+        public void Store(long val) => Interlocked.Exchange(ref _value, val);
+
+        [GoMethod]
+        public long Add(long delta) => Interlocked.Add(ref _value, delta);
+
+        [GoMethod]
+        public long Swap(long val) => Interlocked.Exchange(ref _value, val);
+
+        [GoMethod]
+        public bool CompareAndSwap(long old, long @new) =>
+            Interlocked.CompareExchange(ref _value, @new, old) == old;
+    }
+
+    [GoType("struct", Name = "Bool", Package = "sync/atomic")]
+    public class GoAtomicBool
+    {
+        private int _value;
+
+        [GoMethod]
+        public bool Load() => Interlocked.CompareExchange(ref _value, 0, 0) != 0;
+
+        [GoMethod]
+        public void Store(bool val) => Interlocked.Exchange(ref _value, val ? 1 : 0);
+
+        [GoMethod]
+        public bool Swap(bool val) => Interlocked.Exchange(ref _value, val ? 1 : 0) != 0;
+
+        [GoMethod]
+        public bool CompareAndSwap(bool old, bool @new) =>
+            Interlocked.CompareExchange(ref _value, @new ? 1 : 0, old ? 1 : 0) == (old ? 1 : 0);
+    }
+
+    [GoType("struct", Name = "Value", Package = "sync/atomic")]
+    public class GoAtomicValue
+    {
+        private object? _value;
+
+        [GoMethod]
+        public object? Load() => Volatile.Read(ref _value);
+
+        [GoMethod]
+        public void Store(object? val) => Volatile.Write(ref _value, val);
+
+        [GoMethod]
+        public object? Swap(object? val) => Interlocked.Exchange(ref _value, val);
+
+        [GoMethod]
+        public bool CompareAndSwap(object? old, object? @new) =>
+            Interlocked.CompareExchange(ref _value, @new, old) == old;
+    }
 }

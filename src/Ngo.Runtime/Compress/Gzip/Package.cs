@@ -25,6 +25,9 @@ namespace Ngo.Runtime.Compress.Gzip
         [GoConst(Type = "int")]
         public const long HuffmanOnly = -2;
 
+        [GoVar] public static readonly object? ErrChecksum = "gzip: invalid checksum";
+        [GoVar] public static readonly object? ErrHeader = "gzip: invalid header";
+
         // gzip.NewWriter(w io.Writer) *Writer
         [GoFunc]
         [return: GoReturn("*gzip.Writer")]

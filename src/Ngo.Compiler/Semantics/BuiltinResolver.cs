@@ -128,9 +128,17 @@ namespace Ngo.Compiler.Semantics
             var resolvedSliceType = ResolveUnderlying(sliceArg.Type);
             if (sliceArg.Type != TypeSymbol.Error && resolvedSliceType is not SliceTypeSymbol)
             {
-                _context.Errors.ReportError(span, ErrorCode.InvalidOperation,
-                    $"First argument to append must be a slice, got '{sliceArg.Type.Name}'");
-                return new ErrorExpression("Not a slice", span);
+                // interface{}/any values may hold slices at runtime — allow append
+                if (resolvedSliceType is InterfaceTypeSymbol emptyIface && emptyIface.Methods.Count == 0)
+                {
+                    resolvedSliceType = new SliceTypeSymbol(BuiltinTypes.EmptyInterface);
+                }
+                else
+                {
+                    _context.Errors.ReportError(span, ErrorCode.InvalidOperation,
+                        $"First argument to append must be a slice, got '{sliceArg.Type.Name}'");
+                    return new ErrorExpression("Not a slice", span);
+                }
             }
 
             var args = new List<Expression> { sliceArg };
@@ -408,10 +416,10 @@ namespace Ngo.Compiler.Semantics
 
         public Expression ResolveMin(CallExpressionSyntax syntax, TextSpan span)
         {
-            if (syntax.Arguments.Count < 2)
+            if (syntax.Arguments.Count < 1)
             {
                 _context.Errors.ReportError(span, ErrorCode.WrongArgumentCount,
-                    $"min expects at least 2 arguments, got {syntax.Arguments.Count}");
+                    $"min expects at least 1 argument, got {syntax.Arguments.Count}");
                 return new ErrorExpression("Wrong arg count", span);
             }
 
@@ -440,10 +448,10 @@ namespace Ngo.Compiler.Semantics
 
         public Expression ResolveMax(CallExpressionSyntax syntax, TextSpan span)
         {
-            if (syntax.Arguments.Count < 2)
+            if (syntax.Arguments.Count < 1)
             {
                 _context.Errors.ReportError(span, ErrorCode.WrongArgumentCount,
-                    $"max expects at least 2 arguments, got {syntax.Arguments.Count}");
+                    $"max expects at least 1 argument, got {syntax.Arguments.Count}");
                 return new ErrorExpression("Wrong arg count", span);
             }
 

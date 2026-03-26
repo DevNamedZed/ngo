@@ -208,7 +208,8 @@ namespace Ngo.Compiler.Semantics
                     var sym = _context.Scope.Lookup(constId.Identifier.Text);
                     if (sym is ConstantSymbol constSym && constSym.Value is long lval)
                     {
-                        return new ArrayTypeSymbol(elementType, (int)lval);
+                        int clampedLength = lval > int.MaxValue ? int.MaxValue : lval < 0 ? 0 : (int)lval;
+                        return new ArrayTypeSymbol(elementType, clampedLength);
                     }
                     if (sym is ConstantSymbol constSym2 && constSym2.Value is int ival)
                     {
@@ -329,14 +330,35 @@ namespace Ngo.Compiler.Semantics
                 }
                 else
                 {
-                    // Embedded field: use the type name as the field name
-                    var embeddedName = fieldType.Name;
+                    // Embedded field: use the base type name as the field name
+                    // For *T, the embedded name is T (not *T)
+                    var embeddedType = fieldType is PointerTypeSymbol embPtr
+                        ? embPtr.ElementType : fieldType;
+                    var embeddedName = embeddedType.Name;
                     fields.Add(new FieldSymbol(embeddedName, fieldType, ordinal++, isEmbedded: true));
                 }
             }
 
-            var structName = fields.Count == 0 ? "struct{}" : "struct";
-            return new StructTypeSymbol(structName, fields);
+            if (fields.Count == 0)
+            {
+                return new StructTypeSymbol("struct{}", fields);
+            }
+
+            // Build a unique fingerprint from field names and types so that distinct
+            // anonymous structs don't collide when serialized to archives.
+            var fingerprint = new System.Text.StringBuilder("struct{");
+            for (int i = 0; i < fields.Count; i++)
+            {
+                if (i > 0)
+                {
+                    fingerprint.Append(';');
+                }
+                fingerprint.Append(fields[i].Name);
+                fingerprint.Append(' ');
+                fingerprint.Append(fields[i].Type.Name);
+            }
+            fingerprint.Append('}');
+            return new StructTypeSymbol(fingerprint.ToString(), fields);
         }
 
         public InterfaceTypeSymbol ResolveAnonymousInterface(InterfaceTypeSyntax syntax)
@@ -465,7 +487,12 @@ namespace Ngo.Compiler.Semantics
                 var sym = _context.Scope.Lookup(id.Identifier.Text);
                 if (sym is ConstantSymbol c)
                 {
-                    if (c.Value is long lv) return (int)lv;
+                    if (c.Value is long lv)
+                    {
+                        if (lv > int.MaxValue) return int.MaxValue;
+                        if (lv < 0) return 0;
+                        return (int)lv;
+                    }
                     if (c.Value is int iv) return iv;
                     // Value not resolved yet — fall through to PendingConstInts
                 }
@@ -487,7 +514,12 @@ namespace Ngo.Compiler.Semantics
                     var member = pkg.LookupExport(sel.Name.Text);
                     if (member is ConstantSymbol c)
                     {
-                        if (c.Value is long lv) return (int)lv;
+                        if (c.Value is long lv)
+                        {
+                            if (lv > int.MaxValue) return int.MaxValue;
+                            if (lv < 0) return 0;
+                            return (int)lv;
+                        }
                         if (c.Value is int iv) return iv;
                         if (c.Value is bool bv) return bv ? 1 : 0;
                     }

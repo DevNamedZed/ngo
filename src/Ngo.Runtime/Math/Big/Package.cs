@@ -9,13 +9,26 @@ namespace Ngo.Runtime.Math.Big
     [GoPackage("math/big")]
     public static class Package
     {
+        // Precision constants
+        [GoConst]
+        public static readonly long MaxPrec = 4294967295;
+
         // Accuracy constants
-        [GoConst]
+        [GoConst(Type = "big.Accuracy")]
         public const long Exact = 0;
-        [GoConst]
+        [GoConst(Type = "big.Accuracy")]
         public const long Above = 1;
-        [GoConst]
+        [GoConst(Type = "big.Accuracy")]
         public const long Below = -1;
+
+        // Accuracy named type
+        [GoType("named", Name = "Accuracy", Package = "math/big", Underlying = "int8")]
+        public class GoAccuracy
+        {
+            [GoMethod]
+            public string String() => "";
+        }
+
 
         [GoFunc]
         public static GoInt NewInt(long x)

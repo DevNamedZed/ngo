@@ -19,7 +19,9 @@ namespace Ngo.Runtime.Crypto.Rand
             return ((long)arr.Length, null);
         }
 
-        public static (BigInteger, object?) Prime(object reader, long bits)
+        [GoFunc]
+        [return: GoReturn("*big.Int", "error")]
+        public static (BigInteger, object?) Prime([GoParam("io.Reader")] object reader, long bits)
         {
             // Generate a random prime of the given bit length
             var bytes = new byte[bits / 8 + 1];
@@ -62,7 +64,9 @@ namespace Ngo.Runtime.Crypto.Rand
             return true;
         }
 
-        public static (BigInteger, object?) Int(object reader, BigInteger max)
+        [GoFunc]
+        [return: GoReturn("*big.Int", "error")]
+        public static (BigInteger, object?) Int([GoParam("io.Reader")] object reader, [GoParam("*big.Int")] BigInteger max)
         {
             // Simplified: use system crypto RNG
             var bytes = max.ToByteArray();

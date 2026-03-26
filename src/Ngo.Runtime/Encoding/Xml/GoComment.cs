@@ -7,5 +7,12 @@ namespace Ngo.Runtime.Encoding.Xml
     public struct GoComment
     {
         public Slice<byte> Value;
+
+        [GoMethod]
+        [return: GoReturn("xml.Comment")]
+        public GoComment Copy()
+        {
+            return new GoComment { Value = Value };
+        }
     }
 }

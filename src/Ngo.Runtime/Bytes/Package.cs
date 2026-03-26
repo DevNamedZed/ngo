@@ -703,6 +703,9 @@ namespace Ngo.Runtime.Bytes
         [GoConst(Type = "int")]
         public const long MinRead = 512;
 
+        [GoVar(Type = "error")]
+        public static readonly object ErrTooLarge = "bytes.Buffer: too large";
+
         private static byte[] SliceToArray(Slice<byte> s)
         {
             var arr = new byte[s.Len];

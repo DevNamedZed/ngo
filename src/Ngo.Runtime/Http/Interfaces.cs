@@ -18,7 +18,12 @@ namespace Ngo.Runtime.Http
     }
 
     [GoType("interface", Name = "CloseNotifier", Package = "net/http")]
-    public interface ICloseNotifier { }
+    public interface ICloseNotifier
+    {
+        [GoMethod]
+        [return: GoReturn("<-chan bool")]
+        Ngo.Runtime.Channel<bool> CloseNotify();
+    }
 
     [GoType("interface", Name = "Pusher", Package = "net/http")]
     public interface IPusher { }
@@ -43,5 +48,26 @@ namespace Ngo.Runtime.Http
     }
 
     [GoType("interface", Name = "File", Package = "net/http")]
-    public interface IFile { }
+    public interface IFile
+    {
+        [GoMethod]
+        [return: GoReturn("error")]
+        object? Close();
+
+        [GoMethod]
+        [return: GoReturn("int", "error")]
+        (long, object?) Read(Slice<byte> p);
+
+        [GoMethod]
+        [return: GoReturn("int64", "error")]
+        (long, object?) Seek(long offset, long whence);
+
+        [GoMethod]
+        [return: GoReturn("[]fs.FileInfo", "error")]
+        (Slice<object?>, object?) Readdir(long count);
+
+        [GoMethod]
+        [return: GoReturn("fs.FileInfo", "error")]
+        (object?, object?) Stat();
+    }
 }

@@ -75,6 +75,13 @@ namespace Ngo.Runtime.Database.Sql
         public (object?, object?) QueryContext([GoParam("context.Context")] object? ctx, [GoParam("...interface{}")] params object[] args) => (null, null);
 
         [GoMethod]
+        [return: GoReturn("*sql.Row")]
+        public GoRow QueryRowContext([GoParam("context.Context")] object? ctx, [GoParam("...interface{}")] params object?[] args)
+        {
+            return QueryRow(args);
+        }
+
+        [GoMethod]
         [return: GoReturn("sql.Result", "error")]
         public (object?, object?) ExecContext([GoParam("context.Context")] object? ctx, [GoParam("...interface{}")] params object[] args) => (null, null);
     }

@@ -525,18 +525,17 @@ namespace Ngo.Runtime.Math.Big
         }
 
         [GoMethod]
-        public GoInt TrailingZeroBits()
+        public ulong TrailingZeroBits()
         {
-            if (_value == 0) { _value = 0; return this; }
+            if (_value == 0) return 0;
             var abs = BigInteger.Abs(_value);
-            long count = 0;
+            ulong count = 0;
             while ((abs & 1) == 0)
             {
                 abs >>= 1;
                 count++;
             }
-            _value = count;
-            return this;
+            return count;
         }
 
         private static string ConvertToBase(BigInteger value, int radix)

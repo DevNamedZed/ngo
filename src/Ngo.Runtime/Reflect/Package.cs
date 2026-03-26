@@ -383,4 +383,18 @@ namespace Ngo.Runtime.Reflect
             return new GoReflectType(typeof(object), "struct");
         }
     }
+
+    // reflect.SelectDir named type
+    [GoType("named", Name = "SelectDir", Package = "reflect", Underlying = "int")]
+    public class GoSelectDir
+    {
+        public long Value;
+    }
+
+    // reflect.ChanDir named type
+    [GoType("named", Name = "ChanDir", Package = "reflect", Underlying = "int")]
+    public class GoReflectChanDir
+    {
+        public long Value;
+    }
 }

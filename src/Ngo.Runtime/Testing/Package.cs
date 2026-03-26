@@ -83,6 +83,9 @@ namespace Ngo.Runtime.Testing
         [return: GoReturn("*testing.M")]
         public static GoTestingM MainStart(object? deps, Slice<object?> tests, Slice<object?> benchmarks, Slice<object?> fuzzTargets, Slice<object?> examples)
             => new GoTestingM();
+
+        [GoFunc]
+        public static bool RunTests(object? matchString, Slice<object?> tests) => true;
     }
 
     // testing.M struct
@@ -97,6 +100,7 @@ namespace Ngo.Runtime.Testing
     [GoType("interface", Name = "TB", Package = "testing")]
     public interface IGoTestingTB
     {
+        void Cleanup(Action f);
         void Error(params object[] args);
         void Errorf(string format, params object[] args);
         void Fail();
@@ -108,6 +112,7 @@ namespace Ngo.Runtime.Testing
         void Log(params object[] args);
         void Logf(string format, params object[] args);
         string Name();
+        void Setenv(string key, string value);
         void Skip(params object[] args);
         void Skipf(string format, params object[] args);
         void SkipNow();

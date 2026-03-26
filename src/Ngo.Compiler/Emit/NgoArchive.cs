@@ -323,7 +323,7 @@ namespace Ngo.Compiler.Emit
                         // Type alias to anonymous struct: promote to named struct
                         // so the archive preserves the struct's fields.
                         if (t.IsAlias && t.UnderlyingType is StructTypeSymbol aliasedStruct
-                            && (aliasedStruct.Name == "struct" || aliasedStruct.Name == "struct{}"))
+                            && aliasedStruct.Name.StartsWith("struct"))
                         {
                             var namedStruct = new StructTypeSymbol(t.Name, aliasedStruct.Fields);
                             foreach (var method in aliasedStruct.Methods)
@@ -743,6 +743,13 @@ namespace Ngo.Compiler.Emit
         private static void WriteStructType(BinaryWriter w, StructTypeSymbol s, string? pkgPath = null)
         {
             w.Write(s.Name);
+            // Write type parameters for generic structs
+            var typeParams = s.IsGeneric ? s.TypeParameters : System.Array.Empty<TypeParameterSymbol>();
+            w.Write(typeParams.Count);
+            foreach (var tp in typeParams)
+            {
+                w.Write(tp.Name);
+            }
             w.Write(s.Fields.Count);
             foreach (var f in s.Fields)
             {
@@ -758,6 +765,12 @@ namespace Ngo.Compiler.Emit
         private static void WriteInterfaceType(BinaryWriter w, InterfaceTypeSymbol iface, string? pkgPath = null)
         {
             w.Write(iface.Name);
+            var ifaceTypeParams = iface.IsGeneric ? iface.TypeParameters : System.Array.Empty<TypeParameterSymbol>();
+            w.Write(ifaceTypeParams.Count);
+            foreach (var tp in ifaceTypeParams)
+            {
+                w.Write(tp.Name);
+            }
             w.Write(iface.Methods.Count);
             foreach (var m in iface.Methods)
                 WriteMethod(w, m, pkgPath);
@@ -843,6 +856,14 @@ namespace Ngo.Compiler.Emit
             Func<string, string, TypeSymbol?>? crossPkgResolver = null)
         {
             var name = r.ReadString();
+            // Read type parameters for generic structs
+            int typeParamCount = r.ReadInt32();
+            var structTypeParams = new List<TypeParameterSymbol>(typeParamCount);
+            for (int i = 0; i < typeParamCount; i++)
+            {
+                var tpName = r.ReadString();
+                structTypeParams.Add(new TypeParameterSymbol(tpName, i, ConstraintInfo.Any));
+            }
             int fieldCount = r.ReadInt32();
             var fields = new List<FieldSymbol>(fieldCount);
             for (int i = 0; i < fieldCount; i++)
@@ -863,6 +884,10 @@ namespace Ngo.Compiler.Emit
             {
                 structType = new StructTypeSymbol(name, fields);
             }
+            if (structTypeParams.Count > 0)
+            {
+                structType.SetTypeParameters(structTypeParams);
+            }
             typeMap[name] = structType; // register before reading methods (methods may reference this type)
 
             int methodCount = r.ReadInt32();
@@ -878,6 +903,13 @@ namespace Ngo.Compiler.Emit
             Func<string, string, TypeSymbol?>? crossPkgResolver = null)
         {
             var name = r.ReadString();
+            int ifaceTypeParamCount = r.ReadInt32();
+            var ifaceTypeParams = new List<TypeParameterSymbol>(ifaceTypeParamCount);
+            for (int i = 0; i < ifaceTypeParamCount; i++)
+            {
+                var tpName = r.ReadString();
+                ifaceTypeParams.Add(new TypeParameterSymbol(tpName, i, ConstraintInfo.Any));
+            }
             int methodCount = r.ReadInt32();
             // Reuse pre-registered placeholder so existing references stay valid
             InterfaceTypeSymbol iface;
@@ -888,6 +920,10 @@ namespace Ngo.Compiler.Emit
             else
             {
                 iface = new InterfaceTypeSymbol(name, new List<MethodSymbol>());
+            }
+            if (ifaceTypeParams.Count > 0)
+            {
+                iface.SetTypeParameters(ifaceTypeParams);
             }
             typeMap[name] = iface;
 

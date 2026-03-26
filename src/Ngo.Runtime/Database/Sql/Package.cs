@@ -298,6 +298,10 @@ namespace Ngo.Runtime.Database.Sql
         }
 
         [GoMethod]
+        [return: GoReturn("*sql.Conn", "error")]
+        public (GoConn?, object?) Conn([GoParam("context.Context")] object? ctx) => (new GoConn(), null);
+
+        [GoMethod]
         public void SetMaxOpenConns(long n) { _maxOpenConns = n; }
 
         [GoMethod]
@@ -441,6 +445,66 @@ namespace Ngo.Runtime.Database.Sql
         {
             var (rows, err) = Query(query, args);
             return new GoRow(rows, err);
+        }
+
+        [GoMethod(IsVariadic = true)]
+        [return: GoReturn("*sql.Rows", "error")]
+        public (GoRows?, object?) QueryContext([GoParam("context.Context")] object? ctx, string query, [GoParam("...interface{}")] params object?[] args)
+        {
+            return Query(query, args);
+        }
+
+        [GoMethod(IsVariadic = true)]
+        [return: GoReturn("sql.Result", "error")]
+        public (IGoResult?, object?) ExecContext([GoParam("context.Context")] object? ctx, string query, [GoParam("...interface{}")] params object?[] args)
+        {
+            return Exec(query, args);
+        }
+
+        [GoMethod]
+        [return: GoReturn("*sql.Row")]
+        public GoRow QueryRowContext([GoParam("context.Context")] object? ctx, string query, [GoParam("...interface{}")] params object?[] args)
+        {
+            return QueryRow(query, args);
+        }
+
+        [GoMethod]
+        [return: GoReturn("*sql.Stmt", "error")]
+        public (GoStmt?, object?) StmtContext([GoParam("context.Context")] object? ctx, [GoParam("*sql.Stmt")] GoStmt? stmt)
+        {
+            return (stmt, null);
+        }
+
+        [GoMethod]
+        [return: GoReturn("*sql.Stmt", "error")]
+        public (GoStmt?, object?) Prepare(string query)
+        {
+            try
+            {
+                var cmd = _conn.CreateCommand();
+                cmd.Transaction = _tx;
+                cmd.CommandText = query;
+                cmd.Prepare();
+                return (new GoStmt(cmd), null);
+            }
+            catch (Exception ex)
+            {
+                return (null, ex.Message);
+            }
+        }
+
+        [GoMethod]
+        [return: GoReturn("*sql.Stmt", "error")]
+        public (GoStmt?, object?) PrepareContext([GoParam("context.Context")] object? ctx, string query)
+        {
+            return Prepare(query);
+        }
+
+        [GoMethod]
+        [return: GoReturn("*sql.Stmt")]
+        public GoStmt? Stmt([GoParam("*sql.Stmt")] GoStmt? stmt)
+        {
+            return stmt;
         }
     }
 

@@ -71,6 +71,20 @@ namespace Ngo.Runtime.RuntimeDebug
         }
 
         [GoFunc]
+        public static void ReadGCStats([GoParam("*GCStats")] GoGCStats stats)
+        {
+            if (stats == null)
+            {
+                return;
+            }
+            stats.NumGC = GC.CollectionCount(0);
+            stats.PauseTotal = 0;
+            stats.Pause = new Slice<long>(Array.Empty<long>());
+            stats.PauseEnd = new Slice<object>(Array.Empty<object>());
+            stats.PauseQuantiles = new Slice<long>(Array.Empty<long>());
+        }
+
+        [GoFunc]
         [return: GoReturn("*BuildInfo", "bool")]
         public static (GoBuildInfo, bool) ParseBuildInfo(string data)
         {
@@ -154,5 +168,14 @@ namespace Ngo.Runtime.RuntimeDebug
 
         [GoField(Name = "PauseTotal")]
         public long PauseTotal;
+
+        [GoField(Name = "Pause")]
+        public Slice<long> Pause;
+
+        [GoField(Name = "PauseEnd")]
+        public Slice<object> PauseEnd;
+
+        [GoField(Name = "PauseQuantiles")]
+        public Slice<long> PauseQuantiles;
     }
 }

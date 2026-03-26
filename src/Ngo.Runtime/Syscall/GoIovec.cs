@@ -25,5 +25,11 @@ namespace Ngo.Runtime.Syscall
     {
         [GoField] public object? Base;
         [GoField] public long Len;
+
+        [GoMethod]
+        public void SetLen(long length)
+        {
+            Len = length;
+        }
     }
 }

@@ -33,6 +33,7 @@ namespace Ngo.Runtime.Log.Slog
         public object Time() => _value ?? new object();
 
         [GoMethod]
+        [return: GoReturn("time.Duration")]
         public long Duration() => _value is long l ? l : 0;
 
         [GoMethod]

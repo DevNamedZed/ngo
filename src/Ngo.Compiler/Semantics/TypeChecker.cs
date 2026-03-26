@@ -130,6 +130,12 @@ namespace Ngo.Compiler.Semantics
             // unsafe.Pointer ↔ any pointer
             if (IsUnsafePointerAssignable(source, target)) return true;
 
+            // Direct function type assignability (before structural to avoid short-circuit issues)
+            if (source is FunctionTypeSymbol && target is FunctionTypeSymbol)
+            {
+                if (IsFunctionTypeAssignable(source, target)) return true;
+            }
+
             // Structural type equality
             if (IsStructurallyAssignable(source, target)) return true;
 
@@ -286,8 +292,14 @@ namespace Ngo.Compiler.Semantics
 
         private static bool IsFunctionTypeAssignable(TypeSymbol source, TypeSymbol target)
         {
-            var sf = (source as FunctionTypeSymbol) ?? (source.Resolved() as FunctionTypeSymbol);
-            var tf = (target as FunctionTypeSymbol) ?? (target.Resolved() as FunctionTypeSymbol);
+            var sf = (source as FunctionTypeSymbol)
+                ?? (source.Resolved() as FunctionTypeSymbol)
+                ?? (source.UnderlyingType as FunctionTypeSymbol)
+                ?? (source.Resolved()?.UnderlyingType as FunctionTypeSymbol);
+            var tf = (target as FunctionTypeSymbol)
+                ?? (target.Resolved() as FunctionTypeSymbol)
+                ?? (target.UnderlyingType as FunctionTypeSymbol)
+                ?? (target.Resolved()?.UnderlyingType as FunctionTypeSymbol);
             if (sf == null || tf == null) return false;
 
             int srcCount = sf.ParameterTypes.Count;
@@ -299,19 +311,37 @@ namespace Ngo.Compiler.Semantics
                 {
                     int minCount = Math.Min(srcCount, tgtCount);
                     for (int i = 0; i < minCount; i++)
-                        if (!IsAssignable(sf.ParameterTypes[i], tf.ParameterTypes[i])) return false;
+                    {
+                        if (!IsAssignable(sf.ParameterTypes[i], tf.ParameterTypes[i])
+                            && !IsSameTypeByNameAndPackage(sf.ParameterTypes[i], tf.ParameterTypes[i]))
+                        {
+                            return false;
+                        }
+                    }
                 }
                 else return false;
             }
             else
             {
                 for (int i = 0; i < srcCount; i++)
-                    if (!IsAssignable(sf.ParameterTypes[i], tf.ParameterTypes[i])) return false;
+                {
+                    if (!IsAssignable(sf.ParameterTypes[i], tf.ParameterTypes[i])
+                        && !IsSameTypeByNameAndPackage(sf.ParameterTypes[i], tf.ParameterTypes[i]))
+                    {
+                        return false;
+                    }
+                }
             }
 
             if (sf.ReturnTypes.Count != tf.ReturnTypes.Count) return false;
             for (int i = 0; i < sf.ReturnTypes.Count; i++)
-                if (!IsAssignable(sf.ReturnTypes[i], tf.ReturnTypes[i])) return false;
+            {
+                if (!IsAssignable(sf.ReturnTypes[i], tf.ReturnTypes[i])
+                    && !IsSameTypeByNameAndPackage(sf.ReturnTypes[i], tf.ReturnTypes[i]))
+                {
+                    return false;
+                }
+            }
 
             return true;
         }
@@ -329,12 +359,50 @@ namespace Ngo.Compiler.Semantics
             if (target is InstantiatedTypeSymbol tgtInst && tgtInst.GenericType is InterfaceTypeSymbol genIface)
             {
                 if (genIface.Methods.Count == 0) return true;
+
+                // Create a substituted interface with type args applied to methods
+                if (genIface.TypeParameters.Count > 0 && tgtInst.TypeArguments.Count > 0)
+                {
+                    var substMethods = new List<MethodSymbol>();
+                    foreach (var method in genIface.Methods)
+                    {
+                        var substParams = TypeSubstituter.SubstituteParams(
+                            method.Parameters, genIface.TypeParameters, tgtInst.TypeArguments);
+                        var substReturns = TypeSubstituter.SubstituteTypes(
+                            method.ReturnTypes, genIface.TypeParameters, tgtInst.TypeArguments);
+                        substMethods.Add(new MethodSymbol(method.Name, method.ReceiverType, method.IsPointerReceiver,
+                            method.TypeParameters, substParams, substReturns, method.IsVariadic));
+                    }
+                    var substIface = new InterfaceTypeSymbol(tgtInst.Name, substMethods);
+                    if (Satisfies(source, substIface)) return true;
+                }
+
                 if (Satisfies(source, genIface)) return true;
 
                 var inner = source is PointerTypeSymbol srcPtrG ? srcPtrG.ElementType : source;
+                // Unwrap type aliases to find the instantiated type
+                if (inner.IsAlias && inner.UnderlyingType != null)
+                {
+                    inner = inner.UnderlyingType;
+                }
                 if (inner is InstantiatedTypeSymbol srcInstG)
                 {
                     var baseType = srcInstG.GenericType;
+                    // Check with substituted methods from the instantiated source
+                    if (baseType.TypeParameters.Count > 0 && srcInstG.TypeArguments.Count > 0)
+                    {
+                        var srcSubstMethods = new List<MethodSymbol>();
+                        foreach (var m in baseType.Methods)
+                        {
+                            var sp = TypeSubstituter.SubstituteParams(m.Parameters, baseType.TypeParameters, srcInstG.TypeArguments);
+                            var sr = TypeSubstituter.SubstituteTypes(m.ReturnTypes, baseType.TypeParameters, srcInstG.TypeArguments);
+                            srcSubstMethods.Add(new MethodSymbol(m.Name, m.ReceiverType, m.IsPointerReceiver,
+                                m.TypeParameters, sp, sr, m.IsVariadic));
+                        }
+                        var srcSubstType = new InterfaceTypeSymbol("$$substCheck", srcSubstMethods);
+                        if (Satisfies(new PointerTypeSymbol(srcSubstType), genIface)) return true;
+                    }
+
                     var checkType = source is PointerTypeSymbol
                         ? (TypeSymbol)new PointerTypeSymbol(baseType) : baseType;
                     if (Satisfies(checkType, genIface)) return true;
@@ -636,6 +704,22 @@ namespace Ngo.Compiler.Semantics
             if (HaveSameUnderlyingType(source, target))
                 return true;
 
+            // Conversion to interface is allowed if the source satisfies the interface
+            if (target is InterfaceTypeSymbol tgtIface)
+            {
+                if (tgtIface.Methods.Count == 0 || Satisfies(source, tgtIface))
+                {
+                    return true;
+                }
+            }
+            if (resolvedTarget is InterfaceTypeSymbol resolvedTgtIface)
+            {
+                if (resolvedTgtIface.Methods.Count == 0 || Satisfies(source, resolvedTgtIface))
+                {
+                    return true;
+                }
+            }
+
             // unsafe.Pointer ↔ any pointer type, and unsafe.Pointer ↔ uintptr
             // Also handle type aliases for unsafe.Pointer (e.g., type ptr = unsafe.Pointer)
             if (IsUnsafePointer(source) || IsUnsafePointer(target)
@@ -722,7 +806,29 @@ namespace Ngo.Compiler.Semantics
             }
         }
 
+        [System.ThreadStatic] private static HashSet<(string, string)>? _satisfiesGuard;
+
         public static bool Satisfies(TypeSymbol type, InterfaceTypeSymbol iface)
+        {
+            // Recursion guard: prevent infinite loops from circular interface references
+            // (e.g., type asciiString with method Concat(String) String where String requires Concat)
+            _satisfiesGuard ??= new HashSet<(string, string)>();
+            var key = (type.Name, iface.Name);
+            if (!_satisfiesGuard.Add(key))
+            {
+                return true;
+            }
+            try
+            {
+                return SatisfiesCore(type, iface);
+            }
+            finally
+            {
+                _satisfiesGuard.Remove(key);
+            }
+        }
+
+        private static bool SatisfiesCore(TypeSymbol type, InterfaceTypeSymbol iface)
         {
             // Resolve type aliases
             if (type.IsAlias && type.UnderlyingType != null)
@@ -751,13 +857,32 @@ namespace Ngo.Compiler.Semantics
                 {
                     inner = resolvedInner;
                 }
-                // For instantiated generic types, check the generic definition's methods
+                // For instantiated generic types, substitute type args in the generic definition's methods
                 if (inner is InstantiatedTypeSymbol instInner && inner.Methods.Count == 0)
                 {
-                    inner = instInner.GenericType;
+                    var genBase = instInner.GenericType;
+                    if (genBase.TypeParameters.Count > 0 && instInner.TypeArguments.Count > 0)
+                    {
+                        var substMethods = new List<MethodSymbol>();
+                        foreach (var m in genBase.Methods)
+                        {
+                            var sp = TypeSubstituter.SubstituteParams(m.Parameters, genBase.TypeParameters, instInner.TypeArguments);
+                            var sr = TypeSubstituter.SubstituteTypes(m.ReturnTypes, genBase.TypeParameters, instInner.TypeArguments);
+                            substMethods.Add(new MethodSymbol(m.Name, m.ReceiverType, m.IsPointerReceiver,
+                                m.TypeParameters, sp, sr, m.IsVariadic));
+                        }
+                        typeMethods = substMethods;
+                    }
+                    else
+                    {
+                        typeMethods = genBase.Methods;
+                    }
                 }
-                typeMethods = inner is InterfaceTypeSymbol ptrIface
-                    ? ptrIface.Methods : inner.Methods;
+                else
+                {
+                    typeMethods = inner is InterfaceTypeSymbol ptrIface
+                        ? ptrIface.Methods : inner.Methods;
+                }
                 includePointerReceivers = true;
             }
             else if (type is InterfaceTypeSymbol sourceIface2)
@@ -841,6 +966,23 @@ namespace Ngo.Compiler.Semantics
             }
 
             return true;
+        }
+
+        private static bool IsSameTypeByNameAndPackage(TypeSymbol a, TypeSymbol b)
+        {
+            if (a == null || b == null) return false;
+            if (a.Name == b.Name && a.Name != "interface{}" && a.Name != "void")
+            {
+                if (!string.IsNullOrEmpty(a.PackagePath) && a.PackagePath == b.PackagePath)
+                {
+                    return true;
+                }
+                if (string.IsNullOrEmpty(a.PackagePath) || string.IsNullOrEmpty(b.PackagePath))
+                {
+                    return true;
+                }
+            }
+            return false;
         }
 
         private static bool HaveSameUnderlyingType(TypeSymbol a, TypeSymbol b)

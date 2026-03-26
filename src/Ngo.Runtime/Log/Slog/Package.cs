@@ -109,6 +109,10 @@ namespace Ngo.Runtime.Log.Slog
 
         [GoFunc]
         [return: GoReturn("slog.Attr")]
+        public static GoAttr Uint64(string key, long val) => new GoAttr { Key = key, Value = new GoValue(val) };
+
+        [GoFunc]
+        [return: GoReturn("slog.Attr")]
         public static GoAttr Bool(string key, bool value) => new GoAttr();
 
         [GoFunc]
@@ -221,6 +225,18 @@ namespace Ngo.Runtime.Log.Slog
             [GoMethod]
             [return: GoReturn("slog.Handler")]
             object? WithGroup(string name);
+        }
+
+        // slog.Level named type
+        [GoType("named", Name = "Level", Package = "log/slog", Underlying = "int")]
+        public class GoLevel
+        {
+            [GoMethod]
+            [return: GoReturn("slog.Level")]
+            public long Level() => 0;
+
+            [GoMethod]
+            public string String() => "";
         }
 
         // slog.Leveler interface

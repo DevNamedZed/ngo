@@ -514,6 +514,12 @@ namespace Ngo.Runtime.Json
         [GoField(Name = "Field")]
         public string Field = "";
 
+        [GoField(Name = "Type", Type = "reflect.Type")]
+        public object? Type;
+
+        [GoField(Name = "Offset")]
+        public long Offset;
+
         [GoMethod]
         public string Error() => "json unmarshal type error";
     }
@@ -535,6 +541,9 @@ namespace Ngo.Runtime.Json
     [GoType("struct", Name = "UnsupportedValueError", Package = "encoding/json")]
     public class GoUnsupportedValueError
     {
+        [GoField(Name = "Value", Type = "reflect.Value")]
+        public object? Value;
+
         [GoField(Name = "Str")]
         public string Str = "";
 

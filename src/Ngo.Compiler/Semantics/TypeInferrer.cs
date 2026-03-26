@@ -274,6 +274,42 @@ namespace Ngo.Compiler.Semantics
                 return;
             }
 
+            // Interface-based inference: if param is Collection[T] (instantiated interface)
+            // and arg is *HashSet[T, H] (concrete implementing type), extract T from the
+            // instantiated type's type args that correspond to the interface's type params.
+            if (paramType is InstantiatedTypeSymbol paramIfaceInst
+                && paramIfaceInst.GenericType is InterfaceTypeSymbol)
+            {
+                // Unwrap pointer from arg
+                var innerArg = argType is PointerTypeSymbol argPtrForIface
+                    ? argPtrForIface.ElementType : argType;
+
+                // Check if arg is an instantiated generic type
+                if (innerArg is InstantiatedTypeSymbol argInstForIface)
+                {
+                    // Match type args positionally — the interface's type params correspond
+                    // to type args in the concrete type at the same positions
+                    int ifaceArgCount = paramIfaceInst.TypeArguments.Count;
+                    int concreteArgCount = argInstForIface.TypeArguments.Count;
+                    for (int k = 0; k < ifaceArgCount && k < concreteArgCount; k++)
+                    {
+                        Unify(paramIfaceInst.TypeArguments[k], argInstForIface.TypeArguments[k],
+                            typeParams, inferred);
+                    }
+                }
+                // Also handle generic types used in their own method bodies
+                else if (innerArg.IsGeneric && innerArg.TypeParameters.Count > 0)
+                {
+                    int ifaceArgCount = paramIfaceInst.TypeArguments.Count;
+                    int concreteParamCount = innerArg.TypeParameters.Count;
+                    for (int k = 0; k < ifaceArgCount && k < concreteParamCount; k++)
+                    {
+                        Unify(paramIfaceInst.TypeArguments[k], innerArg.TypeParameters[k],
+                            typeParams, inferred);
+                    }
+                }
+            }
+
             // If resolvedParam differs from paramType, try unifying with the resolved version
             if (resolvedParam != paramType && resolvedParam != null)
             {

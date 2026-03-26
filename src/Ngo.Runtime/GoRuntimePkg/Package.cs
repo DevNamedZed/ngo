@@ -196,6 +196,10 @@ namespace Ngo.Runtime.GoRuntimePkg
         [GoFunc]
         [return: GoReturn("int", "bool")]
         public static (long, bool) MemProfile([GoParam("[]MemProfileRecord")] Slice<object> p, bool inuseZero) => (0, true);
+
+        [GoFunc]
+        [return: GoReturn("int64")]
+        public static long NumCgoCall() => 0;
     }
 
     // GoRuntimeFuncType removed — annotations moved to GoRuntimeFunc.cs

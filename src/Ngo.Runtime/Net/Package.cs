@@ -77,10 +77,10 @@ namespace Ngo.Runtime.Net
         }
 
         [GoFunc]
-        [return: GoReturn("IP", "error")]
-        public static (Slice<byte>, object?) ResolveIPAddr(string network, string address)
+        [return: GoReturn("*net.IPAddr", "error")]
+        public static (GoIPAddr?, object?) ResolveIPAddr(string network, string address)
         {
-            return (new Slice<byte>(new byte[] { 127, 0, 0, 1 }), null);
+            return (new GoIPAddr { IP = new Slice<byte>(new byte[] { 127, 0, 0, 1 }) }, null);
         }
 
         [GoFunc]
@@ -168,6 +168,8 @@ namespace Ngo.Runtime.Net
 
         [GoVar(Type = "IP")]
         public static readonly Slice<byte> IPv4zero = new Slice<byte>(new byte[] { 0, 0, 0, 0 });
+
+        [GoVar] public static readonly object? IPv6zero = null;
 
         [GoFunc]
         [return: GoReturn("IPMask")]
@@ -259,12 +261,21 @@ namespace Ngo.Runtime.Net
 
         // --- Variables ---
 
-        [GoVar] public static readonly object? DefaultResolver = null;
+        [GoVar(Type = "*net.Resolver")] public static readonly object? DefaultResolver = new GoResolver();
 
         [GoVar] public static readonly object? ErrClosed = "use of closed network connection";
 
         [GoType("named", Name = "Buffers", Package = "net", Underlying = "[][]byte")]
-        public class GoBuffers {}
+        public class GoBuffers
+        {
+            [GoMethod]
+            [return: GoReturn("int64", "error")]
+            public (long, object?) WriteTo(object? writer) => (0, null);
+
+            [GoMethod]
+            [return: GoReturn("int", "error")]
+            public (long, object?) Read(Slice<byte> p) => (0, null);
+        }
 
         [GoVar(Type = "func() ([]Addr, error)")]
         public static readonly object? InterfaceAddrs = null;
@@ -284,5 +295,85 @@ namespace Ngo.Runtime.Net
         [GoFunc]
         [return: GoReturn("*net.UDPConn", "error")]
         public static (object?, object?) ListenMulticastUDP(string network, object? ifi, object? gaddr) => (null, null);
+
+        [GoFunc]
+        [return: GoReturn("*net.TCPListener", "error")]
+        public static (object?, object?) ListenTCP(string network, object? laddr) => (null, null);
+
+        [GoFunc]
+        [return: GoReturn("*net.Interface", "error")]
+        public static (object?, object?) InterfaceByName(string name) => (null, null);
+
+        [GoFunc]
+        [return: GoReturn("*net.Interface", "error")]
+        public static (object?, object?) InterfaceByIndex(long index) => (null, null);
+
+        [GoFunc]
+        [return: GoReturn("*net.TCPConn", "error")]
+        public static (GoTCPConn?, object?) DialTCP(string network, [GoParam("*net.TCPAddr")] GoTCPAddr? localAddr, [GoParam("*net.TCPAddr")] GoTCPAddr? remoteAddr)
+        {
+            try
+            {
+                if (remoteAddr == null)
+                {
+                    return (null, "net: DialTCP: missing remote address");
+                }
+                var remoteIp = new System.Net.IPAddress(remoteAddr.IP.AsSpan().ToArray());
+                var client = new System.Net.Sockets.TcpClient();
+                if (localAddr != null)
+                {
+                    var localIp = new System.Net.IPAddress(localAddr.IP.AsSpan().ToArray());
+                    var localEndpoint = new System.Net.IPEndPoint(localIp, (int)localAddr.Port);
+                    client.Client.Bind(localEndpoint);
+                }
+                client.Connect(remoteIp, (int)remoteAddr.Port);
+                return (new GoTCPConn(client), null);
+            }
+            catch (Exception ex)
+            {
+                return (null, ex.Message);
+            }
+        }
+
+        // net.Flags type constants
+        [GoConst(Type = "net.Flags")] public static readonly long FlagUp = 1;
+        [GoConst(Type = "net.Flags")] public static readonly long FlagBroadcast = 2;
+        [GoConst(Type = "net.Flags")] public static readonly long FlagLoopback = 4;
+        [GoConst(Type = "net.Flags")] public static readonly long FlagPointToPoint = 8;
+        [GoConst(Type = "net.Flags")] public static readonly long FlagMulticast = 16;
+
+        [GoFunc]
+        [return: GoReturn("int", "error")]
+        public static (long, object?) LookupPort(string network, string service) => (0, null);
+    }
+
+    // net.Flags named type
+    [GoType("named", Name = "Flags", Package = "net", Underlying = "uint")]
+    public class GoFlags
+    {
+        public long Value;
+    }
+
+    // net.AddrError struct
+    [GoType("struct", Name = "AddrError", Package = "net")]
+    public class GoAddrError
+    {
+        [GoField(Name = "Err")] public string Err = "";
+        [GoField(Name = "Addr")] public string Addr = "";
+
+        [GoMethod]
+        [return: GoReturn("string")]
+        public string Error() => Err + " " + Addr;
+    }
+
+    // net.UnknownNetworkError named type (underlying string)
+    [GoType("named", Name = "UnknownNetworkError", Package = "net", Underlying = "string")]
+    public class GoUnknownNetworkError
+    {
+        public string Value = "";
+
+        [GoMethod]
+        [return: GoReturn("string")]
+        public string Error() => "unknown network " + Value;
     }
 }

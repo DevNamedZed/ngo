@@ -7,5 +7,12 @@ namespace Ngo.Runtime.Encoding.Xml
     public struct GoCharData
     {
         public Slice<byte> Value;
+
+        [GoMethod]
+        [return: GoReturn("xml.CharData")]
+        public GoCharData Copy()
+        {
+            return new GoCharData { Value = Value };
+        }
     }
 }

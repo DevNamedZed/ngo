@@ -496,6 +496,7 @@ namespace Ngo.Runtime.Crypto.X509
             [GoField(Name = "URIs")] public Slice<object?> URIs;
             [GoField(Name = "SignatureAlgorithm")] public long SignatureAlgorithm;
             [GoField(Name = "Extensions")] public object? Extensions;
+            [GoField(Name = "ExtraExtensions")] public object? ExtraExtensions;
 
             [GoMethod]
             [return: GoReturn("error")]
@@ -577,6 +578,7 @@ namespace Ngo.Runtime.Crypto.X509
         [GoField(Name = "PermittedDNSDomainsCritical")] public bool PermittedDNSDomainsCritical;
         [GoField(Name = "URIs")] public Slice<object?> URIs;
         [GoField(Name = "ExtraExtensions")] public object? ExtraExtensions;
+        [GoField(Name = "OCSPStaple")] public Slice<byte> OCSPStaple;
 
         [GoMethod]
         [return: GoReturn("error")]

@@ -158,6 +158,34 @@ namespace Ngo.Compiler.Semantics
                 var target = _resolveExpression(selectorSyntax.Expression);
                 var methodName = selectorSyntax.Name.Text;
 
+                // Method expression call: Type.Method(receiver, args...) or (*Type).Method(receiver, args...)
+                // When the target is a type (not a package, not a value), the first argument is the receiver.
+                if (target is IdentifierExpression typeTargetExpr && typeTargetExpr.Symbol is TypeSymbol typeTarget
+                    && !(typeTargetExpr.Symbol is PackageSymbol))
+                {
+                    TypeSymbol lookupTypeForMethod = typeTarget;
+                    if (typeTarget is PointerTypeSymbol ptrTarget)
+                    {
+                        lookupTypeForMethod = ptrTarget.ElementType;
+                    }
+
+                    var methodForExpr = lookupTypeForMethod.LookupMethod(methodName);
+                    if (methodForExpr != null)
+                    {
+                        var allArguments = BindArguments(syntax);
+                        if (allArguments.Count == methodForExpr.Parameters.Count + 1)
+                        {
+                            var receiverArg = allArguments[0];
+                            var methodArguments = new List<Expression>(methodForExpr.Parameters.Count);
+                            for (int i = 1; i < allArguments.Count; i++)
+                            {
+                                methodArguments.Add(allArguments[i]);
+                            }
+                            return new MethodCallExpression(receiverArg, methodForExpr, methodArguments, span);
+                        }
+                    }
+                }
+
                 // Package function call: fmt.Println(args)
                 if (target is IdentifierExpression pkgIdExpr && pkgIdExpr.Symbol is PackageSymbol pkg)
                 {
@@ -396,6 +424,22 @@ namespace Ngo.Compiler.Semantics
                 return new CallExpression(funcSymbol, arguments, span);
             }
 
+            // Type conversion for function types: anyFieldC[bool](funcValue)
+            // When funcExpr is a type identifier (not a value), treat as conversion
+            if (syntax.Arguments.Count == 1
+                && funcExpr is IdentifierExpression typeIdExpr
+                && typeIdExpr.Symbol is TypeSymbol typeConvSym
+                && typeConvSym != TypeSymbol.Error)
+            {
+                var resolvedConvType = typeConvSym.Resolved();
+                if (resolvedConvType is FunctionTypeSymbol
+                    || typeConvSym is InstantiatedTypeSymbol
+                    || typeConvSym is FunctionTypeSymbol)
+                {
+                    return ResolveConversion(syntax.Arguments[0], typeConvSym, span);
+                }
+            }
+
             var resolvedCallType = funcExpr.Type is FunctionTypeSymbol ? funcExpr.Type
                 : funcExpr.Type?.UnderlyingType is FunctionTypeSymbol ? funcExpr.Type?.UnderlyingType
                 : funcExpr.Type?.Resolved() is FunctionTypeSymbol ? funcExpr.Type?.Resolved()
@@ -479,15 +523,20 @@ namespace Ngo.Compiler.Semantics
                 return new CallExpression(syntheticFunc, arguments, funcExpr, span);
             }
 
-            // Type conversion via parenthesized type: ([]error)(nil), (*T)(ptr), etc.
+            // Type conversion via parenthesized type: ([]error)(nil), (*T)(ptr),
+            // anyFieldC[bool](funcName), etc.
             if (syntax.Arguments.Count == 1 && funcExpr.Type is TypeSymbol convType
-                && convType != TypeSymbol.Error
-                && (convType is SliceTypeSymbol || convType is ArrayTypeSymbol
+                && convType != TypeSymbol.Error)
+            {
+                var resolvedConv = convType.Resolved();
+                if (convType is SliceTypeSymbol || convType is ArrayTypeSymbol
                     || convType is MapTypeSymbol || convType is PointerTypeSymbol
                     || convType is ChannelTypeSymbol || convType is StructTypeSymbol
-                    || convType is InterfaceTypeSymbol))
-            {
-                return ResolveConversion(syntax.Arguments[0], convType, span);
+                    || convType is InterfaceTypeSymbol || convType is FunctionTypeSymbol
+                    || resolvedConv is FunctionTypeSymbol)
+                {
+                    return ResolveConversion(syntax.Arguments[0], convType, span);
+                }
             }
 
             // interface{}/any values are dynamically typed and may hold callable values at runtime
@@ -819,6 +868,19 @@ namespace Ngo.Compiler.Semantics
 
             if (!(funcExpr is IdentifierExpression idExpr && idExpr.Symbol is FunctionSymbol funcSymbol))
             {
+                // Check if this is a generic type conversion: TypeName[K, V](value)
+                if (funcExpr is IdentifierExpression typeIdExpr
+                    && typeIdExpr.Symbol is TypeSymbol typeConv
+                    && syntax.Arguments.Count == 1)
+                {
+                    // Resolve the full generic type from the TypeArgumentListSyntax
+                    var resolvedType = _typeResolver.ResolveType(typeArgListSyntax);
+                    if (resolvedType != null)
+                    {
+                        return ResolveConversion(syntax.Arguments[0], resolvedType, span);
+                    }
+                }
+
                 _context.Errors.ReportError(span, ErrorCode.InvalidOperation,
                     "Type arguments can only be applied to generic functions");
                 return new ErrorExpression("Not a generic function", span);
@@ -977,7 +1039,17 @@ namespace Ngo.Compiler.Semantics
             var substFunc = new FunctionSymbol(funcSymbol.Name, funcSymbol.TypeParameters,
                 substParams, substReturnTypes, funcSymbol.IsVariadic, funcSymbol.PackageName);
 
-            if (!ValidateArguments(arguments, substParams, $"Function '{funcSymbol.Name}'", span))
+            if (funcSymbol.IsVariadic)
+            {
+                int requiredCount = substParams.Count - 1;
+                if (arguments.Count < requiredCount)
+                {
+                    _context.Errors.ReportError(span, ErrorCode.WrongArgumentCount,
+                        $"Function '{funcSymbol.Name}' expects at least {requiredCount} arguments, got {arguments.Count}");
+                    return new ErrorExpression("Wrong argument count", span);
+                }
+            }
+            else if (!ValidateArguments(arguments, substParams, $"Function '{funcSymbol.Name}'", span))
             {
                 if (arguments.Count != substParams.Count)
                 {

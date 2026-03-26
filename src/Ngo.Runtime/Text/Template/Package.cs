@@ -235,7 +235,7 @@ namespace Ngo.Runtime.Text.Template
             return this;
         }
 
-        [GoMethod]
+        [GoMethod(IsVariadic = true)]
         [return: GoReturn("*template.Template")]
         public GoTemplate Option(Slice<string> opt) => this;
 

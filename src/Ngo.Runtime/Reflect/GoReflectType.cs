@@ -320,6 +320,20 @@ namespace Ngo.Runtime.Reflect
         }
 
         [GoMethod]
+        public (GoReflectStructField, bool) FieldByNameFunc(Func<string, bool> match)
+        {
+            if (Kind() != GoReflectKinds.Struct)
+                throw new GoPanicException("reflect: FieldByNameFunc of non-struct type " + _goName);
+            var fields = _clrType.GetFields(BindingFlags.Public | BindingFlags.Instance);
+            for (int i = 0; i < fields.Length; i++)
+            {
+                if (match(fields[i].Name))
+                    return (new GoReflectStructField(fields[i].Name, new GoReflectType(fields[i].FieldType), "", i, false), true);
+            }
+            return (new GoReflectStructField("", new GoReflectType(typeof(object)), "", 0, false), false);
+        }
+
+        [GoMethod]
         public GoReflectStructField FieldByIndex(Slice<long> index)
         {
             var t = this;

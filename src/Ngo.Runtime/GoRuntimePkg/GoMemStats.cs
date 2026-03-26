@@ -95,6 +95,9 @@ namespace Ngo.Runtime.GoRuntimePkg
         [GoField(Name = "DebugGC")]
         public bool DebugGC;
 
+        [GoField(Name = "EnableGC")]
+        public bool EnableGC;
+
         public GoMemStats()
         {
             PauseNs = new Slice<long>(new long[256]);

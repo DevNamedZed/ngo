@@ -157,5 +157,26 @@ namespace Ngo.Runtime.Math.Big
             z._denom = new BigInteger(1e15);
             return (z, null!);
         }
+
+        [GoMethod]
+        public bool Signbit()
+        {
+            return double.IsNegativeInfinity(_value) || (_value < 0) || (1.0 / _value == double.NegativeInfinity);
+        }
+
+        [GoMethod]
+        [return: GoReturn("uint64", "Accuracy")]
+        public (ulong, long) Uint64()
+        {
+            if (_value < 0 || double.IsNaN(_value))
+            {
+                return (0, -1); // Below — Accuracy.Below
+            }
+            if (double.IsPositiveInfinity(_value) || _value > ulong.MaxValue)
+            {
+                return (ulong.MaxValue, 1); // Above — Accuracy.Above
+            }
+            return ((ulong)_value, 0); // Exact — Accuracy.Exact
+        }
     }
 }
