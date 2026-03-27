@@ -896,7 +896,7 @@ static class Analyzer
         else if (name is "gc")
             active = true;
         else if (name.StartsWith("go1.") && int.TryParse(name.AsSpan(4), out int ver))
-            active = ver <= 22;
+            active = ver <= Ngo.Compiler.Semantics.CompilationContext.LatestGoVersion;
         else
             // Unknown build tags default to false — in Go, only tags matching
             // GOOS, GOARCH, CGO_ENABLED, and explicit -tags flags are active.

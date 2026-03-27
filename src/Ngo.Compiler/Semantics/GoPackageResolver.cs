@@ -49,6 +49,7 @@ namespace Ngo.Compiler.Semantics
             _moduleResolver.LoadGoMod(projectRoot);
             _moduleResolver.LoadAllTransitiveDependencies();
             _goStdlibSrc = FindGoStdlibSource();
+            _targetGoVersion = ctx.TargetGoVersion;
         }
 
         /// <summary>
@@ -207,6 +208,14 @@ namespace Ngo.Compiler.Semantics
                     var sym = runtimePkg.LookupExport(typeName);
                     if (sym is TypeSymbol ts) return ts;
                 }
+
+                // Not in memory — try loading from .ngo disk cache
+                var onDiskPkg = TryLoadPackageFromDiskCache(pkgIdentifier);
+                if (onDiskPkg != null)
+                {
+                    var sym = onDiskPkg.LookupExport(typeName);
+                    if (sym is TypeSymbol ts) return ts;
+                }
             }
 
             // Short name (legacy format): search by package short name
@@ -227,6 +236,37 @@ namespace Ngo.Compiler.Semantics
                 if (sym is TypeSymbol ts) return ts;
             }
 
+            // Try disk cache for short package names (context, fmt, errors, etc.)
+            if (!pkgIdentifier.Contains('/'))
+            {
+                var onDiskPkg = TryLoadPackageFromDiskCache(pkgIdentifier);
+                if (onDiskPkg != null)
+                {
+                    var sym = onDiskPkg.LookupExport(typeName);
+                    if (sym is TypeSymbol ts) return ts;
+                }
+            }
+
+            return null;
+        }
+
+        private PackageSymbol? TryLoadPackageFromDiskCache(string importPath)
+        {
+            if (ProjectRoot == null)
+            {
+                return null;
+            }
+            var cacheDir = NgoArchive.GetCacheDir(ProjectRoot);
+            var archivePath = NgoArchive.GetArchivePath(cacheDir, importPath);
+            if (File.Exists(archivePath))
+            {
+                var pkg = NgoArchive.ReadGoMetadata(archivePath, CrossPkgResolver);
+                if (pkg != null)
+                {
+                    _resolvedPackages[importPath] = pkg;
+                    return pkg;
+                }
+            }
             return null;
         }
 
@@ -311,7 +351,7 @@ namespace Ngo.Compiler.Semantics
                         if (RuntimePackageResolver.Instance.Resolve(pkg) != null
                             && !PreferGoSource(pkg))
                         {
-                            continue;
+                                continue;
                         }
 
                         // Try reading from .ngo cache first
@@ -783,6 +823,8 @@ namespace Ngo.Compiler.Semantics
         }
 
         // Current target platform — used for file filtering
+        private static int _targetGoVersion = CompilationContext.LatestGoVersion;
+
         private static readonly string _targetOS = System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
             System.Runtime.InteropServices.OSPlatform.Windows) ? "windows"
             : System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
@@ -1033,7 +1075,7 @@ namespace Ngo.Compiler.Semantics
             // Go version constraints: go1.X is active if X <= our target version
             if (term.StartsWith("go1.") && int.TryParse(term.AsSpan(4), out int version))
             {
-                return version <= 22;
+                return version <= _targetGoVersion;
             }
 
             // Everything else (other OS/arch, cgo, gccgo, etc.) is not active

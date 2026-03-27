@@ -924,7 +924,7 @@ namespace Ngo.Compiler.Semantics
                 {
                     if (resolved is SliceTypeSymbol || resolved is ArrayTypeSymbol
                         || resolved is MapTypeSymbol || resolved is ChannelTypeSymbol
-                        || resolved is PointerTypeSymbol)
+                        || resolved is PointerTypeSymbol || resolved is FunctionTypeSymbol)
                         break;
                     if (resolved.UnderlyingType != null && resolved.UnderlyingType != resolved)
                         resolved = resolved.UnderlyingType;
@@ -983,6 +983,17 @@ namespace Ngo.Compiler.Semantics
                     // Go 1.22: for i := range N — iterate 0..N-1
                     keyType = BuiltinTypes.Int;
                     valueType = null;
+                }
+                else if (resolved is FunctionTypeSymbol rangeFuncType
+                    || (resolved.UnderlyingType is FunctionTypeSymbol
+                        && (rangeFuncType = (FunctionTypeSymbol)resolved.UnderlyingType) != null))
+                {
+                    // Go 1.23: range-over-func — for k, v := range iterFunc
+                    // iterFunc must be func(yield func() bool),
+                    //                  func(yield func(V) bool), or
+                    //                  func(yield func(K, V) bool)
+                    ExtractRangeFuncTypes(rangeFuncType, iterable.Type, span,
+                        out keyType, out valueType);
                 }
                 else if (resolved is TypeParameterSymbol rangeTypeParam)
                 {
@@ -1091,6 +1102,72 @@ namespace Ngo.Compiler.Semantics
             _context.PopScope();
 
             return new ForRangeStatement(keySymbol, valueSymbol, iterable, body, span);
+        }
+
+        private void ExtractRangeFuncTypes(FunctionTypeSymbol funcType, TypeSymbol originalType,
+            TextSpan span, out TypeSymbol? keyType, out TypeSymbol? valueType)
+        {
+            keyType = null;
+            valueType = null;
+
+            // The iterator function must take exactly 1 parameter: the yield function
+            if (funcType.ParameterTypes.Count != 1)
+            {
+                _context.Errors.ReportError(span, ErrorCode.InvalidRange,
+                    $"Cannot range over '{originalType.Name}': iterator function must take exactly 1 parameter");
+                return;
+            }
+
+            // The yield parameter must be a function type returning bool
+            var yieldParam = funcType.ParameterTypes[0];
+            var yieldFunc = yieldParam as FunctionTypeSymbol;
+            if (yieldFunc == null && yieldParam.UnderlyingType is FunctionTypeSymbol yieldUnderlying)
+            {
+                yieldFunc = yieldUnderlying;
+            }
+
+            if (yieldFunc == null)
+            {
+                _context.Errors.ReportError(span, ErrorCode.InvalidRange,
+                    $"Cannot range over '{originalType.Name}': yield parameter must be a function type");
+                return;
+            }
+
+            // For InstantiatedTypeSymbol, substitute type args into the yield function params
+            if (originalType is InstantiatedTypeSymbol instType
+                && instType.GenericType.TypeParameters.Count > 0)
+            {
+                var substitutedParams = new List<TypeSymbol>();
+                foreach (var paramType in yieldFunc.ParameterTypes)
+                {
+                    substitutedParams.Add(TypeSubstituter.Substitute(paramType,
+                        instType.GenericType.TypeParameters, instType.TypeArguments));
+                }
+                yieldFunc = new FunctionTypeSymbol(substitutedParams, yieldFunc.ReturnTypes, yieldFunc.IsVariadic);
+            }
+
+            // Extract key/value types from yield function parameters
+            // func(func() bool)       → no variables
+            // func(func(V) bool)      → key=V, value=null
+            // func(func(K, V) bool)   → key=K, value=V
+            if (yieldFunc.ParameterTypes.Count == 0)
+            {
+                // No yield variables
+            }
+            else if (yieldFunc.ParameterTypes.Count == 1)
+            {
+                keyType = yieldFunc.ParameterTypes[0];
+            }
+            else if (yieldFunc.ParameterTypes.Count == 2)
+            {
+                keyType = yieldFunc.ParameterTypes[0];
+                valueType = yieldFunc.ParameterTypes[1];
+            }
+            else
+            {
+                _context.Errors.ReportError(span, ErrorCode.InvalidRange,
+                    $"Cannot range over '{originalType.Name}': yield function must take 0-2 parameters");
+            }
         }
 
         private DeferStatement ResolveDeferStatement(DeferStatementSyntax syntax)

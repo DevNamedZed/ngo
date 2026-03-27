@@ -188,6 +188,13 @@ namespace Ngo.Compiler.Semantics
 
                 if (leftVal is long l && rightVal is long r)
                 {
+                    // Use unsigned (logical) right shift when the left operand has unsigned type
+                    bool isUnsignedShift = bin.Operator == BinaryOperator.ShiftRight
+                        && bin.Left.Type != null
+                        && (bin.Left.Type.TypeKind is TypeKind.Uint or TypeKind.Uint8
+                            or TypeKind.Uint16 or TypeKind.Uint32 or TypeKind.Uint64
+                            or TypeKind.Uintptr);
+
                     return bin.Operator switch
                     {
                         BinaryOperator.Add => (object)(l + r),
@@ -200,6 +207,8 @@ namespace Ngo.Compiler.Semantics
                         BinaryOperator.BitwiseXor => (object)(l ^ r),
                         BinaryOperator.AndNot => (object)(l & ~r),
                         BinaryOperator.ShiftLeft => (object)(l << (int)r),
+                        BinaryOperator.ShiftRight when isUnsignedShift
+                            => (object)(long)((ulong)l >> (int)r),
                         BinaryOperator.ShiftRight => (object)(l >> (int)r),
                         BinaryOperator.Equal => (object)(l == r),
                         BinaryOperator.NotEqual => (object)(l != r),
@@ -275,6 +284,39 @@ namespace Ngo.Compiler.Semantics
                 {
                     return (object)(!b);
                 }
+            }
+
+            // Type conversion: uint(0), int32(x), uintptr(0), etc.
+            if (expr is Ast.ConversionExpression conv)
+            {
+                var innerVal = TryEvaluateConstant(conv.Operand);
+                if (innerVal is long longVal)
+                {
+                    return conv.Type.TypeKind switch
+                    {
+                        TypeKind.Uint => (object)(long)(ulong)(uint)longVal,
+                        TypeKind.Uint8 => (object)(long)(byte)longVal,
+                        TypeKind.Uint16 => (object)(long)(ushort)longVal,
+                        TypeKind.Uint32 => (object)(long)(uint)longVal,
+                        TypeKind.Uint64 => (object)(long)(ulong)longVal,
+                        TypeKind.Uintptr => (object)(long)(ulong)longVal,
+                        TypeKind.Int => longVal,
+                        TypeKind.Int8 => (object)(long)(sbyte)longVal,
+                        TypeKind.Int16 => (object)(long)(short)longVal,
+                        TypeKind.Int32 => (object)(long)(int)longVal,
+                        TypeKind.Int64 => longVal,
+                        _ => longVal,
+                    };
+                }
+                if (innerVal is double doubleVal)
+                {
+                    if (TypeChecker.IsInteger(conv.Type))
+                    {
+                        return (object)(long)doubleVal;
+                    }
+                    return innerVal;
+                }
+                return innerVal;
             }
 
             // len(stringExpr) — constant fold when argument is a string constant

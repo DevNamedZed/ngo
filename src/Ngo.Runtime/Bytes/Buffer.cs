@@ -130,7 +130,7 @@ namespace Ngo.Runtime.Bytes
             int size = b0 < 0xE0 ? 2 : b0 < 0xF0 ? 3 : 4;
             if (_len < size) return (0xFFFD, 1, null);
             var slice = new Slice<byte>(_buf, 0, size);
-            var (r, sz) = Utf8.Package.DecodeRune(slice);
+            var (r, sz) = DecodeRuneFromSlice(slice);
             Array.Copy(_buf, (int)sz, _buf, 0, _len - (int)sz);
             _len -= (int)sz;
             _lastRuneSize = (int)sz;
@@ -300,6 +300,32 @@ namespace Ngo.Runtime.Bytes
             var newBuf = new byte[newCap];
             Array.Copy(_buf, newBuf, _len);
             _buf = newBuf;
+        }
+
+        private static (long, long) DecodeRuneFromSlice(Slice<byte> data)
+        {
+            if (data.Len == 0)
+            {
+                return (0xFFFD, 0);
+            }
+            byte first = data[0];
+            if (first < 0x80)
+            {
+                return (first, 1);
+            }
+            if ((first & 0xE0) == 0xC0 && data.Len >= 2)
+            {
+                return (((first & 0x1F) << 6) | (data[1] & 0x3F), 2);
+            }
+            if ((first & 0xF0) == 0xE0 && data.Len >= 3)
+            {
+                return (((first & 0x0F) << 12) | ((data[1] & 0x3F) << 6) | (data[2] & 0x3F), 3);
+            }
+            if ((first & 0xF8) == 0xF0 && data.Len >= 4)
+            {
+                return (((first & 0x07) << 18) | ((data[1] & 0x3F) << 12) | ((data[2] & 0x3F) << 6) | (data[3] & 0x3F), 4);
+            }
+            return (0xFFFD, 1);
         }
     }
 }

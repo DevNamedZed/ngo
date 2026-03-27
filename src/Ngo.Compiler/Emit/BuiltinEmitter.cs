@@ -202,10 +202,7 @@ namespace Ngo.Compiler.Emit
                 case "filepath":
                     if (name == "Join")
                     {
-                        EmitVariadicStringArray(call, 0);
-                        _ctx.IL.Emit(OpCodes.Call,
-                            typeof(Ngo.Runtime.Filepath.Package).GetMethod("Join")!);
-                        return true;
+                        return false;
                     }
                     return false;
 
@@ -388,12 +385,7 @@ namespace Ngo.Compiler.Emit
         {
             switch (name)
             {
-                case "NewScanner":
-                    return EmitStaticCall(call, typeof(Ngo.Runtime.Bufio.Package), "NewScanner");
-                case "NewReader":
-                    return EmitStaticCall(call, typeof(Ngo.Runtime.Bufio.Package), "NewReader");
-                case "NewWriter":
-                    return EmitStaticCall(call, typeof(Ngo.Runtime.Bufio.Package), "NewWriter");
+                // bufio compiles from Go source
                 default:
                     return false;
             }
@@ -401,51 +393,12 @@ namespace Ngo.Compiler.Emit
 
         private bool TryEmitCsvSpecial(CallExpression call, string name)
         {
-            switch (name)
-            {
-                case "NewReader":
-                    _body.EmitExpression(call.Arguments[0]);
-                    _ctx.IL.Emit(OpCodes.Call,
-                        typeof(Ngo.Runtime.Csv.Package).GetMethod("NewReader",
-                            new[] { typeof(object) })!);
-                    return true;
-                case "NewWriter":
-                    _body.EmitExpression(call.Arguments[0]);
-                    _ctx.IL.Emit(OpCodes.Call,
-                        typeof(Ngo.Runtime.Csv.Package).GetMethod("NewWriter",
-                            new[] { typeof(object) })!);
-                    return true;
-                default:
-                    return false;
-            }
+            return false;
         }
 
         private bool TryEmitLogSpecial(CallExpression call, string name)
         {
-            var logType = typeof(Ngo.Runtime.Log.Package);
-            switch (name)
-            {
-                case "Println":
-                    EmitBuiltinPrintArgs(call);
-                    _ctx.IL.Emit(OpCodes.Call, logType.GetMethod("Println")!);
-                    return true;
-                case "Print":
-                    EmitBuiltinPrintArgs(call);
-                    _ctx.IL.Emit(OpCodes.Call, logType.GetMethod("Print")!);
-                    return true;
-                case "Printf":
-                    EmitFmtFormatCall(call, "Printf", logType);
-                    return true;
-                case "Fatal":
-                    EmitBuiltinPrintArgs(call);
-                    _ctx.IL.Emit(OpCodes.Call, logType.GetMethod("Fatal")!);
-                    return true;
-                case "Fatalf":
-                    EmitFmtFormatCall(call, "Fatalf", logType);
-                    return true;
-                default:
-                    return false;
-            }
+            return false;
         }
 
         private bool TryEmitStringsSpecial(CallExpression call, string name)

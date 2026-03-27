@@ -34,7 +34,7 @@ namespace Ngo.Runtime.Crypto.Rsa
         [return: GoReturn("[]byte", "error")]
         public (Slice<byte>, object?) Sign(object? rand, Slice<byte> digest, [GoParam("crypto.SignerOpts")] object? opts)
         {
-            long hash = Crypto.Package.SHA256; // default
+            long hash = 5; // default
             if (opts != null)
             {
                 var hashFunc = opts.GetType().GetMethod("HashFunc");

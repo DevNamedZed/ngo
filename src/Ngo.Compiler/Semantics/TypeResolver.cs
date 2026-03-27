@@ -561,9 +561,6 @@ namespace Ngo.Compiler.Semantics
                     }
                 }
 
-                // Known constants from unregistered packages (used in array lengths)
-                if (pkgId.Identifier.Text == "cpu" && sel.Name.Text == "CacheLinePadSize")
-                    return 64; // internal/cpu: amd64
             }
 
             // Parenthesized expressions: (expr)

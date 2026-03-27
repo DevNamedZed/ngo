@@ -78,7 +78,7 @@ namespace Ngo.Runtime
         [GoMethod(IsVariadic = true)]
         public void Panic([GoParam("interface{}")] params object[] args)
         {
-            var s = Ngo.Runtime.Log.Package.FormatArgs(args);
+            var s = Fmt.Package.Sprint(args);
             var w = GetWriter();
             w.Write(s);
             w.Flush();
@@ -98,7 +98,7 @@ namespace Ngo.Runtime
         [GoMethod(IsVariadic = true)]
         public void Panicln([GoParam("interface{}")] params object[] args)
         {
-            var s = Ngo.Runtime.Log.Package.FormatArgs(args);
+            var s = Fmt.Package.Sprint(args);
             var w = GetWriter();
             w.WriteLine(s);
             w.Flush();

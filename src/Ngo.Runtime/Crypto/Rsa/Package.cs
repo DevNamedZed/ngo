@@ -241,23 +241,24 @@ namespace Ngo.Runtime.Crypto.Rsa
         internal static HashAlgorithmName CryptoHashToAlgorithmName(long hash)
         {
             // Maps crypto.Hash constants to .NET HashAlgorithmName
-            if (hash == Crypto.Package.SHA1)
+            // crypto.Hash constants: MD5=2, SHA1=3, SHA224=4, SHA256=5, SHA384=6, SHA512=7, SHA512_224=14, SHA512_256=15
+            if (hash == 3)
             {
                 return HashAlgorithmName.SHA1;
             }
-            if (hash == Crypto.Package.SHA256 || hash == Crypto.Package.SHA224)
+            if (hash == 5 || hash == 4)
             {
                 return HashAlgorithmName.SHA256;
             }
-            if (hash == Crypto.Package.SHA384)
+            if (hash == 6)
             {
                 return HashAlgorithmName.SHA384;
             }
-            if (hash == Crypto.Package.SHA512 || hash == Crypto.Package.SHA512_224 || hash == Crypto.Package.SHA512_256)
+            if (hash == 7 || hash == 14 || hash == 15)
             {
                 return HashAlgorithmName.SHA512;
             }
-            if (hash == Crypto.Package.MD5)
+            if (hash == 2)
             {
                 return HashAlgorithmName.MD5;
             }

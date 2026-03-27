@@ -611,19 +611,35 @@ namespace Ngo.Runtime.Crypto.X509
         public bool AppendCertsFromPEM(Slice<byte> pemCerts)
         {
             bool added = false;
-            var (block, rest) = Encoding.Pem.Package.Decode(pemCerts);
-            while (block != null)
+            string pemText = System.Text.Encoding.ASCII.GetString(pemCerts.AsSpan().ToArray());
+            int searchStart = 0;
+            while (searchStart < pemText.Length)
             {
-                if (block.Type == "CERTIFICATE")
+                int beginIndex = pemText.IndexOf("-----BEGIN CERTIFICATE-----", searchStart, StringComparison.Ordinal);
+                if (beginIndex < 0)
                 {
-                    var (cert, err) = Package.ParseCertificate(block.Bytes);
+                    break;
+                }
+                int endIndex = pemText.IndexOf("-----END CERTIFICATE-----", beginIndex, StringComparison.Ordinal);
+                if (endIndex < 0)
+                {
+                    break;
+                }
+                string base64 = pemText.Substring(beginIndex + 27, endIndex - beginIndex - 27).Trim();
+                try
+                {
+                    byte[] derBytes = System.Convert.FromBase64String(base64);
+                    var (cert, err) = Package.ParseCertificate(new Slice<byte>(derBytes));
                     if (err == null && cert != null)
                     {
                         _certs.Add(cert);
                         added = true;
                     }
                 }
-                (block, rest) = Encoding.Pem.Package.Decode(rest);
+                catch
+                {
+                }
+                searchStart = endIndex + 25;
             }
             return added;
         }

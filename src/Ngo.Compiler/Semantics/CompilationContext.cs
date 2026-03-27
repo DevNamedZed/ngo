@@ -54,6 +54,14 @@ namespace Ngo.Compiler.Semantics
 
         public ICompilerLog Log { get; }
 
+        /// <summary>
+        /// Target Go language version (e.g. 23 for Go 1.23). Default: latest supported.
+        /// Set from go.mod directive or CLI flag.
+        /// </summary>
+        public int TargetGoVersion { get; set; } = LatestGoVersion;
+
+        public const int LatestGoVersion = 23;
+
         public PackageSymbol? ResolvePackage(string importPath)
         {
             // Resolve well-known package aliases (e.g. golang.org/x/net/context -> context)

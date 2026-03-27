@@ -769,8 +769,7 @@ namespace Ngo.Compiler.Emit
                 if (name == "Println" || name == "Print" || name == "Sprint" || name == "Sprintln")
                     targetType = typeof(Ngo.Runtime.Fmt.Package);
             }
-            else if (pkg == "log" && (name == "Println" || name == "Print" || name == "Fatal"))
-                targetType = typeof(Ngo.Runtime.Log.Package);
+            // log compiles from Go source
 
             if (targetType == null) return false;
 
@@ -797,11 +796,7 @@ namespace Ngo.Compiler.Emit
                     targetType = typeof(Ngo.Runtime.Fmt.Package);
             }
 
-            if (pkg == "log")
-            {
-                if (name == "Printf" || name == "Fatalf")
-                    targetType = typeof(Ngo.Runtime.Log.Package);
-            }
+            // log compiles from Go source
 
             if (targetType == null || paramTypes.Length < 1) return false;
 
@@ -901,27 +896,13 @@ namespace Ngo.Compiler.Emit
             {
                 "os" => typeof(GoOs),
                 "time" => typeof(GoTime),
-                "sort" => typeof(Ngo.Runtime.Sort.Package),
-                "rand" => typeof(Ngo.Runtime.Rand.Package),
-                "strconv" => typeof(Ngo.Runtime.Strconv.Package),
                 "strings" => typeof(Ngo.Runtime.Strings.Package),
                 "errors" => typeof(Ngo.Runtime.Errors.Package),
                 "math" => typeof(Ngo.Runtime.Math.Package),
-                "regexp" => typeof(Ngo.Runtime.Regexp.Package),
-                "unicode" => typeof(Ngo.Runtime.Unicode.Package),
-                "utf8" => typeof(Ngo.Runtime.Utf8.Package),
                 "bytes" => typeof(Ngo.Runtime.Bytes.Package),
-                "path" => typeof(Ngo.Runtime.Path.Package),
-                "filepath" => typeof(Ngo.Runtime.Filepath.Package),
                 "io" => typeof(GoIo),
-                "log" => typeof(Ngo.Runtime.Log.Package),
                 "fmt" => typeof(Ngo.Runtime.Fmt.Package),
                 "ioutil" => typeof(GoIo),
-                "hex" => typeof(Ngo.Runtime.Hex.Package),
-                "sha256" => typeof(Ngo.Runtime.Sha256.Package),
-                "crand" => typeof(Ngo.Runtime.Crypto.Rand.Package),
-                "flag" => typeof(Ngo.Runtime.Flag.Package),
-                "http" => typeof(Ngo.Runtime.Http.Package),
                 "reflect" => typeof(GoReflect),
                 "runtime" => typeof(GoRuntime),
                 "reflectlite" => typeof(GoReflect),

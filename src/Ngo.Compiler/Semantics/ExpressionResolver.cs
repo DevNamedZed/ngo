@@ -19,6 +19,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using Ngo.Compiler.Ast;
 using Ngo.Compiler.Language;
 using Ngo.Compiler.Language.Syntax;

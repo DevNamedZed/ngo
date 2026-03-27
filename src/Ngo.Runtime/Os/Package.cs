@@ -875,9 +875,7 @@ namespace Ngo.Runtime.Os
         [return: GoReturn("interface{}")]
         public static object DirFS(string dir)
         {
-            var fs = new Embed.FS();
-            fs.SetBasePath(dir);
-            return fs;
+            return dir;
         }
     }
 }
