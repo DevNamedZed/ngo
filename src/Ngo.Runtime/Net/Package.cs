@@ -352,6 +352,9 @@ namespace Ngo.Runtime.Net
     public class GoFlags
     {
         public long Value;
+
+        [GoMethod]
+        public string String() => Value.ToString();
     }
 
     // net.AddrError struct

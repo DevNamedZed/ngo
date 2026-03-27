@@ -1024,8 +1024,8 @@ namespace Ngo.Compiler.Semantics
                 return true;
             }
 
-            // We can't compile assembly, so noasm/purego/safe are active
-            if (term is "gc" or "noasm" or "purego" or "safe" or "disableunsafe")
+            // gc is the standard Go compiler toolchain tag
+            if (term is "gc")
             {
                 return true;
             }

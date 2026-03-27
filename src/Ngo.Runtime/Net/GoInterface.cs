@@ -28,7 +28,7 @@ namespace Ngo.Runtime.Net
         [GoField(Name = "MTU")] public long MTU { get; set; }
         [GoField(Name = "Name")] public string Name { get; set; } = "";
         [GoField(Name = "HardwareAddr")] public Slice<byte> HardwareAddr { get; set; }
-        [GoField(Name = "Flags")] public long Flags { get; set; }
+        [GoField(Name = "Flags", Type = "net.Flags")] public long Flags { get; set; }
 
         [GoMethod]
         [return: GoReturn("[]Addr", "error")]

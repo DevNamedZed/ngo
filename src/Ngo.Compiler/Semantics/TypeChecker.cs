@@ -136,6 +136,13 @@ namespace Ngo.Compiler.Semantics
                 if (IsFunctionTypeAssignable(source, target)) return true;
             }
 
+            // Function type → named type with function underlying (e.g. func(...) → iter.Seq2[...])
+            if (source is FunctionTypeSymbol && !(target is FunctionTypeSymbol)
+                && HasFunctionUnderlying(target))
+            {
+                if (IsFunctionTypeAssignable(source, target)) return true;
+            }
+
             // Structural type equality
             if (IsStructurallyAssignable(source, target)) return true;
 
@@ -300,6 +307,28 @@ namespace Ngo.Compiler.Semantics
                 ?? (target.Resolved() as FunctionTypeSymbol)
                 ?? (target.UnderlyingType as FunctionTypeSymbol)
                 ?? (target.Resolved()?.UnderlyingType as FunctionTypeSymbol);
+
+            // For instantiated generic named types (e.g. Seq2[int, *Selection]),
+            // substitute type arguments into the underlying function type
+            if (tf != null && target is InstantiatedTypeSymbol targetInst
+                && targetInst.GenericType.TypeParameters.Count > 0
+                && targetInst.TypeArguments.Count == targetInst.GenericType.TypeParameters.Count)
+            {
+                var substParams = new List<TypeSymbol>();
+                foreach (var paramType in tf.ParameterTypes)
+                {
+                    substParams.Add(TypeSubstituter.Substitute(paramType,
+                        targetInst.GenericType.TypeParameters, targetInst.TypeArguments));
+                }
+                var substReturns = new List<TypeSymbol>();
+                foreach (var retType in tf.ReturnTypes)
+                {
+                    substReturns.Add(TypeSubstituter.Substitute(retType,
+                        targetInst.GenericType.TypeParameters, targetInst.TypeArguments));
+                }
+                tf = new FunctionTypeSymbol(substParams, substReturns, tf.IsVariadic);
+            }
+
             if (sf == null || tf == null) return false;
 
             int srcCount = sf.ParameterTypes.Count;
@@ -472,6 +501,19 @@ namespace Ngo.Compiler.Semantics
                         || !IsAssignable(ss.Fields[i].Type, ts.Fields[i].Type))
                         return false;
                 return true;
+            }
+            return false;
+        }
+
+        private static bool HasFunctionUnderlying(TypeSymbol type)
+        {
+            if (type.UnderlyingType is FunctionTypeSymbol) return true;
+            if (type.Resolved()?.UnderlyingType is FunctionTypeSymbol) return true;
+            if (type is InstantiatedTypeSymbol inst)
+            {
+                var genBase = inst.GenericType;
+                if (genBase.UnderlyingType is FunctionTypeSymbol) return true;
+                if (genBase.Resolved()?.UnderlyingType is FunctionTypeSymbol) return true;
             }
             return false;
         }

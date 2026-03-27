@@ -887,8 +887,13 @@ namespace Ngo.Compiler.Semantics
                 {
                     methodExprNamedType = typeSymbol;
                 }
+                else if (typeSymbol is InterfaceTypeSymbol ifaceTypeExpr && ifaceTypeExpr.Methods.Count > 0)
+                {
+                    methodExprNamedType = ifaceTypeExpr;
+                }
 
                 // Handle method expressions on non-struct named types (e.g., type Class string)
+                // or interface types (e.g., BufferAt.Len)
                 if (methodExprNamedType != null)
                 {
                     var namedMethod = methodExprNamedType.LookupMethod(fieldName);
@@ -1840,7 +1845,17 @@ namespace Ngo.Compiler.Semantics
                         $"Index must be an integer, got '{index.Type.Name}'");
                 }
 
-                return new Ast.IndexExpression(target, index, sliceType.ElementType, span);
+                var elemType = sliceType.ElementType;
+                // For instantiated generic named slices (e.g., items[*node[T]]),
+                // substitute type args so indexing yields *node[T] instead of raw T
+                if (target.Type is InstantiatedTypeSymbol instSlice
+                    && instSlice.GenericType.TypeParameters.Count > 0
+                    && elemType is TypeParameterSymbol)
+                {
+                    elemType = TypeSubstituter.Substitute(elemType,
+                        instSlice.GenericType.TypeParameters, instSlice.TypeArguments);
+                }
+                return new Ast.IndexExpression(target, index, elemType, span);
             }
 
             if (resolvedTargetType is ArrayTypeSymbol arrayType)
@@ -1989,7 +2004,7 @@ namespace Ngo.Compiler.Semantics
                         "3-index slice not supported on strings");
                 }
 
-                resultType = BuiltinTypes.String;
+                resultType = operand.Type;
             }
             else if (resolvedOpType is TypeParameterSymbol sliceTypeParam)
             {

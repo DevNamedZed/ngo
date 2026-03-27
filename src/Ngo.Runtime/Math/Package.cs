@@ -349,7 +349,9 @@ namespace Ngo.Runtime.Math
             return yCurr;
         }
         public static double Gamma(double x) => System.Math.Exp(LogGamma(x));
-        public static double Lgamma(double x) { var (r, _) = LgammaFull(x); return r; }
+        [GoFunc]
+        [return: GoReturn("float64", "int")]
+        public static (double, long) Lgamma(double x) { return LgammaFull(x); }
         private static (double, long) LgammaFull(double x)
         {
             if (double.IsInfinity(x)) return (double.PositiveInfinity, 1);

@@ -322,7 +322,7 @@ namespace Ngo.Compiler.Semantics
                 goType.PackagePath = importPath;
 
                 // Set type parameters for generic types
-                if (!string.IsNullOrEmpty(entry.Attribute.TypeParams) && goType is StructTypeSymbol genStruct)
+                if (!string.IsNullOrEmpty(entry.Attribute.TypeParams))
                 {
                     var tpNames = entry.Attribute.TypeParams.Split(',');
                     var typeParams = new List<TypeParameterSymbol>();
@@ -330,17 +330,7 @@ namespace Ngo.Compiler.Semantics
                     {
                         typeParams.Add(new TypeParameterSymbol(tpNames[tpIdx].Trim(), tpIdx, ConstraintInfo.Any));
                     }
-                    genStruct.SetTypeParameters(typeParams);
-                }
-                else if (!string.IsNullOrEmpty(entry.Attribute.TypeParams) && goType is InterfaceTypeSymbol genIface)
-                {
-                    var tpNames = entry.Attribute.TypeParams.Split(',');
-                    var typeParams = new List<TypeParameterSymbol>();
-                    for (int tpIdx = 0; tpIdx < tpNames.Length; tpIdx++)
-                    {
-                        typeParams.Add(new TypeParameterSymbol(tpNames[tpIdx].Trim(), tpIdx, ConstraintInfo.Any));
-                    }
-                    genIface.SetTypeParameters(typeParams);
+                    goType.SetTypeParameters(typeParams);
                 }
 
                 typeMap[goName] = goType;
@@ -370,11 +360,28 @@ namespace Ngo.Compiler.Semantics
                 // Resolve deferred underlying types now that all type names are registered
                 if (goType._deferredUnderlying != null)
                 {
+                    // Push type parameters into typeMap so underlying type refs like K, V resolve
+                    var savedTypeParams = new Dictionary<string, TypeSymbol>();
+                    foreach (var typeParam in goType.TypeParameters)
+                    {
+                        if (!typeMap.ContainsKey(typeParam.Name))
+                        {
+                            typeMap[typeParam.Name] = typeParam;
+                            savedTypeParams[typeParam.Name] = typeParam;
+                        }
+                    }
+
                     var underlying = PackageMetadataSerializer.StringToType(
                         goType._deferredUnderlying, typeMap, crossPkgResolver);
                     goType.UnderlyingType = underlying;
                     goType.TypeKind = underlying.TypeKind;
                     goType._deferredUnderlying = null;
+
+                    // Remove type parameters from typeMap to avoid polluting other types
+                    foreach (var savedParam in savedTypeParams)
+                    {
+                        typeMap.Remove(savedParam.Key);
+                    }
                 }
 
                 if (goType is StructTypeSymbol structType)

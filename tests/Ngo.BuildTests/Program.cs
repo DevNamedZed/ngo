@@ -893,7 +893,7 @@ static class Analyzer
         bool active;
         if (name is "linux" or "amd64" or "unix")
             active = true;
-        else if (name is "gc" or "safe" or "disableunsafe" or "noasm" or "purego")
+        else if (name is "gc")
             active = true;
         else if (name.StartsWith("go1.") && int.TryParse(name.AsSpan(4), out int ver))
             active = ver <= 22;

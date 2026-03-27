@@ -47,6 +47,27 @@ namespace Ngo.Compiler.Symbols
             _alternates.Add(alternate);
         }
 
+        public bool ContainsImportPath(string importPath)
+        {
+            if (ImportPath == importPath)
+            {
+                return true;
+            }
+
+            if (_alternates != null)
+            {
+                foreach (var alt in _alternates)
+                {
+                    if (alt.ImportPath == importPath)
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
         /// <summary>
         /// The import paths this package depends on.
         /// Stored in .ngo archives so dependency discovery doesn't require re-parsing source.

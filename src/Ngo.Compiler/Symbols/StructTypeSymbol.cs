@@ -79,7 +79,13 @@ namespace Ngo.Compiler.Symbols
                 var embeddedType = Fields[i].Type is PointerTypeSymbol ptr
                     ? ptr.ElementType
                     : Fields[i].Type;
-                var method = embeddedType.LookupMethod(name);
+                // Unwrap type aliases (e.g., type Option = option.Interface)
+                var lookupType = embeddedType;
+                while (lookupType.IsAlias && lookupType.UnderlyingType != null)
+                {
+                    lookupType = lookupType.UnderlyingType;
+                }
+                var method = lookupType.LookupMethod(name);
                 if (method != null)
                 {
                     return new PromotedMethodResult(Fields[i], method);

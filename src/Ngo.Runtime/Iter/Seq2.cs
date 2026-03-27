@@ -3,7 +3,7 @@ using Ngo.Runtime.Discovery;
 
 namespace Ngo.Runtime.Iter
 {
-    [GoType("named", Name = "Seq2", Underlying = "func(func(K, V) bool)", Package = "iter")]
+    [GoType("named", Name = "Seq2", Underlying = "func(func(K, V) bool)", Package = "iter", TypeParams = "K,V")]
     public struct GoIterSeq2<K, V>
     {
         public Action<Func<K, V, bool>> Value;

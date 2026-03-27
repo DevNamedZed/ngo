@@ -1404,7 +1404,9 @@ namespace Ngo.Compiler.Semantics
                         }
                         else
                         {
-                            var embeddedName = fieldType.Name;
+                            var embType = fieldType is PointerTypeSymbol embPtr
+                                ? embPtr.ElementType : fieldType;
+                            var embeddedName = embType.Name;
                             fields.Add(new FieldSymbol(embeddedName, fieldType, ordinal++,
                                 isEmbedded: true));
                         }

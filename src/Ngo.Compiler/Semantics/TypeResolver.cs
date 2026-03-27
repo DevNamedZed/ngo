@@ -55,6 +55,25 @@ namespace Ngo.Compiler.Semantics
                         return null;
                     }
 
+                    // Symbol found but not a package — might be shadowed by a local variable.
+                    // Search parent scopes for a PackageSymbol with this name.
+                    if (symbol != null)
+                    {
+                        var scope = _context.Scope;
+                        while (scope != null)
+                        {
+                            var local = scope.LookupLocal(pkgIdSyntax.Identifier.Text);
+                            if (local is PackageSymbol shadowedPkg)
+                            {
+                                _context.UsedPackages.Add(shadowedPkg.Name);
+                                var export = shadowedPkg.LookupExport(selectorSyntax.Name.Text);
+                                if (export is TypeSymbol ts2) return ts2;
+                                break;
+                            }
+                            scope = scope.Parent;
+                        }
+                    }
+
                     // Identifier not found in scope — likely an unresolved package
                     if (symbol == null)
                     {
@@ -375,6 +394,23 @@ namespace Ngo.Compiler.Semantics
                     var method = new MethodSymbol(methodSpec.Name.Text, placeholder, false,
                         parameters, returnTypes);
                     methods.Add(method);
+                }
+                else if (member is ExpressionSyntax embeddedSyntax)
+                {
+                    var embeddedType = ResolveType(embeddedSyntax);
+                    while (embeddedType != null && embeddedType.IsAlias && embeddedType.UnderlyingType != null)
+                    {
+                        embeddedType = embeddedType.UnderlyingType;
+                    }
+                    if (embeddedType is InterfaceTypeSymbol embeddedIface)
+                    {
+                        foreach (var m in embeddedIface.Methods)
+                        {
+                            var promoted = new MethodSymbol(m.Name, placeholder, false,
+                                System.Array.Empty<TypeParameterSymbol>(), m.Parameters, m.ReturnTypes, m.IsVariadic);
+                            methods.Add(promoted);
+                        }
+                    }
                 }
             }
 
@@ -712,6 +748,56 @@ namespace Ngo.Compiler.Semantics
                     if (size.HasValue) return size.Value;
                 }
                 // Default: 8 (word size on amd64)
+                return 8;
+            }
+
+            // unsafe.Offsetof(...) — compute field offset for amd64
+            if (expr is CallExpressionSyntax offsetCall
+                && offsetCall.Function is SelectorExpressionSyntax offsetSel
+                && offsetSel.Expression is IdentifierNameSyntax offsetPkg
+                && offsetPkg.Identifier.Text == "unsafe"
+                && offsetSel.Name.Text == "Offsetof"
+                && offsetCall.Arguments.Count == 1
+                && offsetCall.Arguments[0] is SelectorExpressionSyntax fieldSel)
+            {
+                var fieldName = fieldSel.Name.Text;
+                TypeSymbol? structType = null;
+
+                if (fieldSel.Expression is CompositeLiteralSyntax offsetCompLit && offsetCompLit.Type != null)
+                {
+                    structType = ResolveType(offsetCompLit.Type);
+                }
+                else if (fieldSel.Expression is ParenthesizedExpressionSyntax offsetParenExpr)
+                {
+                    var innerType = ResolveType(offsetParenExpr.Expression);
+                    if (innerType is PointerTypeSymbol ptrOff)
+                    {
+                        structType = ptrOff.ElementType;
+                    }
+                }
+
+                if (structType != null)
+                {
+                    var resolved = structType.Resolved();
+                    if (resolved is StructTypeSymbol st)
+                    {
+                        int offset = 0;
+                        for (int fi = 0; fi < st.Fields.Count; fi++)
+                        {
+                            var fieldSize = ComputeSizeOf(st.Fields[fi].Type) ?? 8;
+                            var align = fieldSize > 8 ? 8 : fieldSize;
+                            if (align > 0 && offset % align != 0)
+                            {
+                                offset += align - (offset % align);
+                            }
+                            if (st.Fields[fi].Name == fieldName)
+                            {
+                                return offset;
+                            }
+                            offset += fieldSize;
+                        }
+                    }
+                }
                 return 8;
             }
 

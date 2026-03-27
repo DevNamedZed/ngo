@@ -32,6 +32,9 @@ namespace Ngo.Compiler.Semantics
         private readonly ExpressionResolver _expressionResolver;
         private readonly StatementResolver _statementResolver;
         private readonly List<FunctionSymbol> _initSymbols = new List<FunctionSymbol>();
+        private readonly Dictionary<SyntaxNode, Dictionary<string, PackageSymbol>> _fileScopedImports = new();
+        private readonly Dictionary<string, SyntaxNode> _firstImportFile = new();
+        private bool _hasImportCollisions;
 
         public DeclarationResolver(AnalysisContext context, TypeResolver typeResolver,
             ExpressionResolver expressionResolver, StatementResolver statementResolver)
@@ -69,7 +72,7 @@ namespace Ngo.Compiler.Semantics
             var imports = new List<ImportDeclaration>();
             foreach (var file in files)
             {
-                imports.AddRange(ResolveImports(file.Imports));
+                imports.AddRange(ResolveImports(file.Imports, file));
             }
 
             // Scan for //export directives on functions (for CGo callbacks)
@@ -100,6 +103,7 @@ namespace Ngo.Compiler.Semantics
             var varSyntaxes = new List<VarDeclarationSyntax>();
             var typeSyntaxes = new List<TypeDeclarationSyntax>();
             var constSyntaxes = new List<ConstDeclarationSyntax>();
+            var syntaxToFile = new Dictionary<SyntaxNode, SourceFileSyntax>();
 
             // Pre-pass: scan ALL file-level go:linkname directives.
             // Go allows go:linkname anywhere in the file, not just before func declarations.
@@ -120,10 +124,12 @@ namespace Ngo.Compiler.Semantics
                     if (member is FunctionDeclarationSyntax funcSyntax)
                     {
                         functionSyntaxes.Add(funcSyntax);
+                        syntaxToFile[funcSyntax] = file;
                     }
                     else if (member is MethodDeclarationSyntax methodSyntax)
                     {
                         methodSyntaxes.Add(methodSyntax);
+                        syntaxToFile[methodSyntax] = file;
                     }
                     else if (member is VarDeclarationSyntax varSyntax)
                     {
@@ -308,13 +314,17 @@ namespace Ngo.Compiler.Semantics
             var functions = new List<FunctionDeclaration>();
             foreach (var funcSyntax in functionSyntaxes)
             {
+                PushFileScopedImports(funcSyntax, syntaxToFile);
                 functions.Add(ResolveFunctionDeclaration(funcSyntax));
+                PopFileScopedImports(funcSyntax, syntaxToFile);
             }
 
             var methods = new List<MethodDeclaration>();
             foreach (var methodSyntax in methodSyntaxes)
             {
+                PushFileScopedImports(methodSyntax, syntaxToFile);
                 methods.Add(ResolveMethodDeclaration(methodSyntax));
+                PopFileScopedImports(methodSyntax, syntaxToFile);
             }
 
             ReportUnusedImports(imports);
@@ -330,7 +340,8 @@ namespace Ngo.Compiler.Semantics
             return new PackageDeclaration(symbol, _context.SpanOf(syntax));
         }
 
-        private List<ImportDeclaration> ResolveImports(IReadOnlyList<ImportDeclarationSyntax> importDecls)
+        private List<ImportDeclaration> ResolveImports(IReadOnlyList<ImportDeclarationSyntax> importDecls,
+            SourceFileSyntax sourceFile)
         {
             var imports = new List<ImportDeclaration>();
 
@@ -423,12 +434,21 @@ namespace Ngo.Compiler.Semantics
                         var existing = _context.Scope.Lookup(pkg.Name);
                         if (existing is PackageSymbol existingPkg)
                         {
-                            // Different packages with same local name (e.g. encoding/json
-                            // vs internal/json): create a merged package that searches both.
-                            // Don't modify the original package (it may be shared across
-                            // compilations via runtime cache).
-                            if (existingPkg.ImportPath != pkg.ImportPath)
+                            // Different packages with same local name (e.g. crypto/rand vs
+                            // math/rand both imported as "rand" in different files). Track
+                            // file-specific imports so body resolution uses the correct one.
+                            if (!existingPkg.ContainsImportPath(pkg.ImportPath))
                             {
+                                _hasImportCollisions = true;
+                                TrackFileScopedImport(sourceFile, localName, pkg);
+
+                                if (_firstImportFile.TryGetValue(localName, out var firstFile)
+                                    && (!_fileScopedImports.TryGetValue(firstFile, out var existingFileImports)
+                                        || !existingFileImports.ContainsKey(localName)))
+                                {
+                                    TrackFileScopedImport(firstFile, localName, existingPkg);
+                                }
+
                                 var merged = new PackageSymbol(existingPkg.Name, existingPkg.ImportPath);
                                 merged.CopyExportsFrom(existingPkg);
                                 merged.AddAlternate(pkg);
@@ -441,12 +461,72 @@ namespace Ngo.Compiler.Semantics
                                 $"'{pkg.Name}' is already declared in this scope");
                         }
                     }
+                    else
+                    {
+                        _firstImportFile[localName] = sourceFile;
+                    }
 
                     imports.Add(new ImportDeclaration(pkg, path, alias, span));
                 }
             }
 
             return imports;
+        }
+
+
+        private void PushFileScopedImports(SyntaxNode syntax, Dictionary<SyntaxNode, SourceFileSyntax> syntaxToFile)
+        {
+            if (!_hasImportCollisions)
+            {
+                return;
+            }
+
+            if (!syntaxToFile.TryGetValue(syntax, out var file))
+            {
+                return;
+            }
+
+            if (!_fileScopedImports.TryGetValue(file, out var fileImports))
+            {
+                return;
+            }
+
+            _context.PushScope("fileImports");
+            foreach (var entry in fileImports)
+            {
+                _context.Scope.TryDeclare(entry.Value);
+            }
+        }
+
+        private void PopFileScopedImports(SyntaxNode syntax, Dictionary<SyntaxNode, SourceFileSyntax> syntaxToFile)
+        {
+            if (!_hasImportCollisions)
+            {
+                return;
+            }
+
+            if (!syntaxToFile.TryGetValue(syntax, out var file))
+            {
+                return;
+            }
+
+            if (!_fileScopedImports.ContainsKey(file))
+            {
+                return;
+            }
+
+            _context.PopScope();
+        }
+
+        private void TrackFileScopedImport(SyntaxNode sourceFile, string localName, PackageSymbol package)
+        {
+            if (!_fileScopedImports.TryGetValue(sourceFile, out var fileImports))
+            {
+                fileImports = new Dictionary<string, PackageSymbol>();
+                _fileScopedImports[sourceFile] = fileImports;
+            }
+
+            fileImports[localName] = package;
         }
 
         private void RegisterFunction(FunctionDeclarationSyntax syntax)

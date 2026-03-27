@@ -53,6 +53,9 @@ namespace Ngo.Runtime.Net
         public bool IsLinkLocalMulticast() => false;
 
         [GoMethod]
+        public bool IsInterfaceLocalMulticast() => false;
+
+        [GoMethod]
         public bool IsMulticast() => false;
 
         [GoMethod]

@@ -480,7 +480,7 @@
     "module": "github.com/boltdb/bolt",
     "version": "v1.3.1",
     "label": "boltdb-bolt",
-    "expect": "max:1"
+    "expect": "pass"
   },
   {
     "module": "github.com/bradleyfalzon/ghinstallation/v2",
@@ -516,7 +516,7 @@
     "module": "github.com/google/btree",
     "version": "v1.1.2",
     "label": "btree",
-    "expect": "fail"
+    "expect": "pass"
   },
   {
     "module": "github.com/buger/jsonparser",
@@ -995,7 +995,7 @@
     "module": "github.com/djherbis/buffer",
     "version": "v1.2.0",
     "label": "djherbis-buffer",
-    "expect": "max:4"
+    "expect": "pass"
   },
   {
     "module": "github.com/djherbis/nio/v3",
@@ -1031,7 +1031,7 @@
     "module": "github.com/dop251/goja",
     "version": "v0.0.0-20241024094426-79f3a7efcdbd",
     "label": "dop251-goja",
-    "expect": "max:3"
+    "expect": "pass"
   },
   {
     "module": "github.com/aymerick/douceur",
@@ -1113,7 +1113,7 @@
     "version": "v0.7.7",
     "subPackage": "buffer",
     "label": "easyjson-buffer",
-    "expect": "fail"
+    "expect": "pass"
   },
   {
     "module": "github.com/mailru/easyjson",
@@ -1228,7 +1228,7 @@
     "module": "github.com/ericlagergren/decimal",
     "version": "v0.0.0-20240411145413-00de7ca16731",
     "label": "ericlagergren-decimal",
-    "expect": "max:3"
+    "expect": "pass"
   },
   {
     "module": "github.com/hashicorp/errwrap",
@@ -1246,7 +1246,7 @@
     "module": "go.etcd.io/bbolt",
     "version": "v1.3.11",
     "label": "etcd-bbolt",
-    "expect": "max:1"
+    "expect": "pass"
   },
   {
     "module": "github.com/etcd-io/bbolt",
@@ -1374,7 +1374,7 @@
     "module": "github.com/getsentry/sentry-go",
     "version": "v0.31.1",
     "label": "getsentry-sentry-go",
-    "expect": "max:2"
+    "expect": "pass"
   },
   {
     "module": "github.com/ghodss/yaml",
@@ -1469,7 +1469,7 @@
     "version": "v1.14.1",
     "subPackage": "cty",
     "label": "go-cty",
-    "expect": "fail"
+    "expect": "pass"
   },
   {
     "module": "github.com/sergi/go-diff",
@@ -1729,7 +1729,7 @@
     "version": "v1.0.6",
     "subPackage": "template",
     "label": "go-sockaddr-template",
-    "expect": "fail"
+    "expect": "pass"
   },
   {
     "module": "github.com/go-sql-driver/mysql",
@@ -1753,7 +1753,7 @@
     "module": "github.com/andrew-d/go-termutil",
     "version": "v0.0.0-20150726205930-009166a695a2",
     "label": "go-termutil",
-    "expect": "fail"
+    "expect": "pass"
   },
   {
     "module": "github.com/go-test/deep",
@@ -2425,7 +2425,7 @@
     "module": "github.com/hashicorp/go-sockaddr",
     "version": "v1.0.7",
     "label": "hashicorp-go-sockaddr",
-    "expect": "max:2"
+    "expect": "pass"
   },
   {
     "module": "github.com/hashicorp/go-syslog",
@@ -3155,7 +3155,7 @@
     "module": "github.com/lestrrat-go/jwx",
     "version": "v1.2.30",
     "label": "lestrrat-go-jwx",
-    "expect": "max:1"
+    "expect": "pass"
   },
   {
     "module": "github.com/lestrrat-go/strftime",
@@ -3319,7 +3319,7 @@
     "module": "github.com/Masterminds/sprig/v3",
     "version": "v3.3.0",
     "label": "masterminds-sprig",
-    "expect": "max:1"
+    "expect": "pass"
   },
   {
     "module": "github.com/Masterminds/squirrel",
@@ -3494,7 +3494,7 @@
     "module": "github.com/minio/blake2b-simd",
     "version": "v0.0.0-20160723061019-3f5f724cb5b1",
     "label": "minio-blake2b-simd",
-    "expect": "max:3"
+    "expect": "pass"
   },
   {
     "module": "github.com/minio/highwayhash",
@@ -3761,7 +3761,13 @@
     "module": "github.com/nanobox-io/golang-scribble",
     "version": "v0.0.0-20190309225732-aa3e7c118975",
     "label": "nanobox-io-scribble",
-    "expect": "max:3"
+    "expect": "pass",
+    "deps": [
+      {
+        "module": "github.com/jcelliott/lumber",
+        "version": "v0.0.0-20160324203708-dd349441af25"
+      }
+    ]
   },
   {
     "module": "github.com/naoina/toml",
@@ -4187,7 +4193,7 @@
     "module": "github.com/posener/complete/v2",
     "version": "v2.1.0",
     "label": "posener-complete-v2",
-    "expect": "max:1"
+    "expect": "pass"
   },
   {
     "module": "github.com/pquerna/cachecontrol",
@@ -4244,7 +4250,7 @@
     "module": "github.com/PuerkitoBio/goquery",
     "version": "v1.10.1",
     "label": "PuerkitoBio-goquery",
-    "expect": "max:1"
+    "expect": "pass"
   },
   {
     "module": "github.com/PuerkitoBio/purell",
@@ -5706,7 +5712,7 @@
     "module": "github.com/xuri/excelize/v2",
     "version": "v2.9.0",
     "label": "xuri-excelize-v2",
-    "expect": "max:1"
+    "expect": "pass"
   },
   {
     "module": "github.com/xwb1989/sqlparser",
