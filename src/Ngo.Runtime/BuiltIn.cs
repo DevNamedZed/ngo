@@ -62,6 +62,21 @@ namespace Ngo.Runtime
         public static int Copy<T>(Slice<T> dst, Slice<T> src)
             => Slice<T>.Copy(dst, src);
 
+        public static int Copy(Slice<byte> dst, string src)
+        {
+            if (dst.IsNil || src == null || src.Length == 0)
+            {
+                return 0;
+            }
+            var srcBytes = global::System.Text.Encoding.UTF8.GetBytes(src);
+            int count = global::System.Math.Min(dst.Len, srcBytes.Length);
+            for (int i = 0; i < count; i++)
+            {
+                dst[i] = srcBytes[i];
+            }
+            return count;
+        }
+
         // --- delete ---
 
         public static void Delete<K, V>(Map<K, V> m, K key) where K : notnull

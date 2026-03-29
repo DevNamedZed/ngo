@@ -29,6 +29,8 @@ namespace Ngo.Compiler.Emit.Builder
 
         public IReadOnlyList<NgoTypeBuilder> Types => _types;
 
+        public HashSet<string> ExternalTypeNames { get; } = new();
+
         public ITypeBuilder DefineType(string name, TypeAttributes attrs)
             => DefineType(name, attrs, null, null);
 
@@ -48,11 +50,19 @@ namespace Ngo.Compiler.Emit.Builder
         /// </summary>
         public void WriteILSections(BinaryWriter writer, BinaryWriter codeWriter)
         {
-            // Collect all method bodies across all types (for Section 3 body index mapping)
+            var packageTypes = new List<NgoTypeBuilder>();
+            foreach (var type in _types)
+            {
+                if (BelongsToPackage(type))
+                {
+                    packageTypes.Add(type);
+                }
+            }
+
             var allBodies = new List<NgoWriter>();
             var typeMethodBodies = new Dictionary<NgoTypeBuilder, List<NgoMethodEntry>>();
 
-            foreach (var type in _types)
+            foreach (var type in packageTypes)
             {
                 var methodEntries = new List<NgoMethodEntry>();
 
@@ -77,22 +87,28 @@ namespace Ngo.Compiler.Emit.Builder
                     methodEntries.Add(new NgoMethodEntry(method.Name, method.Attributes, method.ReturnTypeName, paramNames, bodyIndex, genericNames));
                 }
 
-                // .cctor
                 if (type.Constructor?.Writer != null)
                 {
                     int bodyIndex = allBodies.Count;
                     allBodies.Add(type.Constructor.Writer);
-                    methodEntries.Add(new NgoMethodEntry(".cctor",
-                        MethodAttributes.Private | MethodAttributes.Static | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName,
-                        "System.Void", Array.Empty<string>(), bodyIndex, Array.Empty<string>()));
+                    bool isStatic = (type.Constructor.Attributes & MethodAttributes.Static) != 0;
+                    var ctorName = isStatic ? ".cctor" : ".ctor";
+                    var ctorAttrs = type.Constructor.Attributes | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName;
+                    var ctorParams = new string[type.Constructor.ParamTypeNames.Count];
+                    for (int p = 0; p < ctorParams.Length; p++)
+                    {
+                        ctorParams[p] = type.Constructor.ParamTypeNames[p];
+                    }
+                    methodEntries.Add(new NgoMethodEntry(ctorName, ctorAttrs,
+                        "System.Void", ctorParams, bodyIndex, Array.Empty<string>()));
                 }
 
                 typeMethodBodies[type] = methodEntries;
             }
 
             // Section 2: IL Metadata
-            writer.Write(_types.Count);
-            foreach (var type in _types)
+            writer.Write(packageTypes.Count);
+            foreach (var type in packageTypes)
             {
                 writer.Write(type.FullName ?? "");
                 writer.Write((int)type.TypeAttrs);
@@ -107,9 +123,15 @@ namespace Ngo.Compiler.Emit.Builder
 
                 // Fields
                 writer.Write(type.Fields.Count);
+                int blankFieldIndex = 0;
                 foreach (var field in type.Fields)
                 {
-                    writer.Write(field.FieldName);
+                    var fieldName = field.FieldName;
+                    if (fieldName == "_")
+                    {
+                        fieldName = $"_pad{blankFieldIndex++}";
+                    }
+                    writer.Write(fieldName);
                     writer.Write((int)field.FieldAttributes);
                     writer.Write(NgoWriter.GetTypeNameStatic(field.FieldType));
                 }
@@ -151,6 +173,11 @@ namespace Ngo.Compiler.Emit.Builder
             {
                 ngoWriter.WriteMethodBody(codeWriter);
             }
+        }
+
+        private bool BelongsToPackage(NgoTypeBuilder type)
+        {
+            return true;
         }
     }
 }

@@ -39,11 +39,24 @@ namespace Ngo.Compiler.Emit.Builder
         {
             _fullName = fullName;
             _attrs = attrs;
-            _baseTypeName = baseType != null ? NgoWriter.GetTypeNameStatic(baseType) : "";
 
             bool isStatic = (attrs & TypeAttributes.Abstract) != 0 && (attrs & TypeAttributes.Sealed) != 0;
             bool isInterface = (attrs & TypeAttributes.Interface) != 0;
-            bool isValueType = !isStatic && !isInterface && (baseType == typeof(ValueType) || baseType == null);
+
+            if (baseType != null)
+            {
+                _baseTypeName = NgoWriter.GetTypeNameStatic(baseType);
+            }
+            else if (isStatic || isInterface)
+            {
+                _baseTypeName = "";
+            }
+            else
+            {
+                _baseTypeName = "System.Object";
+            }
+
+            bool isValueType = !isStatic && !isInterface && baseType == typeof(ValueType);
             _proxyType = new NgoProxyType(fullName, isValueType);
         }
 

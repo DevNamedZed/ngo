@@ -904,6 +904,23 @@ namespace Ngo.Compiler.Emit
                 }
                 copyElemType = (underlying as SliceTypeSymbol)?.ElementType ?? BuiltinTypes.EmptyInterface;
             }
+
+            var secondArgType = call.Arguments[1].Type;
+            bool isStringSource = secondArgType.TypeKind == TypeKind.String
+                || secondArgType.TypeKind == TypeKind.UntypedString;
+
+            if (isStringSource && copyElemType == BuiltinTypes.Byte)
+            {
+                _body.EmitExpression(call.Arguments[0]);
+                _body.EmitExpression(call.Arguments[1]);
+
+                var copyMethod = typeof(BuiltIn).GetMethod("Copy",
+                    new[] { typeof(Slice<byte>), typeof(string) });
+                _ctx.IL.Emit(OpCodes.Call, copyMethod!);
+                _ctx.IL.Emit(OpCodes.Conv_I8);
+                return true;
+            }
+
             var elemClrType = _ctx.Mapper.Map(copyElemType);
             var sliceClrType = _ctx.Mapper.Map(resolvedCopy is SliceTypeSymbol ? resolvedCopy : call.Arguments[0].Type);
 
@@ -911,8 +928,8 @@ namespace Ngo.Compiler.Emit
             _body.EmitExpression(call.Arguments[1]);
 
             var copySliceType = typeof(Slice<>).MakeGenericType(elemClrType);
-            var copyMethod = EmitContext.GetMethodSafe(copySliceType, "Copy", new[] { sliceClrType, sliceClrType });
-            _ctx.IL.Emit(OpCodes.Call, copyMethod);
+            var copyMethod2 = EmitContext.GetMethodSafe(copySliceType, "Copy", new[] { sliceClrType, sliceClrType });
+            _ctx.IL.Emit(OpCodes.Call, copyMethod2);
             _ctx.IL.Emit(OpCodes.Conv_I8);
             return true;
         }

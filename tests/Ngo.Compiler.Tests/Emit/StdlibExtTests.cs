@@ -28,10 +28,17 @@ namespace Ngo.Compiler.Tests.Emit;
 [TestClass]
 public class StdlibExtTests
 {
+    private static readonly string TestProjectRoot = Path.Combine(Path.GetTempPath(), "ngo-test-project");
+
+    static StdlibExtTests()
+    {
+        Directory.CreateDirectory(TestProjectRoot);
+    }
+
     private static string Run(string goSource)
     {
         var tree = SyntaxTree.Parse(goSource);
-        var ctx = new CompilationContext(null);
+        var ctx = new CompilationContext(TestProjectRoot);
         var result = SemanticAnalyzer.Analyze(tree, ctx);
 
         Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
@@ -991,9 +998,9 @@ func runTest(t *testing.T) {
 }
 func main() {
 }");
-        var result = SemanticAnalyzer.Analyze(tree, new CompilationContext(null));
+        var result = SemanticAnalyzer.Analyze(tree, new CompilationContext(TestProjectRoot));
         Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
-        var assembly = AssemblyEmitter.Emit(result, new CompilationContext(null));
+        var assembly = AssemblyEmitter.Emit(result, new CompilationContext(TestProjectRoot));
         Assert.IsNotNull(assembly);
     }
 
@@ -1019,7 +1026,7 @@ func main() {
     })
     fmt.Println(count)
 }");
-        var result = SemanticAnalyzer.Analyze(tree, new CompilationContext(null));
+        var result = SemanticAnalyzer.Analyze(tree, new CompilationContext(TestProjectRoot));
         Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
     }
 
@@ -1134,7 +1141,7 @@ func main() {
     _ = name
     fmt.Println(flag.Parsed())
 }");
-        var result = SemanticAnalyzer.Analyze(tree, new CompilationContext(null));
+        var result = SemanticAnalyzer.Analyze(tree, new CompilationContext(TestProjectRoot));
         Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
     }
 
@@ -1154,7 +1161,7 @@ func main() {
     _, _ = r.Read()
     _ = r
 }");
-        var result = SemanticAnalyzer.Analyze(tree, new CompilationContext(null));
+        var result = SemanticAnalyzer.Analyze(tree, new CompilationContext(TestProjectRoot));
         Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
     }
 
@@ -1174,7 +1181,7 @@ func main() {
     _ = http.StatusNotFound
     fmt.Println(""http ready"")
 }");
-        var result = SemanticAnalyzer.Analyze(tree, new CompilationContext(null));
+        var result = SemanticAnalyzer.Analyze(tree, new CompilationContext(TestProjectRoot));
         Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
     }
 
@@ -1192,7 +1199,7 @@ func main() {
     b := make([]byte, 16)
     _, _ = rand.Read(b)
 }");
-        var result = SemanticAnalyzer.Analyze(tree, new CompilationContext(null));
+        var result = SemanticAnalyzer.Analyze(tree, new CompilationContext(TestProjectRoot));
         Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
     }
 
@@ -1707,7 +1714,7 @@ func main() {
     private static string RunWithStdin(string stdinContent, string goSource)
     {
         var tree = SyntaxTree.Parse(goSource);
-        var ctx = new CompilationContext(null);
+        var ctx = new CompilationContext(TestProjectRoot);
         var result = SemanticAnalyzer.Analyze(tree, ctx);
 
         Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));

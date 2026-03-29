@@ -329,7 +329,8 @@ namespace Ngo.Compiler.Emit
                             structBuilder = _emitContext.Module.DefineType(
                                 qualifiedName2,
                                 System.Reflection.TypeAttributes.Public
-                                | System.Reflection.TypeAttributes.Sealed,
+                                | System.Reflection.TypeAttributes.Sealed
+                                | System.Reflection.TypeAttributes.SequentialLayout,
                                 typeof(System.ValueType));
                         }
                         catch (ArgumentException)
@@ -338,6 +339,13 @@ namespace Ngo.Compiler.Emit
                             _typeCache[symbol] = typeof(object);
                             return typeof(object);
                         }
+
+                        if (_emitContext.IsDependencyEmit && anonStruct.PackagePath != null
+                            && _emitContext.Module is Builder.NgoModuleBuilder ngoMod)
+                        {
+                            ngoMod.ExternalTypeNames.Add(qualifiedName2);
+                        }
+
                         foreach (var field in anonStruct.Fields)
                         {
                             var fieldType = Map(field.Type);
@@ -405,6 +413,12 @@ namespace Ngo.Compiler.Emit
                             | System.Reflection.TypeAttributes.Abstract,
                             null!, // interfaces have no base type
                             System.Type.EmptyTypes);
+                        if (_emitContext.IsDependencyEmit && ifaceType.PackagePath != null
+                            && _emitContext.Module is Builder.NgoModuleBuilder ngoMod2)
+                        {
+                            ngoMod2.ExternalTypeNames.Add(_emitContext.QualifyName(ifaceName));
+                        }
+
                         foreach (var method in ifaceType.Methods)
                         {
                             var paramTypes = new Type[method.Parameters.Count];

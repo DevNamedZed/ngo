@@ -19,27 +19,9 @@
 using System.Collections.Generic;
 using System.Reflection;
 using System.Reflection.Emit;
-using System.Reflection.Metadata;
 
 namespace Ngo.Compiler.Emit
 {
-    /// <summary>
-    /// Links a method definition handle to its serialized body index
-    /// during IL serialization (write path).
-    /// </summary>
-    public sealed class MethodBodyReference
-    {
-        public MethodBodyReference(MethodDefinitionHandle handle, int bodyIndex)
-        {
-            Handle = handle;
-            BodyIndex = bodyIndex;
-        }
-
-        public MethodDefinitionHandle Handle { get; }
-
-        public int BodyIndex { get; }
-    }
-
     /// <summary>
     /// Serialized method metadata read from an .ngo archive, before
     /// the MethodBuilder is created (types may not be resolved yet).

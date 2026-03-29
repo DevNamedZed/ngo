@@ -28,10 +28,17 @@ namespace Ngo.Compiler.Tests.Emit;
 [TestClass]
 public class EmitTests
 {
+    private static readonly string TestProjectRoot = Path.Combine(Path.GetTempPath(), "ngo-test-project");
+
+    static EmitTests()
+    {
+        Directory.CreateDirectory(TestProjectRoot);
+    }
+
     private static string Run(string goSource)
     {
         var tree = SyntaxTree.Parse(goSource);
-        var ctx = new CompilationContext(null);
+        var ctx = new CompilationContext(TestProjectRoot);
         var result = SemanticAnalyzer.Analyze(tree, ctx);
 
         Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
@@ -58,7 +65,7 @@ public class EmitTests
     private static (string stdout, string stderr) RunWithStderr(string goSource)
     {
         var tree = SyntaxTree.Parse(goSource);
-        var ctx = new CompilationContext(null);
+        var ctx = new CompilationContext(TestProjectRoot);
         var result = SemanticAnalyzer.Analyze(tree, ctx);
 
         Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
@@ -2860,6 +2867,24 @@ func main() {
 ");
         var normalized = output.Replace("\r\n", "\n");
         Assert.AreEqual("3\n1\n2\n3\n", normalized);
+    }
+
+    [TestMethod]
+    public void Copy_byte_slice_from_string()
+    {
+        var output = Run(@"
+package main
+
+func main() {
+    b := make([]byte, 5)
+    n := copy(b, ""hello"")
+    println(n)
+    println(b[0])
+    println(b[4])
+}
+");
+        var normalized = output.Replace("\r\n", "\n");
+        Assert.AreEqual("5\n104\n111\n", normalized);
     }
 
     [TestMethod]
@@ -6179,7 +6204,7 @@ func main() {
 }
 ";
         var tree = SyntaxTree.Parse(source);
-        var ctx = new CompilationContext(null);
+        var ctx = new CompilationContext(TestProjectRoot);
         var result = SemanticAnalyzer.Analyze(tree, ctx);
         Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
 
