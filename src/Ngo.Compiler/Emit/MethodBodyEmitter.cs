@@ -2928,6 +2928,23 @@ namespace Ngo.Compiler.Emit
                 }
             }
 
+            // Go-source-compiled struct methods: stored as static methods TypeName_MethodName
+            // on the linked package class.
+            {
+                var receiverResolved = call.Receiver.Type.Resolved();
+                var staticMethodName = receiverResolved.Name + "_" + call.Method.Name;
+                if (_ctx.LinkedMethods.TryGetValue(staticMethodName, out var linkedMethod))
+                {
+                    EmitExpression(call.Receiver);
+                    foreach (var arg in call.Arguments)
+                    {
+                        EmitExpression(arg);
+                    }
+                    _ctx.IL.Emit(OpCodes.Call, linkedMethod);
+                    return;
+                }
+            }
+
             if (_ctx.IsDependencyEmit)
             {
                 _ctx.IL.Emit(OpCodes.Pop); // receiver

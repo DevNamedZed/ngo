@@ -16,6 +16,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
+using System.IO;
 using System.Linq;
 using Ngo.Compiler.Ast;
 using Ngo.Compiler.Language;
@@ -28,10 +29,17 @@ namespace Ngo.Compiler.Tests.Semantics;
 [TestClass]
 public class AnalysisImportTests
 {
+    private static readonly string TestProjectRoot = Path.Combine(Path.GetTempPath(), "ngo-test-project");
+
+    static AnalysisImportTests()
+    {
+        Directory.CreateDirectory(TestProjectRoot);
+    }
+
     private static AnalysisResult Analyze(string source)
     {
         var tree = SyntaxTree.Parse(source);
-        return SemanticAnalyzer.Analyze(tree, new CompilationContext(null));
+        return SemanticAnalyzer.Analyze(tree, new CompilationContext(TestProjectRoot));
     }
 
     [TestMethod]

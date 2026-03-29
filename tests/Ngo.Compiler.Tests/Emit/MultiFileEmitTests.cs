@@ -29,13 +29,20 @@ namespace Ngo.Compiler.Tests.Emit;
 [TestClass]
 public class MultiFileEmitTests
 {
+    private static readonly string TestProjectRoot = Path.Combine(Path.GetTempPath(), "ngo-test-project");
+
+    static MultiFileEmitTests()
+    {
+        Directory.CreateDirectory(TestProjectRoot);
+    }
+
     private static string Run(params string[] goSources)
     {
         var trees = new List<SyntaxTree>();
         foreach (var src in goSources)
             trees.Add(SyntaxTree.Parse(src));
 
-        var ctx = new CompilationContext(null);
+        var ctx = new CompilationContext(TestProjectRoot);
         var result = SemanticAnalyzer.Analyze(trees, ctx);
         Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
 
@@ -222,7 +229,7 @@ func buildMessage() string {
             SyntaxTree.Parse("package other\nfunc helper() {}")
         };
 
-        var result = SemanticAnalyzer.Analyze(trees, new CompilationContext(null));
+        var result = SemanticAnalyzer.Analyze(trees, new CompilationContext(TestProjectRoot));
         Assert.IsTrue(result.HasErrors);
     }
 }

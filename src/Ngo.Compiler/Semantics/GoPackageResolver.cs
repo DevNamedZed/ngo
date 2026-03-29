@@ -647,6 +647,11 @@ namespace Ngo.Compiler.Semantics
             return trees;
         }
 
+        private static bool ContainsGoFiles(string directory)
+        {
+            return Directory.EnumerateFiles(directory, "*.go").Any();
+        }
+
         private string? ResolvePackageDir(string importPath)
         {
             // Go module resolution follows a strict order:
@@ -656,17 +661,26 @@ namespace Ngo.Compiler.Semantics
             // 4. Vendor directory
             // 5. Module cache fallback
 
-            // 1. Stdlib: paths without dots are always standard library
+            // 1. Stdlib: paths without dots are standard library
             if (!importPath.Contains('.'))
             {
                 if (_goStdlibSrc != null)
                 {
                     var stdlibDir = Path.Combine(_goStdlibSrc, importPath.Replace('/', Path.DirectorySeparatorChar));
-                    if (Directory.Exists(stdlibDir))
+                    if (Directory.Exists(stdlibDir) && ContainsGoFiles(stdlibDir))
                     {
                         return stdlibDir;
                     }
                 }
+
+                // Local package fallback: check project root for bare import paths
+                // that aren't in the stdlib (e.g., "mymath" in a project directory)
+                var localDir = Path.Combine(ProjectRoot, importPath.Replace('/', Path.DirectorySeparatorChar));
+                if (Directory.Exists(localDir))
+                {
+                    return localDir;
+                }
+
                 return null;
             }
 

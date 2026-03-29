@@ -29,7 +29,6 @@ namespace Ngo.Compiler.Emit.Builder
 
         public IReadOnlyList<NgoTypeBuilder> Types => _types;
 
-        public HashSet<string> ExternalTypeNames { get; } = new();
 
         public ITypeBuilder DefineType(string name, TypeAttributes attrs)
             => DefineType(name, attrs, null, null);
@@ -175,9 +174,9 @@ namespace Ngo.Compiler.Emit.Builder
             }
         }
 
-        private bool BelongsToPackage(NgoTypeBuilder type)
+        private static bool BelongsToPackage(NgoTypeBuilder type)
         {
-            return true;
+            return !string.IsNullOrEmpty(type.FullName);
         }
     }
 }

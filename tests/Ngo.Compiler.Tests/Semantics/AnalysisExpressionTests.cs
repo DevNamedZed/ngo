@@ -16,6 +16,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
+using System.IO;
 using System.Linq;
 using Ngo.Compiler.Ast;
 using Ngo.Compiler.Language;
@@ -28,10 +29,17 @@ namespace Ngo.Compiler.Tests.Semantics;
 [TestClass]
 public class AnalysisExpressionTests
 {
+    private static readonly string TestProjectRoot = Path.Combine(Path.GetTempPath(), "ngo-test-project");
+
+    static AnalysisExpressionTests()
+    {
+        Directory.CreateDirectory(TestProjectRoot);
+    }
+
     private static AnalysisResult Analyze(string source)
     {
         var tree = SyntaxTree.Parse(source);
-        return SemanticAnalyzer.Analyze(tree, new CompilationContext(null));
+        return SemanticAnalyzer.Analyze(tree, new CompilationContext(TestProjectRoot));
     }
 
     private static Expression GetSingleReturnExpression(AnalysisResult result)
@@ -375,7 +383,7 @@ type valueInt int64
         var tree2 = SyntaxTree.Parse(@"package main
 func (v valueInt) ToInt() int { return int(v) }
 ");
-        var result = SemanticAnalyzer.Analyze(new[] { tree1, tree2 }, new CompilationContext(null));
+        var result = SemanticAnalyzer.Analyze(new[] { tree1, tree2 }, new CompilationContext(TestProjectRoot));
         Assert.IsFalse(result.HasErrors, string.Join("; ", result.Errors.Select(e => $"{e.Code}: {e.Message}")));
     }
 
@@ -454,7 +462,7 @@ func f() {
     _ = b
 }
 ");
-        var result = SemanticAnalyzer.Analyze(tree, new CompilationContext(null));
+        var result = SemanticAnalyzer.Analyze(tree, new CompilationContext(TestProjectRoot));
         Assert.IsFalse(result.HasErrors, string.Join("; ", result.Errors.Select(e => $"{e.Code}: {e.Message}")));
     }
 
@@ -467,7 +475,7 @@ func f() {
     _ = json.Indent
 }
 ");
-        var result = SemanticAnalyzer.Analyze(tree, new CompilationContext(null));
+        var result = SemanticAnalyzer.Analyze(tree, new CompilationContext(TestProjectRoot));
         // Just ensure json.Indent is a known export (not UndeclaredName)
         Assert.IsFalse(result.Errors.Any(e => e.Code == ErrorCode.UndeclaredName
             && e.Message.Contains("Indent")),
@@ -483,7 +491,7 @@ func f() {
     _ = base64.NewEncoding
 }
 ");
-        var result = SemanticAnalyzer.Analyze(tree, new CompilationContext(null));
+        var result = SemanticAnalyzer.Analyze(tree, new CompilationContext(TestProjectRoot));
         Assert.IsFalse(result.Errors.Any(e => e.Code == ErrorCode.UndeclaredName
             && e.Message.Contains("NewEncoding")),
             string.Join("; ", result.Errors.Select(e => $"{e.Code}: {e.Message}")));
@@ -498,7 +506,7 @@ func f() {
     _ = os.DirFS
 }
 ");
-        var result = SemanticAnalyzer.Analyze(tree, new CompilationContext(null));
+        var result = SemanticAnalyzer.Analyze(tree, new CompilationContext(TestProjectRoot));
         Assert.IsFalse(result.Errors.Any(e => e.Code == ErrorCode.UndeclaredName
             && e.Message.Contains("DirFS")),
             string.Join("; ", result.Errors.Select(e => $"{e.Code}: {e.Message}")));
@@ -513,7 +521,7 @@ func f() {
     _ = binary.Size
 }
 ");
-        var result = SemanticAnalyzer.Analyze(tree, new CompilationContext(null));
+        var result = SemanticAnalyzer.Analyze(tree, new CompilationContext(TestProjectRoot));
         Assert.IsFalse(result.Errors.Any(e => e.Code == ErrorCode.UndeclaredName
             && e.Message.Contains("Size")),
             string.Join("; ", result.Errors.Select(e => $"{e.Code}: {e.Message}")));

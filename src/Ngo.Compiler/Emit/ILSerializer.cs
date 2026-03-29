@@ -312,6 +312,8 @@ namespace Ngo.Compiler.Emit
                         methodILIndices[methodKey] = methodInfo.BodyIndex;
                     }
 
+                    ctx.LinkedMethods[methodInfo.MethodName] = mb;
+
                     foreach (var (_, sym) in pkg.Exports)
                     {
                         if (sym is FunctionSymbol funcSym && funcSym.Name == methodInfo.MethodName)
@@ -1388,6 +1390,11 @@ namespace Ngo.Compiler.Emit
         private static Type ResolveType(string typeName, Dictionary<string, TypeBuilder>? typeBuilders = null,
             Dictionary<string, Type>? genericParams = null)
         {
+            if (typeName == "$$null" || typeName == "$$error")
+            {
+                return typeof(object);
+            }
+
             if (genericParams != null && genericParams.TryGetValue(typeName, out var gp))
             {
                 return gp;

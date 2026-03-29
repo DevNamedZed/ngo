@@ -35,6 +35,7 @@ public class MultiPackageEmitTests
     {
         _tempDir = Path.Combine(Path.GetTempPath(), "ngo_test_" + Guid.NewGuid().ToString("N")[..8]);
         Directory.CreateDirectory(_tempDir);
+        File.WriteAllText(Path.Combine(_tempDir, "go.mod"), "module testproject\n\ngo 1.22\n");
     }
 
     [TestCleanup]
