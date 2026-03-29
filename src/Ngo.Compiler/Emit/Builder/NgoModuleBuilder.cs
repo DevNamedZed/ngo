@@ -69,7 +69,12 @@ namespace Ngo.Compiler.Emit.Builder
                     {
                         paramNames[i] = method.ParamTypeNames[i];
                     }
-                    methodEntries.Add(new NgoMethodEntry(method.Name, method.Attributes, method.ReturnTypeName, paramNames, bodyIndex));
+                    var genericNames = new string[method.GenericParamNames.Count];
+                    for (int i = 0; i < genericNames.Length; i++)
+                    {
+                        genericNames[i] = method.GenericParamNames[i];
+                    }
+                    methodEntries.Add(new NgoMethodEntry(method.Name, method.Attributes, method.ReturnTypeName, paramNames, bodyIndex, genericNames));
                 }
 
                 // .cctor
@@ -79,7 +84,7 @@ namespace Ngo.Compiler.Emit.Builder
                     allBodies.Add(type.Constructor.Writer);
                     methodEntries.Add(new NgoMethodEntry(".cctor",
                         MethodAttributes.Private | MethodAttributes.Static | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName,
-                        "System.Void", Array.Empty<string>(), bodyIndex));
+                        "System.Void", Array.Empty<string>(), bodyIndex, Array.Empty<string>()));
                 }
 
                 typeMethodBodies[type] = methodEntries;
@@ -92,6 +97,13 @@ namespace Ngo.Compiler.Emit.Builder
                 writer.Write(type.FullName ?? "");
                 writer.Write((int)type.TypeAttrs);
                 writer.Write(type.BaseTypeName);
+
+                // Generic type parameters
+                writer.Write(type.GenericParamNames.Count);
+                foreach (var gpName in type.GenericParamNames)
+                {
+                    writer.Write(gpName);
+                }
 
                 // Fields
                 writer.Write(type.Fields.Count);
@@ -109,6 +121,11 @@ namespace Ngo.Compiler.Emit.Builder
                 {
                     writer.Write(m.MethodName);
                     writer.Write((int)m.Attributes);
+                    writer.Write(m.GenericParamNames.Length);
+                    foreach (var gpName in m.GenericParamNames)
+                    {
+                        writer.Write(gpName);
+                    }
                     writer.Write(m.ReturnType);
                     writer.Write(m.ParamTypes.Length);
                     foreach (var pt in m.ParamTypes)

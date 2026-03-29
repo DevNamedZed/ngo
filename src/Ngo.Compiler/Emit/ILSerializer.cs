@@ -19,7 +19,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-
+using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
 using System.Reflection.Metadata;
@@ -53,61 +53,20 @@ namespace Ngo.Compiler.Emit
         {
             var ngoModule = new NgoModuleBuilder();
             var mapper = new TypeMapper(compilationContext);
-            var ctx = new EmitContext(ngoModule, mapper, null);
+            var ctx = new EmitContext(ngoModule, mapper, null, compilationContext.Log);
             ctx.IsDependencyEmit = true;
             mapper.SetEmitContext(ctx);
-            try
+            EmitPackageForSerialization(result.Root, ctx);
+
+            using var ilMetaStream = new MemoryStream();
+            using var ilCodeStream = new MemoryStream();
+            using (var metaWriter = new BinaryWriter(ilMetaStream, System.Text.Encoding.UTF8, leaveOpen: true))
+            using (var codeWriter = new BinaryWriter(ilCodeStream, System.Text.Encoding.UTF8, leaveOpen: true))
             {
-                EmitPackageForSerialization(result.Root, ctx);
-            }
-            catch (Exception)
-            {
-                // IL emit incomplete — archive will contain partial IL.
-                // This is acceptable for dependency caching during analysis.
+                ngoModule.WriteILSections(metaWriter, codeWriter);
             }
 
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            using var stream = new FileStream(path, FileMode.Create, FileAccess.Write);
-            using var writer = new BinaryWriter(stream);
-
-            // Header placeholder (8 uint32 fields after magic+version)
-            writer.Write(new byte[] { (byte)'N', (byte)'G', (byte)'O', 0 });
-            writer.Write(NgoArchive.CurrentVersion);
-            for (int i = 0; i < 8; i++) writer.Write((uint)0);
-
-            // Section 1: Go metadata
-            var goMetaOffset = (uint)stream.Position;
-            NgoArchive.WriteGoMetadataPublic(writer, pkg, importPath);
-            var goMetaLen = (uint)(stream.Position - goMetaOffset);
-
-            // Section 2: IL metadata
-            var ilMetaOffset = (uint)stream.Position;
-            using var codeStream = new MemoryStream();
-            using var codeWriter = new BinaryWriter(codeStream);
-            ngoModule.WriteILSections(writer, codeWriter);
-            var ilMetaLen = (uint)(stream.Position - ilMetaOffset);
-
-            // Section 3: IL bytecode
-            var ilCodeOffset = (uint)stream.Position;
-            codeWriter.Flush();
-            codeStream.Position = 0;
-            codeStream.CopyTo(stream);
-            var ilCodeLen = (uint)(stream.Position - ilCodeOffset);
-
-            // Section 4: CGo (empty — filled by CgoArchiveManager if needed)
-            var cgoOffset = (uint)stream.Position;
-            uint cgoLen = 0;
-
-            // Write real header offsets
-            stream.Seek(6, SeekOrigin.Begin);
-            writer.Write(goMetaOffset);
-            writer.Write(goMetaLen);
-            writer.Write(ilMetaOffset);
-            writer.Write(ilMetaLen);
-            writer.Write(ilCodeOffset);
-            writer.Write(ilCodeLen);
-            writer.Write(cgoOffset);
-            writer.Write(cgoLen);
+            NgoArchive.WriteComplete(path, pkg, importPath, ilMetaStream.ToArray(), ilCodeStream.ToArray());
         }
 
         /// <summary>
@@ -117,41 +76,11 @@ namespace Ngo.Compiler.Emit
         /// <returns>true if IL was found and linked; false if archive missing or has no IL sections.</returns>
         public static bool LinkFromArchive(string archivePath, PackageSymbol pkg, EmitContext ctx)
         {
-            if (!File.Exists(archivePath))
+            var (ilMetaBytes, ilCodeBytes) = NgoArchive.ReadIL(archivePath);
+            if (ilMetaBytes == null || ilCodeBytes == null)
             {
                 return false;
             }
-
-            using var stream = new FileStream(archivePath, FileMode.Open, FileAccess.Read);
-            using var reader = new BinaryReader(stream);
-
-            // Read header
-            var magic = reader.ReadBytes(4);
-            if (magic.Length < 4 || magic[0] != 'N' || magic[1] != 'G' || magic[2] != 'O' || magic[3] != 0)
-            {
-                return false;
-            }
-
-            reader.ReadUInt16(); // version
-            reader.ReadUInt32(); reader.ReadUInt32(); // goMeta
-            var ilMetaOffset = reader.ReadUInt32();
-            var ilMetaLen = reader.ReadUInt32();
-            var ilCodeOffset = reader.ReadUInt32();
-            var ilCodeLen = reader.ReadUInt32();
-            reader.ReadUInt32(); reader.ReadUInt32(); // cgo
-
-            if (ilMetaLen == 0 || ilCodeLen == 0)
-            {
-                return false;
-            }
-
-            // Read Section 2: IL metadata
-            stream.Seek(ilMetaOffset, SeekOrigin.Begin);
-            var ilMetaBytes = reader.ReadBytes((int)ilMetaLen);
-
-            // Read Section 3: IL bytecode
-            stream.Seek(ilCodeOffset, SeekOrigin.Begin);
-            var ilCodeBytes = reader.ReadBytes((int)ilCodeLen);
 
             LinkIL(ilMetaBytes, ilCodeBytes, pkg, ctx);
             return true;
@@ -393,7 +322,7 @@ namespace Ngo.Compiler.Emit
                     for (int p = 0; p < paramCount; p++)
                         paramTypeNames[p] = metaReader.ReadString();
                     var bodyIndex = metaReader.ReadInt32();
-                    methodInfos.Add(new SerializedMethodInfo(methodName, methodAttrs, returnTypeName, paramTypeNames, bodyIndex));
+                    methodInfos.Add(new SerializedMethodInfo(methodName, methodAttrs, returnTypeName, paramTypeNames, bodyIndex, Array.Empty<string>()));
                 }
 
                 // Read method overrides
@@ -963,16 +892,43 @@ namespace Ngo.Compiler.Emit
             return label;
         }
 
-        private static bool IsShortBranch(byte op) =>
-            op >= 0x2B && op <= 0x37 || op == 0xDE;
+        private static readonly Dictionary<short, OpCode> OpCodeMap = BuildOpCodeMap();
 
-        private static bool IsLongBranch(byte op) =>
-            op >= 0x38 && op <= 0x44 || op == 0xDD;
+        private static Dictionary<short, OpCode> BuildOpCodeMap()
+        {
+            var map = new Dictionary<short, OpCode>();
+            foreach (var field in typeof(OpCodes).GetFields(BindingFlags.Public | BindingFlags.Static))
+            {
+                if (field.FieldType == typeof(OpCode))
+                {
+                    var opCode = (OpCode)field.GetValue(null)!;
+                    map[opCode.Value] = opCode;
+                }
+            }
+            return map;
+        }
+
+        private static bool IsShortBranch(byte op)
+        {
+            return OpCodeMap.TryGetValue(op, out var opCode) && opCode.OperandType == OperandType.ShortInlineBrTarget;
+        }
+
+        private static bool IsLongBranch(byte op)
+        {
+            return OpCodeMap.TryGetValue(op, out var opCode) && opCode.OperandType == OperandType.InlineBrTarget;
+        }
 
         private static OpCode GetOpCode(byte op)
         {
-            // Map single-byte opcode values to OpCode structs
-            // This covers all single-byte CIL opcodes
+            if (OpCodeMap.TryGetValue(op, out var opCode))
+            {
+                return opCode;
+            }
+            throw new InvalidOperationException($"LinkIL: unknown single-byte opcode 0x{op:X2}");
+        }
+
+        private static OpCode DEAD_GetOpCode(byte op)
+        {
             return op switch
             {
                 0x00 => OpCodes.Nop, 0x01 => OpCodes.Break,
@@ -1048,29 +1004,15 @@ namespace Ngo.Compiler.Emit
             };
         }
 
-        private static OpCode GetFEOpCode(byte op2) => op2 switch
+        private static OpCode GetFEOpCode(byte op2)
         {
-            0x00 => OpCodes.Arglist, 0x01 => OpCodes.Ceq,
-            0x02 => OpCodes.Cgt, 0x03 => OpCodes.Cgt_Un,
-            0x04 => OpCodes.Clt, 0x05 => OpCodes.Clt_Un,
-            0x06 => OpCodes.Ldftn, 0x07 => OpCodes.Ldvirtftn,
-            0x09 => OpCodes.Ldarg, 0x0A => OpCodes.Ldarga, 0x0B => OpCodes.Starg,
-            0x0C => OpCodes.Ldloc, 0x0D => OpCodes.Ldloca, 0x0E => OpCodes.Stloc,
-            0x0F => OpCodes.Localloc,
-            0x11 => OpCodes.Endfilter,
-            0x12 => OpCodes.Unaligned,
-            0x13 => OpCodes.Volatile,
-            0x14 => OpCodes.Tailcall,
-            0x15 => OpCodes.Initobj,
-            0x16 => OpCodes.Constrained,
-            0x17 => OpCodes.Cpblk,
-            0x18 => OpCodes.Initblk,
-            0x1A => OpCodes.Rethrow,
-            0x1C => OpCodes.Sizeof,
-            0x1D => OpCodes.Refanytype,
-            0x1E => OpCodes.Readonly,
-            _ => OpCodes.Nop
-        };
+            short value = (short)(0xFE00 | op2);
+            if (OpCodeMap.TryGetValue(value, out var opCode))
+            {
+                return opCode;
+            }
+            throw new InvalidOperationException($"LinkIL: unknown two-byte opcode 0xFE 0x{op2:X2}");
+        }
 
         // ================================================================
         // Emit helper — same as AssemblyEmitter.EmitPackage but accessible
@@ -1339,7 +1281,74 @@ namespace Ngo.Compiler.Emit
             return entries;
         }
 
-        private static bool HasInlineToken(byte op) => op switch
+        private static bool HasInlineToken(byte op)
+        {
+            if (!OpCodeMap.TryGetValue(op, out var opCode))
+            {
+                return false;
+            }
+            return opCode.OperandType == OperandType.InlineMethod
+                || opCode.OperandType == OperandType.InlineField
+                || opCode.OperandType == OperandType.InlineType
+                || opCode.OperandType == OperandType.InlineString
+                || opCode.OperandType == OperandType.InlineTok
+                || opCode.OperandType == OperandType.InlineSig;
+        }
+
+        private static int GetOperandSize(byte op)
+        {
+            if (!OpCodeMap.TryGetValue(op, out var opCode))
+            {
+                return 0;
+            }
+            return opCode.OperandType switch
+            {
+                OperandType.InlineNone => 0,
+                OperandType.ShortInlineVar => 1,
+                OperandType.ShortInlineI => 1,
+                OperandType.ShortInlineBrTarget => 1,
+                OperandType.InlineVar => 2,
+                OperandType.InlineI => 4,
+                OperandType.InlineBrTarget => 4,
+                OperandType.InlineMethod => 4,
+                OperandType.InlineField => 4,
+                OperandType.InlineType => 4,
+                OperandType.InlineString => 4,
+                OperandType.InlineTok => 4,
+                OperandType.InlineSig => 4,
+                OperandType.ShortInlineR => 4,
+                OperandType.InlineI8 => 8,
+                OperandType.InlineR => 8,
+                OperandType.InlineSwitch => -1,
+                _ => 0
+            };
+        }
+
+        private static int GetFEOperandSize(byte op2)
+        {
+            short value = (short)(0xFE00 | op2);
+            if (!OpCodeMap.TryGetValue(value, out var opCode))
+            {
+                return 0;
+            }
+            return opCode.OperandType switch
+            {
+                OperandType.InlineNone => 0,
+                OperandType.ShortInlineVar => 1,
+                OperandType.ShortInlineI => 1,
+                OperandType.InlineVar => 2,
+                OperandType.InlineI => 4,
+                OperandType.InlineMethod => 4,
+                OperandType.InlineField => 4,
+                OperandType.InlineType => 4,
+                OperandType.InlineTok => 4,
+                _ => 0
+            };
+        }
+
+        // dead code below — old hand-maintained switch, kept until verified safe to delete
+        #pragma warning disable CS0162
+        private static bool DEAD_HasInlineToken(byte op) => op switch
         {
             0x28 => true, // call
             0x29 => true, // calli
@@ -1369,7 +1378,7 @@ namespace Ngo.Compiler.Emit
             _ => false
         };
 
-        private static int GetOperandSize(byte op) => op switch
+        private static int DEAD_GetOperandSize(byte op) => op switch
         {
             // No operand (0 bytes)
             0x00 => 0, 0x01 => 0, // nop, break
@@ -1440,7 +1449,7 @@ namespace Ngo.Compiler.Emit
             _ => 0
         };
 
-        private static int GetFEOperandSize(byte op2) => op2 switch
+        private static int DEAD_GetFEOperandSize(byte op2) => op2 switch
         {
             0x00 => 0, 0x01 => 0, // arglist, ceq
             0x02 => 0, 0x03 => 0, // cgt, cgt.un

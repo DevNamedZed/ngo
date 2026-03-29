@@ -70,7 +70,7 @@ namespace Ngo.Runtime.Internal.Reflectlite
     [GoType("struct", Name = "Value", Package = "internal/reflectlite")]
     public class GoValue
     {
-        private readonly object? _value;
+        private object? _value;
 
         public GoValue() { _value = null; }
 
@@ -156,6 +156,9 @@ namespace Ngo.Runtime.Internal.Reflectlite
         }
 
         [GoMethod]
-        public void Set(GoValue x) { }
+        public void Set(GoValue x)
+        {
+            _value = x._value;
+        }
     }
 }

@@ -223,7 +223,34 @@ namespace Ngo.Runtime.Crypto.Rsa
 
         [GoFunc]
         [return: GoReturn("error")]
-        public static object? DecryptPKCS1v15SessionKey(object? rand, object? priv, Slice<byte> ciphertext, Slice<byte> key) => null;
+        public static object? DecryptPKCS1v15SessionKey(object? rand, object? priv, Slice<byte> ciphertext, Slice<byte> key)
+        {
+            if (priv is GoPrivateKey rsaPriv && rsaPriv._rsaParams.HasValue)
+            {
+                try
+                {
+                    using var rsa = System.Security.Cryptography.RSA.Create();
+                    rsa.ImportParameters(rsaPriv._rsaParams.Value);
+                    var cipherBytes = new byte[ciphertext.Len];
+                    for (int i = 0; i < ciphertext.Len; i++)
+                    {
+                        cipherBytes[i] = ciphertext[i];
+                    }
+                    var decrypted = rsa.Decrypt(cipherBytes, System.Security.Cryptography.RSAEncryptionPadding.Pkcs1);
+                    int copyLen = System.Math.Min(decrypted.Length, key.Len);
+                    for (int i = 0; i < copyLen; i++)
+                    {
+                        key[i] = decrypted[i];
+                    }
+                    return null;
+                }
+                catch (System.Exception ex)
+                {
+                    return ex.Message;
+                }
+            }
+            return "rsa: invalid private key type";
+        }
 
         // PSS salt length constants
         [GoConst]

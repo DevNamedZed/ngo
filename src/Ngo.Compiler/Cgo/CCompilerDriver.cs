@@ -408,7 +408,9 @@ namespace Ngo.Compiler.Cgo
                     }
                 }
             }
-            catch { }
+            catch (System.ComponentModel.Win32Exception)
+            {
+            }
 
             // Fallback: try cl.exe directly (may work if VS developer prompt is active)
             try
@@ -419,7 +421,9 @@ namespace Ngo.Compiler.Cgo
                     return new CCompilerInfo("cl.exe", CCompilerKind.MSVC, "");
                 }
             }
-            catch { }
+            catch (System.ComponentModel.Win32Exception)
+            {
+            }
 
             return null;
         }

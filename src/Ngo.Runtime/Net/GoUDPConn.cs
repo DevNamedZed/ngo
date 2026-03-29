@@ -100,9 +100,46 @@ namespace Ngo.Runtime.Net
             return new GoUDPAddr();
         }
 
-        public string SetDeadline(object t) => null!;
-        public string SetReadDeadline(object t) => null!;
-        public string SetWriteDeadline(object t) => null!;
+        public string SetDeadline(object t)
+        {
+            SetReadDeadline(t);
+            SetWriteDeadline(t);
+            return null!;
+        }
+
+        public string SetReadDeadline(object t)
+        {
+            if (_client?.Client != null)
+            {
+                var timeout = DeadlineToTimeout(t);
+                _client.Client.ReceiveTimeout = timeout;
+            }
+            return null!;
+        }
+
+        public string SetWriteDeadline(object t)
+        {
+            if (_client?.Client != null)
+            {
+                var timeout = DeadlineToTimeout(t);
+                _client.Client.SendTimeout = timeout;
+            }
+            return null!;
+        }
+
+        private static int DeadlineToTimeout(object t)
+        {
+            if (t is Ngo.Runtime.Time.GoTimeValue timeVal)
+            {
+                var duration = timeVal.Sub(Ngo.Runtime.Time.GoTime.Now());
+                if (duration <= 0)
+                {
+                    return 1;
+                }
+                return (int)(duration / 1_000_000); // nanoseconds to milliseconds
+            }
+            return 0; // zero means no timeout
+        }
 
         // PacketConn methods
         [GoMethod]

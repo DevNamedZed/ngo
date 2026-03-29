@@ -96,9 +96,32 @@ namespace Ngo.Runtime.Net
             return new GoUnixAddr();
         }
 
-        public string SetDeadline(object t) => null!;
-        public string SetReadDeadline(object t) => null!;
-        public string SetWriteDeadline(object t) => null!;
+        public string SetDeadline(object t)
+        {
+            SetReadDeadline(t);
+            SetWriteDeadline(t);
+            return null!;
+        }
+
+        public string SetReadDeadline(object t)
+        {
+            if (_socket != null && t is Ngo.Runtime.Time.GoTimeValue timeVal)
+            {
+                var duration = timeVal.Sub(Ngo.Runtime.Time.GoTime.Now());
+                _socket.ReceiveTimeout = duration > 0 ? (int)(duration / 1_000_000) : 1;
+            }
+            return null!;
+        }
+
+        public string SetWriteDeadline(object t)
+        {
+            if (_socket != null && t is Ngo.Runtime.Time.GoTimeValue timeVal)
+            {
+                var duration = timeVal.Sub(Ngo.Runtime.Time.GoTime.Now());
+                _socket.SendTimeout = duration > 0 ? (int)(duration / 1_000_000) : 1;
+            }
+            return null!;
+        }
 
         [GoMethod]
         [return: GoReturn("error")]

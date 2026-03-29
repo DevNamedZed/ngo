@@ -26,13 +26,15 @@ namespace Ngo.Compiler.Emit.Builder
     /// </summary>
     internal sealed class NgoMethodEntry
     {
-        public NgoMethodEntry(string methodName, MethodAttributes attributes, string returnType, string[] paramTypes, int bodyIndex)
+        public NgoMethodEntry(string methodName, MethodAttributes attributes, string returnType,
+            string[] paramTypes, int bodyIndex, string[] genericParamNames)
         {
             MethodName = methodName;
             Attributes = attributes;
             ReturnType = returnType;
             ParamTypes = paramTypes;
             BodyIndex = bodyIndex;
+            GenericParamNames = genericParamNames;
         }
 
         public string MethodName { get; }
@@ -42,6 +44,8 @@ namespace Ngo.Compiler.Emit.Builder
         public string ReturnType { get; }
 
         public string[] ParamTypes { get; }
+
+        public string[] GenericParamNames { get; }
 
         /// <summary>
         /// Index into the IL body table (Section 3), or -1 if the method has no body.

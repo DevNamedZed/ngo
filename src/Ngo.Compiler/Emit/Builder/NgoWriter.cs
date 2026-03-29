@@ -462,6 +462,14 @@ namespace Ngo.Compiler.Emit.Builder
             if (type == typeof(nint)) return "System.IntPtr";
             if (type == typeof(nuint)) return "System.UIntPtr";
 
+            // Generic type parameters — write the name as-is.
+            // The linker resolves these from the method's/type's generic param definitions,
+            // or falls back to System.Object if unresolvable.
+            if (type.IsGenericParameter)
+            {
+                return type.Name;
+            }
+
             if (type.IsArray)
                 return GetTypeName(type.GetElementType()!) + "[]";
 
@@ -486,21 +494,33 @@ namespace Ngo.Compiler.Emit.Builder
         {
             if (method == null)
             {
-                return "?::?";
+                return "?::?()";
             }
             var declaringType = method.DeclaringType;
             var typeName = declaringType != null ? GetTypeName(declaringType) : "?";
-            return typeName + "::" + method.Name;
+            var paramTypes = method.GetParameters();
+            var paramNames = new string[paramTypes.Length];
+            for (int i = 0; i < paramTypes.Length; i++)
+            {
+                paramNames[i] = GetTypeName(paramTypes[i].ParameterType);
+            }
+            return typeName + "::" + method.Name + "(" + string.Join(",", paramNames) + ")";
         }
 
         private static string GetCtorRef(ConstructorInfo ctor)
         {
             if (ctor == null)
             {
-                return "$$null::.ctor";
+                return "$$null::.ctor()";
             }
             var declaringType = ctor.DeclaringType;
-            return GetTypeName(declaringType!) + "::.ctor";
+            var paramTypes = ctor.GetParameters();
+            var paramNames = new string[paramTypes.Length];
+            for (int i = 0; i < paramTypes.Length; i++)
+            {
+                paramNames[i] = GetTypeName(paramTypes[i].ParameterType);
+            }
+            return GetTypeName(declaringType!) + "::.ctor(" + string.Join(",", paramNames) + ")";
         }
 
         private static string GetFieldRef(FieldInfo field)

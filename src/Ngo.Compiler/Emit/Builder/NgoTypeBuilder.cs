@@ -33,6 +33,7 @@ namespace Ngo.Compiler.Emit.Builder
         private readonly List<NgoMethodBuilder> _methods = new();
         private readonly List<NgoMethodOverride> _overrides = new();
         private NgoConstructorBuilder? _constructor;
+        private string[] _genericParamNames = Array.Empty<string>();
 
         public NgoTypeBuilder(string fullName, TypeAttributes attrs, Type? baseType)
         {
@@ -53,6 +54,7 @@ namespace Ngo.Compiler.Emit.Builder
         public IReadOnlyList<NgoMethodBuilder> Methods => _methods;
         public IReadOnlyList<NgoMethodOverride> Overrides => _overrides;
         public NgoConstructorBuilder? Constructor => _constructor;
+        public IReadOnlyList<string> GenericParamNames => _genericParamNames;
 
         public Type AsType() => _proxyType;
 
@@ -90,9 +92,12 @@ namespace Ngo.Compiler.Emit.Builder
 
         public Type[] DefineGenericParameters(string[] names)
         {
+            _genericParamNames = names;
             var result = new Type[names.Length];
             for (int i = 0; i < names.Length; i++)
+            {
                 result[i] = new NgoProxyType(names[i]);
+            }
             return result;
         }
 

@@ -43,7 +43,7 @@ namespace Ngo.Compiler.Emit.Builder
 
         internal void AddMethod(string name, Type returnType, Type[] paramTypes)
         {
-            _definedMethods.Add(new NgoProxyMethodInfo(this, name));
+            _definedMethods.Add(new NgoProxyMethodInfo(this, name, paramTypes, returnType));
         }
 
         internal void AddField(string name, Type fieldType)
@@ -130,17 +130,19 @@ namespace Ngo.Compiler.Emit.Builder
             BindingFlags bindingAttr, Binder? binder, CallingConventions callConvention,
             Type[]? types, ParameterModifier[]? modifiers)
         {
-            return new NgoProxyConstructorInfo(this);
+            return new NgoProxyConstructorInfo(this, types);
         }
     }
 
     internal sealed class NgoProxyConstructorInfo : ConstructorInfo
     {
-        private readonly NgoProxyType _declaringType;
+        private readonly Type _declaringType;
+        private readonly Type[] _parameterTypes;
 
-        public NgoProxyConstructorInfo(NgoProxyType declaringType)
+        public NgoProxyConstructorInfo(Type declaringType, Type[]? parameterTypes = null)
         {
             _declaringType = declaringType;
+            _parameterTypes = parameterTypes ?? System.Type.EmptyTypes;
         }
 
         public override Type? DeclaringType => _declaringType;
@@ -148,7 +150,16 @@ namespace Ngo.Compiler.Emit.Builder
         public override Type? ReflectedType => _declaringType;
         public override MethodAttributes Attributes => MethodAttributes.Public;
         public override RuntimeMethodHandle MethodHandle => throw new NotSupportedException();
-        public override ParameterInfo[] GetParameters() => System.Array.Empty<ParameterInfo>();
+
+        public override ParameterInfo[] GetParameters()
+        {
+            var result = new ParameterInfo[_parameterTypes.Length];
+            for (int i = 0; i < _parameterTypes.Length; i++)
+            {
+                result[i] = new NgoProxyParameterInfo(_parameterTypes[i], i);
+            }
+            return result;
+        }
         public override object Invoke(BindingFlags invokeAttr, Binder? binder, object?[]? parameters, CultureInfo? culture) => throw new NotSupportedException();
         public override object Invoke(object? obj, BindingFlags invokeAttr, Binder? binder, object?[]? parameters, CultureInfo? culture) => throw new NotSupportedException();
         public override MethodImplAttributes GetMethodImplementationFlags() => MethodImplAttributes.IL;

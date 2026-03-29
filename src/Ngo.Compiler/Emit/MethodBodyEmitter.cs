@@ -524,25 +524,47 @@ namespace Ngo.Compiler.Emit
             // Multiple return values → construct ValueTuple
             for (int i = 0; i < ret.Values.Count; i++)
             {
-                EmitExpression(ret.Values[i]);
-
-                // Wrap concrete types into interface types if needed
-                if (i < _currentReturnTypes.Count
-                    && _currentReturnTypes[i] is InterfaceTypeSymbol
-                    && ret.Values[i].Type.TypeKind != TypeKind.Interface
-                    && ret.Values[i].Type.TypeKind != TypeKind.UntypedNil)
+                // Nil literal for value types needs initobj instead of ldnull
+                if (ret.Values[i].Type.TypeKind == TypeKind.UntypedNil
+                    && i < _currentReturnTypes.Count)
                 {
-                    var clrType = _ctx.Mapper.Map(_currentReturnTypes[i]);
-                    EmitInterfaceWrapIfNeeded(ret.Values[i].Type, _currentReturnTypes[i], clrType);
+                    var targetClrType = _ctx.Mapper.Map(_currentReturnTypes[i]);
+                    if (targetClrType.IsValueType)
+                    {
+                        var tempLocal = _ctx.IL.DeclareLocal(targetClrType);
+                        _ctx.IL.Emit(OpCodes.Ldloca, tempLocal);
+                        _ctx.IL.Emit(OpCodes.Initobj, targetClrType);
+                        _ctx.IL.Emit(OpCodes.Ldloc, tempLocal);
+                    }
+                    else
+                    {
+                        _ctx.IL.Emit(OpCodes.Ldnull);
+                    }
+                }
+                else
+                {
+                    EmitExpression(ret.Values[i]);
+
+                    // Wrap concrete types into interface types if needed
+                    if (i < _currentReturnTypes.Count
+                        && _currentReturnTypes[i] is InterfaceTypeSymbol
+                        && ret.Values[i].Type.TypeKind != TypeKind.Interface
+                        && ret.Values[i].Type.TypeKind != TypeKind.UntypedNil)
+                    {
+                        var clrType = _ctx.Mapper.Map(_currentReturnTypes[i]);
+                        EmitInterfaceWrapIfNeeded(ret.Values[i].Type, _currentReturnTypes[i], clrType);
+                    }
                 }
             }
 
             var tupleTypes = new Type[ret.Values.Count];
             for (int i = 0; i < ret.Values.Count; i++)
             {
-                // Use declared return type for interfaces to get the correct tuple type
+                // Use declared return type when the value type doesn't match
+                // (nil literals, interface types, untyped constants)
                 if (i < _currentReturnTypes.Count
-                    && _currentReturnTypes[i] is InterfaceTypeSymbol)
+                    && (ret.Values[i].Type.TypeKind == TypeKind.UntypedNil
+                        || _currentReturnTypes[i] is InterfaceTypeSymbol))
                 {
                     tupleTypes[i] = _ctx.Mapper.Map(_currentReturnTypes[i]);
                 }
@@ -682,6 +704,25 @@ namespace Ngo.Compiler.Emit
                     EmitExpression(decl.Initializer);
                     EmitInterfaceWrapIfNeeded(decl.Initializer.Type, decl.Symbol.Type, clrType);
                     _ctx.IL.Emit(OpCodes.Stloc, local);
+                }
+                else if (decl.Symbol.Type is ArrayTypeSymbol arrayDecl)
+                {
+                    // Go arrays are zero-initialized: var buf [5]byte → new byte[5]
+                    var elemClrType = _ctx.Mapper.Map(arrayDecl.ElementType);
+                    _ctx.IL.Emit(OpCodes.Ldc_I4, arrayDecl.Length);
+                    _ctx.IL.Emit(OpCodes.Newarr, elemClrType);
+                    _ctx.IL.Emit(OpCodes.Stloc, local);
+                }
+                else if (decl.Symbol.Type is SliceTypeSymbol sliceDecl)
+                {
+                    // Go slices are nil by default — create empty Slice<T>
+                    var sliceClrType = _ctx.Mapper.Map(sliceDecl);
+                    _ctx.IL.Emit(OpCodes.Ldloca, local);
+                    _ctx.IL.Emit(OpCodes.Initobj, sliceClrType);
+                }
+                else if (decl.Symbol.Type is MapTypeSymbol)
+                {
+                    // Go maps are nil by default — leave as null (Map<K,V> is a reference type)
                 }
                 else if (decl.Symbol.Type.TypeKind == TypeKind.Struct && !clrType.IsValueType)
                 {
@@ -1031,6 +1072,7 @@ namespace Ngo.Compiler.Emit
                     // Get ref to element
                     EmitExpressionAddress(idx.Target, sliceClrType);
                     EmitExpression(idx.Index);
+                    _ctx.IL.Emit(OpCodes.Conv_I4);
                     var indexerGetter = EmitContext.GetPropertyGetterSafe(sliceClrType, "Item");
                     _ctx.IL.Emit(OpCodes.Call, indexerGetter);
 
@@ -1908,7 +1950,31 @@ namespace Ngo.Compiler.Emit
             }
 
             EmitExpression(bin.Left);
+            var leftClrType = _ctx.Mapper.Map(bin.Left.Type);
             EmitExpression(bin.Right);
+            var rightClrType = _ctx.Mapper.Map(bin.Right.Type);
+
+            // Widen operands to match if they have different CLR sizes.
+            // Go promotes untyped constants to the type of the other operand.
+            if (leftClrType != rightClrType && leftClrType.IsPrimitive && rightClrType.IsPrimitive)
+            {
+                int leftSize = System.Runtime.InteropServices.Marshal.SizeOf(leftClrType);
+                int rightSize = System.Runtime.InteropServices.Marshal.SizeOf(rightClrType);
+                if (leftSize < rightSize)
+                {
+                    // Left is smaller — need to widen it, but it's already emitted below right on stack.
+                    // Swap via temp local: store right, convert left, reload right.
+                    var tempRight = _ctx.IL.DeclareLocal(rightClrType);
+                    _ctx.IL.Emit(OpCodes.Stloc, tempRight);
+                    EmitConvOpcode(bin.Right.Type.TypeKind);
+                    _ctx.IL.Emit(OpCodes.Ldloc, tempRight);
+                }
+                else if (rightSize < leftSize)
+                {
+                    // Right is smaller — widen it (it's on top of stack)
+                    EmitConvOpcode(bin.Left.Type.TypeKind);
+                }
+            }
 
             var isUnsigned = IsUnsignedType(bin.Left.Type);
 
@@ -1926,8 +1992,12 @@ namespace Ngo.Compiler.Emit
                 case BinaryOperator.BitwiseAnd: _ctx.IL.Emit(OpCodes.And); break;
                 case BinaryOperator.BitwiseOr: _ctx.IL.Emit(OpCodes.Or); break;
                 case BinaryOperator.BitwiseXor: _ctx.IL.Emit(OpCodes.Xor); break;
-                case BinaryOperator.ShiftLeft: _ctx.IL.Emit(OpCodes.Shl); break;
+                case BinaryOperator.ShiftLeft:
+                    _ctx.IL.Emit(OpCodes.Conv_I4);
+                    _ctx.IL.Emit(OpCodes.Shl);
+                    break;
                 case BinaryOperator.ShiftRight:
+                    _ctx.IL.Emit(OpCodes.Conv_I4);
                     _ctx.IL.Emit(isUnsigned ? OpCodes.Shr_Un : OpCodes.Shr);
                     break;
                 case BinaryOperator.AndNot:
@@ -2520,8 +2590,6 @@ namespace Ngo.Compiler.Emit
         {
             if (_ctx.StructFields.TryGetValue(sel.Field, out var fb))
             {
-                // For struct fields, load the struct value then access the field.
-                // Use EmitExpression (not EmitAddressForStore) for read access.
                 EmitExpression(sel.Target);
                 _ctx.IL.Emit(OpCodes.Ldfld, fb.AsFieldInfo());
                 return;
@@ -3015,7 +3083,14 @@ namespace Ngo.Compiler.Emit
                     {
                         var valClrType = _ctx.Mapper.Map(elements[i].Value.Type);
                         if (valClrType.IsValueType && !elemClrType.IsValueType)
+                        {
                             _ctx.IL.Emit(OpCodes.Box, valClrType);
+                        }
+                        else if (valClrType != elemClrType && valClrType.IsPrimitive && elemClrType.IsPrimitive)
+                        {
+                            // Convert literal value to match element type (e.g. int64 → uint16 for []uint16{...})
+                            EmitConvOpcode(sliceType.ElementType.TypeKind);
+                        }
                     }
                     EmitStelem(elemClrType);
                 }
@@ -3050,6 +3125,11 @@ namespace Ngo.Compiler.Emit
                         _ctx.IL.Emit(OpCodes.Ldc_I4, i);
                     }
                     EmitExpression(elements[i].Value);
+                    var arrValClrType = _ctx.Mapper.Map(elements[i].Value.Type);
+                    if (arrValClrType != elemClrType && arrValClrType.IsPrimitive && elemClrType.IsPrimitive)
+                    {
+                        EmitConvOpcode(arrayType.ElementType.TypeKind);
+                    }
                     EmitStelem(elemClrType);
                 }
             }
@@ -3135,6 +3215,7 @@ namespace Ngo.Compiler.Emit
                 var sliceClrType = _ctx.Mapper.Map(sliceSymbol);
                 EmitExpressionAddress(idx.Target, sliceClrType);
                 EmitExpression(idx.Index);
+                _ctx.IL.Emit(OpCodes.Conv_I4);
                 var indexerGetter = EmitContext.GetPropertyGetterSafe(sliceClrType, "Item");
                 _ctx.IL.Emit(OpCodes.Call, indexerGetter);
                 // Slice<T> indexer returns ref T, load the value
@@ -3171,9 +3252,20 @@ namespace Ngo.Compiler.Emit
                 // String byte indexing via GoString.ByteAt
                 EmitExpression(idx.Target);
                 EmitExpression(idx.Index);
-                EmitLdconv(null);
+                EmitLdconv(idx.Index.Type);
                 var byteAt = typeof(GoString).GetMethod("ByteAt")!;
                 _ctx.IL.Emit(OpCodes.Call, byteAt);
+            }
+            else if (resolvedTarget is Symbols.TypeParameterSymbol || targetType is Symbols.TypeParameterSymbol)
+            {
+                // Type parameter with constraint — treat as slice (most common case: ~[]E)
+                // Map to Slice<object> and use the indexer
+                var sliceClrType = typeof(Slice<object>);
+                EmitExpressionAddress(idx.Target, sliceClrType);
+                EmitExpression(idx.Index);
+                var indexerGetter = EmitContext.GetPropertyGetterSafe(sliceClrType, "Item");
+                _ctx.IL.Emit(OpCodes.Call, indexerGetter);
+                _ctx.IL.Emit(OpCodes.Ldobj, typeof(object));
             }
             else
             {
@@ -3192,11 +3284,14 @@ namespace Ngo.Compiler.Emit
                 EmitExpressionAddress(slice.Operand, sliceClrType);
 
                 EmitExpression(slice.Low ?? MakeIntLiteral(0));
+                _ctx.IL.Emit(OpCodes.Conv_I4);
                 EmitExpression(slice.High ?? MakeIntLiteral(-1)); // sentinel for len
+                _ctx.IL.Emit(OpCodes.Conv_I4);
 
                 if (slice.Max != null)
                 {
                     EmitExpression(slice.Max);
+                    _ctx.IL.Emit(OpCodes.Conv_I4);
                     var reslice3 = EmitContext.GetMethodSafe(sliceClrType, "Reslice", new[] { typeof(int), typeof(int), typeof(int) });
                     _ctx.IL.Emit(OpCodes.Call, reslice3);
                 }
@@ -3224,10 +3319,12 @@ namespace Ngo.Compiler.Emit
                     // array[low:high] — sub-slice
                     var low = slice.Low ?? MakeIntLiteral(0);
                     EmitExpression(low);
+                    _ctx.IL.Emit(OpCodes.Conv_I4);
                     // Compute length = high - low (or arrayLen - low)
                     if (slice.High != null)
                     {
                         EmitExpression(slice.High);
+                        _ctx.IL.Emit(OpCodes.Conv_I4);
                     }
                     else
                     {
@@ -3251,7 +3348,9 @@ namespace Ngo.Compiler.Emit
             {
                 EmitExpression(slice.Operand);
                 EmitExpression(slice.Low ?? MakeIntLiteral(0));
+                _ctx.IL.Emit(OpCodes.Conv_I4);
                 EmitExpression(slice.High ?? MakeIntLiteral(-1));
+                _ctx.IL.Emit(OpCodes.Conv_I4);
                 var sliceStr = typeof(GoString).GetMethod("SliceString")!;
                 _ctx.IL.Emit(OpCodes.Call, sliceStr);
             }
@@ -3275,6 +3374,34 @@ namespace Ngo.Compiler.Emit
                 {
                     _ctx.IL.Emit(OpCodes.Ldnull);
                 }
+            }
+            else if (resolvedTarget is Symbols.TypeParameterSymbol || targetType is Symbols.TypeParameterSymbol)
+            {
+                // Type parameter with slice constraint — emit as Slice<object> slicing
+                var sliceClrType = typeof(Slice<object>);
+                EmitExpressionAddress(slice.Operand, sliceClrType);
+                if (slice.Low != null)
+                {
+                    EmitExpression(slice.Low);
+                }
+                else
+                {
+                    _ctx.IL.Emit(OpCodes.Ldc_I4_0);
+                }
+                _ctx.IL.Emit(OpCodes.Conv_I4);
+                if (slice.High != null)
+                {
+                    EmitExpression(slice.High);
+                }
+                else
+                {
+                    _ctx.IL.Emit(OpCodes.Ldarg_0);
+                    var lenProp = EmitContext.GetPropertyGetterSafe(sliceClrType, "Len");
+                    _ctx.IL.Emit(OpCodes.Call, lenProp);
+                }
+                _ctx.IL.Emit(OpCodes.Conv_I4);
+                var sliceMethod = EmitContext.GetMethodSafe(sliceClrType, "SliceRange");
+                _ctx.IL.Emit(OpCodes.Call, sliceMethod);
             }
             else
             {
@@ -3352,6 +3479,7 @@ namespace Ngo.Compiler.Emit
                 var sliceClrType = _ctx.Mapper.Map(targetType);
                 EmitExpressionAddress(idx.Target, sliceClrType);
                 EmitExpression(idx.Index);
+                _ctx.IL.Emit(OpCodes.Conv_I4);
                 var indexerGetter = EmitContext.GetPropertyGetterSafe(sliceClrType, "Item");
                 _ctx.IL.Emit(OpCodes.Call, indexerGetter);
                 // Get ref, then store into it
@@ -3401,6 +3529,7 @@ namespace Ngo.Compiler.Emit
                 var sliceClrType = _ctx.Mapper.Map(targetType);
                 EmitExpressionAddress(idx.Target, sliceClrType);
                 EmitExpression(idx.Index);
+                _ctx.IL.Emit(OpCodes.Conv_I4);
                 var indexerGetter = EmitContext.GetPropertyGetterSafe(sliceClrType, "Item");
                 _ctx.IL.Emit(OpCodes.Call, indexerGetter);
                 _ctx.IL.Emit(OpCodes.Ldloc, tempVal);
@@ -3470,17 +3599,36 @@ namespace Ngo.Compiler.Emit
                     }
                 }
 
-                EmitExpression(arg);
-
-                // Check if argument needs interface wrapping
-                if (i < call.Function.Parameters.Count)
+                // Nil literal for value type parameters needs initobj instead of ldnull
+                if (arg.Type.TypeKind == TypeKind.UntypedNil && i < call.Function.Parameters.Count)
                 {
-                    var paramType = call.Function.Parameters[i].Type;
-                    var argType = arg.Type;
-                    if (paramType is InterfaceTypeSymbol && argType.TypeKind != TypeKind.Interface)
+                    var paramClrType = _ctx.Mapper.Map(call.Function.Parameters[i].Type);
+                    if (paramClrType.IsValueType)
                     {
-                        var targetClrType = _ctx.Mapper.Map(paramType);
-                        EmitInterfaceWrapIfNeeded(argType, paramType, targetClrType);
+                        var tempLocal = _ctx.IL.DeclareLocal(paramClrType);
+                        _ctx.IL.Emit(OpCodes.Ldloca, tempLocal);
+                        _ctx.IL.Emit(OpCodes.Initobj, paramClrType);
+                        _ctx.IL.Emit(OpCodes.Ldloc, tempLocal);
+                    }
+                    else
+                    {
+                        EmitExpression(arg);
+                    }
+                }
+                else
+                {
+                    EmitExpression(arg);
+
+                    // Check if argument needs interface wrapping
+                    if (i < call.Function.Parameters.Count)
+                    {
+                        var paramType = call.Function.Parameters[i].Type;
+                        var argType = arg.Type;
+                        if (paramType is InterfaceTypeSymbol && argType.TypeKind != TypeKind.Interface)
+                        {
+                            var targetClrType = _ctx.Mapper.Map(paramType);
+                            EmitInterfaceWrapIfNeeded(argType, paramType, targetClrType);
+                        }
                     }
                 }
             }
@@ -3753,9 +3901,12 @@ namespace Ngo.Compiler.Emit
                 case TypeKind.Int:
                 case TypeKind.Int64:
                 case TypeKind.UntypedInt:
+                case TypeKind.Uint:
+                case TypeKind.Uint64:
                     _ctx.IL.Emit(OpCodes.Ldc_I8, (long)value);
                     break;
                 case TypeKind.Int32:
+                case TypeKind.Uint32:
                     _ctx.IL.Emit(OpCodes.Ldc_I4, value);
                     break;
                 default:
@@ -3781,7 +3932,8 @@ namespace Ngo.Compiler.Emit
                 case TypeKind.Int16: _ctx.IL.Emit(OpCodes.Conv_I2); break;
                 case TypeKind.Int32: _ctx.IL.Emit(OpCodes.Conv_I4); break;
                 case TypeKind.Int:
-                case TypeKind.Int64: _ctx.IL.Emit(OpCodes.Conv_I8); break;
+                case TypeKind.Int64:
+                case TypeKind.UntypedInt: _ctx.IL.Emit(OpCodes.Conv_I8); break;
                 case TypeKind.Uint8: _ctx.IL.Emit(OpCodes.Conv_U1); break;
                 case TypeKind.Uint16: _ctx.IL.Emit(OpCodes.Conv_U2); break;
                 case TypeKind.Uint32: _ctx.IL.Emit(OpCodes.Conv_U4); break;
@@ -3895,33 +4047,40 @@ namespace Ngo.Compiler.Emit
 
         internal void EmitStelem(Type elemType)
         {
-            if (elemType == typeof(int)) _ctx.IL.Emit(OpCodes.Stelem_I4);
-            else if (elemType == typeof(long)) _ctx.IL.Emit(OpCodes.Stelem_I8);
+            if (elemType == typeof(int) || elemType == typeof(uint)) _ctx.IL.Emit(OpCodes.Stelem_I4);
+            else if (elemType == typeof(long) || elemType == typeof(ulong)) _ctx.IL.Emit(OpCodes.Stelem_I8);
             else if (elemType == typeof(float)) _ctx.IL.Emit(OpCodes.Stelem_R4);
             else if (elemType == typeof(double)) _ctx.IL.Emit(OpCodes.Stelem_R8);
-            else if (elemType == typeof(byte)) _ctx.IL.Emit(OpCodes.Stelem_I1);
-            else if (elemType == typeof(short)) _ctx.IL.Emit(OpCodes.Stelem_I2);
+            else if (elemType == typeof(byte) || elemType == typeof(sbyte)) _ctx.IL.Emit(OpCodes.Stelem_I1);
+            else if (elemType == typeof(short) || elemType == typeof(ushort)) _ctx.IL.Emit(OpCodes.Stelem_I2);
             else if (!elemType.IsValueType) _ctx.IL.Emit(OpCodes.Stelem_Ref);
             else _ctx.IL.Emit(OpCodes.Stelem, elemType);
         }
 
         private void EmitLdelem(Type elemType)
         {
-            if (elemType == typeof(int)) _ctx.IL.Emit(OpCodes.Ldelem_I4);
-            else if (elemType == typeof(long)) _ctx.IL.Emit(OpCodes.Ldelem_I8);
+            if (elemType == typeof(int) || elemType == typeof(uint)) _ctx.IL.Emit(OpCodes.Ldelem_I4);
+            else if (elemType == typeof(long) || elemType == typeof(ulong)) _ctx.IL.Emit(OpCodes.Ldelem_I8);
             else if (elemType == typeof(float)) _ctx.IL.Emit(OpCodes.Ldelem_R4);
             else if (elemType == typeof(double)) _ctx.IL.Emit(OpCodes.Ldelem_R8);
-            else if (elemType == typeof(byte)) _ctx.IL.Emit(OpCodes.Ldelem_U1);
-            else if (elemType == typeof(short)) _ctx.IL.Emit(OpCodes.Ldelem_I2);
+            else if (elemType == typeof(byte) || elemType == typeof(sbyte)) _ctx.IL.Emit(OpCodes.Ldelem_U1);
+            else if (elemType == typeof(short) || elemType == typeof(ushort)) _ctx.IL.Emit(OpCodes.Ldelem_I2);
             else if (!elemType.IsValueType) _ctx.IL.Emit(OpCodes.Ldelem_Ref);
             else _ctx.IL.Emit(OpCodes.Ldelem, elemType);
         }
 
         private void EmitLdconv(TypeSymbol? type)
         {
-            // Convert int64 index to int32 for array/string indexing
-            if (type != null && (type.TypeKind == TypeKind.Int || type.TypeKind == TypeKind.UntypedInt
-                || type.TypeKind == TypeKind.Int64))
+            if (type == null)
+            {
+                return;
+            }
+
+            // Convert 64-bit index types to int32 for array/string indexing
+            var kind = type.TypeKind;
+            if (kind == TypeKind.Int || kind == TypeKind.UntypedInt
+                || kind == TypeKind.Int64 || kind == TypeKind.Uint
+                || kind == TypeKind.Uint64 || kind == TypeKind.Uintptr)
             {
                 _ctx.IL.Emit(OpCodes.Conv_I4);
             }
@@ -3959,7 +4118,8 @@ namespace Ngo.Compiler.Emit
             {
                 var typeBuilder = _ctx.Module.DefineType(
                     ifaceType.Name,
-                    TypeAttributes.Public | TypeAttributes.Interface | TypeAttributes.Abstract);
+                    TypeAttributes.Public | TypeAttributes.Interface | TypeAttributes.Abstract,
+                    null!, Type.EmptyTypes);
 
                 foreach (var method in ifaceType.Methods)
                 {

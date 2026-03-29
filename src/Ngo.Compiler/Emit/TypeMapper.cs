@@ -64,6 +64,7 @@ namespace Ngo.Compiler.Emit
         {
             if (symbol == null)
             {
+                _compilationContext.Log.Debug("TypeMapper: null symbol mapped to object");
                 return typeof(object);
             }
             if (_typeCache.TryGetValue(symbol, out var cached))
@@ -80,7 +81,12 @@ namespace Ngo.Compiler.Emit
 
             try
             {
-                var result = MapCore(symbol) ?? typeof(object);
+                var result = MapCore(symbol);
+                if (result == null)
+                {
+                    _compilationContext.Log.Debug($"TypeMapper: unmapped type '{symbol.Name}' (kind={symbol.TypeKind}) fell back to object");
+                    result = typeof(object);
+                }
                 _typeCache[symbol] = result;
                 return result;
             }
@@ -97,8 +103,15 @@ namespace Ngo.Compiler.Emit
             {
                 var genericType = Map(inst.GenericType);
                 if (!genericType.IsGenericTypeDefinition)
+                {
+                    if (_emitContext?.IsDependencyEmit == true)
+                    {
+                        _compilationContext.Log.Debug($"TypeMapper: '{inst.GenericType.Name}' is not generic, using as-is in dependency emit");
+                        return genericType;
+                    }
                     throw new InvalidOperationException(
                         $"Cannot instantiate '{inst.GenericType.Name}' (mapped to {genericType}) — it is not a generic type definition.");
+                }
 
                 var typeArgs = new Type[inst.TypeArguments.Count];
                 for (int i = 0; i < inst.TypeArguments.Count; i++)
@@ -321,7 +334,7 @@ namespace Ngo.Compiler.Emit
                         }
                         catch (ArgumentException)
                         {
-                            // Type already exists in module — find and reuse it
+                            _compilationContext.Log.Debug($"TypeMapper: struct type collision for '{qualifiedName2}', mapped to object");
                             _typeCache[symbol] = typeof(object);
                             return typeof(object);
                         }
@@ -372,6 +385,12 @@ namespace Ngo.Compiler.Emit
                         }
                     }
 
+                    // The 'error' interface maps to object (errors are strings in ngo)
+                    if (ifaceType.Name == "error")
+                    {
+                        return typeof(object);
+                    }
+
                     // Anonymous or unresolved Go interface with methods:
                     // generate a .NET interface type so wrapper types can implement it.
                     if (ifaceType.Methods.Count > 0 && _emitContext != null)
@@ -383,7 +402,9 @@ namespace Ngo.Compiler.Emit
                             _emitContext.QualifyName(ifaceName),
                             System.Reflection.TypeAttributes.Public
                             | System.Reflection.TypeAttributes.Interface
-                            | System.Reflection.TypeAttributes.Abstract);
+                            | System.Reflection.TypeAttributes.Abstract,
+                            null!, // interfaces have no base type
+                            System.Type.EmptyTypes);
                         foreach (var method in ifaceType.Methods)
                         {
                             var paramTypes = new Type[method.Parameters.Count];
@@ -421,7 +442,12 @@ namespace Ngo.Compiler.Emit
                     return typeof(object);
 
                 case TypeKind.TypeParameter:
-                    // Must have been registered via DefineGenericParameters
+                    // In dependency emit, unresolved type params map to object
+                    if (_emitContext?.IsDependencyEmit == true)
+                    {
+                        _compilationContext.Log.Debug($"TypeMapper: unresolved type param '{symbol.Name}' mapped to object in dependency emit");
+                        return typeof(object);
+                    }
                     throw new InvalidOperationException(
                         $"Type parameter '{symbol.Name}' was not registered. " +
                         "Generic type parameters must be registered before use.");

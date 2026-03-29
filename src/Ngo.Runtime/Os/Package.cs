@@ -753,8 +753,7 @@ namespace Ngo.Runtime.Os
         [return: GoReturn("*File", "*File", "error")]
         public static (GoFile, GoFile, object?) Pipe()
         {
-            // Stub: .NET doesn't have anonymous pipe as FileStream easily
-            // Return a pair of in-memory streams for basic compatibility
+            // Uses .NET AnonymousPipeStream for pipe pair
             var pipeIn = new System.IO.Pipes.AnonymousPipeServerStream(System.IO.Pipes.PipeDirection.Out);
             var pipeOut = new System.IO.Pipes.AnonymousPipeClientStream(System.IO.Pipes.PipeDirection.In, pipeIn.ClientSafePipeHandle);
             return (new GoFile(pipeOut, "|0"), new GoFile(pipeIn, "|1"), null);

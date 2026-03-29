@@ -28,13 +28,20 @@ namespace Ngo.Runtime.Os
     {
         private readonly int _exitCode;
         private readonly bool _exited;
+        private readonly int _pid;
+        private readonly System.TimeSpan _userTime;
+        private readonly System.TimeSpan _systemTime;
 
         public static readonly GoProcessState Empty = new GoProcessState(0, false);
 
-        public GoProcessState(int exitCode, bool exited)
+        public GoProcessState(int exitCode, bool exited, int pid = 0,
+            System.TimeSpan userTime = default, System.TimeSpan systemTime = default)
         {
             _exitCode = exitCode;
             _exited = exited;
+            _pid = pid;
+            _userTime = userTime;
+            _systemTime = systemTime;
         }
 
         [GoMethod]
@@ -42,22 +49,36 @@ namespace Ngo.Runtime.Os
         [GoMethod]
         public bool Exited() => _exited;
         [GoMethod]
-        public long Pid() => 0;
+        public long Pid() => _pid;
         [GoMethod]
         public string String() => _exited ? $"exit status {_exitCode}" : "running";
         [GoMethod]
         public bool Success() => _exitCode == 0;
         [GoMethod]
         [return: GoReturn("interface{}")]
-        public object? Sys() => null;
+        public object? Sys()
+        {
+            var waitStatus = new Syscall.GoWaitStatus();
+            if (_exited)
+            {
+                waitStatus.Value = (_exitCode & 0xff) << 8; // WEXITSTATUS encoding
+            }
+            return waitStatus;
+        }
         [GoMethod]
         [return: GoReturn("interface{}")]
-        public object? SysUsage() => null;
+        public object? SysUsage()
+        {
+            var rusage = new Syscall.GoRusage();
+            rusage.Utime = new Syscall.GoTimeval { Sec = _userTime.Ticks / System.TimeSpan.TicksPerSecond, Usec = (_userTime.Ticks % System.TimeSpan.TicksPerSecond) / 10 };
+            rusage.Stime = new Syscall.GoTimeval { Sec = _systemTime.Ticks / System.TimeSpan.TicksPerSecond, Usec = (_systemTime.Ticks % System.TimeSpan.TicksPerSecond) / 10 };
+            return rusage;
+        }
         [GoMethod]
-        [return: GoReturn("interface{}")]
-        public object? SystemTime() => null;
+        [return: GoReturn("time.Duration")]
+        public object? SystemTime() => _systemTime.Ticks * 100; // nanoseconds
         [GoMethod]
-        [return: GoReturn("interface{}")]
-        public object? UserTime() => null;
+        [return: GoReturn("time.Duration")]
+        public object? UserTime() => _userTime.Ticks * 100; // nanoseconds
     }
 }

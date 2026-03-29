@@ -19,30 +19,29 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using Ngo.Compiler.Symbols;
 
 namespace Ngo.Compiler.Emit
 {
     /// <summary>
-    /// Binary archive format for compiled Go packages.
-    /// Contains Go metadata (for type checking) and IL (for linking).
+    /// ZIP-based archive format for compiled Go packages.
     ///
-    /// Format:
-    ///   Header: magic(4) + version(2) + goMetaOffset(4) + goMetaLen(4)
-    ///           + ilMetaOffset(4) + ilMetaLen(4) + ilCodeOffset(4) + ilCodeLen(4)
-    ///   Section 1: Go metadata (PackageSymbol serialized with BinaryWriter)
-    ///   Section 2: IL metadata (type/method definitions) — reserved
-    ///   Section 3: IL bytecode (raw MSIL + token tables) — reserved
+    /// Layout:
+    ///   go-metadata.bin    — Go-level type info (PackageSymbol) for semantic analysis
+    ///   il-metadata.bin    — CLR type/method/field definitions for linking
+    ///   il-code.bin        — Raw MSIL bytecode + token tables
+    ///   native/            — CGo static libraries + probe.json (optional)
+    ///   checksums.txt      — SHA256 of source files for cache invalidation
     /// </summary>
     public static class NgoArchive
     {
-        private static readonly byte[] Magic = { (byte)'N', (byte)'G', (byte)'O', 0 };
-        private const int MagicSize = 4;
-        private const int VersionSize = 2;
-        private const int SectionEntrySize = 4 + 4; // offset(uint32) + length(uint32)
-        private const int SectionCount = 4; // Go metadata, IL metadata, IL bytecode, CGo native lib
-        private const int HeaderSize = MagicSize + VersionSize + (SectionEntrySize * SectionCount);
-        internal const ushort CurrentVersion = 5;
+        internal const string GoMetadataEntry = "go-metadata.bin";
+        internal const string ILMetadataEntry = "il-metadata.bin";
+        internal const string ILCodeEntry = "il-code.bin";
+        internal const string ChecksumsEntry = "checksums.txt";
+        internal const string NativeDir = "native/";
+        internal const string ProbeEntry = "native/probe.json";
 
         /// <summary>
         /// Gets the archive path for a package in the cache directory.
@@ -75,8 +74,6 @@ namespace Ngo.Compiler.Emit
 
         /// <summary>
         /// Gets the global .ngo package cache directory (~/.ngo/cache/pkg/).
-        /// Per the design doc, this is a process-wide cache — not per-project.
-        /// This ensures cross-module dependencies are only analyzed once.
         /// </summary>
         public static string GetCacheDir(string projectRoot)
         {
@@ -85,162 +82,170 @@ namespace Ngo.Compiler.Emit
         }
 
         /// <summary>
-        /// Writes a .ngo archive containing Go metadata for a package.
-        /// IL sections are written by ILSerializer separately.
+        /// Writes a .ngo ZIP archive containing Go metadata for a package.
+        /// IL entries are added by ILSerializer.WriteArchive separately.
         /// </summary>
         public static void Write(string path, PackageSymbol pkg, string importPath)
         {
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
             using var stream = new FileStream(path, FileMode.Create, FileAccess.Write);
-            using var writer = new BinaryWriter(stream);
+            using var zip = new ZipArchive(stream, ZipArchiveMode.Create);
 
-            // Write placeholder header — we'll seek back to fill offsets
-            var headerPos = stream.Position;
-            writer.Write(Magic);
-            writer.Write(CurrentVersion);
-            // Placeholder offsets (8 uint32s = 4 sections * 2)
-            for (int i = 0; i < SectionCount * 2; i++)
-            {
-                writer.Write((uint)0);
-            }
-
-            // Section 1: Go metadata
-            var goMetaOffset = (uint)stream.Position;
-            WriteGoMetadata(writer, pkg, importPath);
-            var goMetaLen = (uint)(stream.Position - goMetaOffset);
-
-            // Section 2: IL metadata (reserved — filled by ILSerializer)
-            var ilMetaOffset = (uint)stream.Position;
-            uint ilMetaLen = 0;
-
-            // Section 3: IL bytecode (reserved — filled by ILSerializer)
-            var ilCodeOffset = (uint)stream.Position;
-            uint ilCodeLen = 0;
-
-            // Section 4: CGo native library metadata (empty for non-CGo packages)
-            var cgoOffset = (uint)stream.Position;
-            uint cgoLen = 0;
-
-            // Seek back and write real header
-            stream.Seek(headerPos + MagicSize + VersionSize, SeekOrigin.Begin);
-            writer.Write(goMetaOffset);
-            writer.Write(goMetaLen);
-            writer.Write(ilMetaOffset);
-            writer.Write(ilMetaLen);
-            writer.Write(ilCodeOffset);
-            writer.Write(ilCodeLen);
-            writer.Write(cgoOffset);
-            writer.Write(cgoLen);
+            WriteGoMetadataToZip(zip, pkg, importPath);
         }
 
         /// <summary>
-        /// Reads only the Go metadata section from a .ngo archive.
+        /// Writes a complete .ngo ZIP archive with Go metadata + IL.
+        /// Called by ILSerializer.WriteArchive.
+        /// </summary>
+        public static void WriteComplete(string path, PackageSymbol pkg, string importPath,
+            byte[] ilMetadata, byte[] ilCode)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+
+            using var stream = new FileStream(path, FileMode.Create, FileAccess.Write);
+            using var zip = new ZipArchive(stream, ZipArchiveMode.Create);
+
+            WriteGoMetadataToZip(zip, pkg, importPath);
+
+            var ilMetaEntry = zip.CreateEntry(ILMetadataEntry, CompressionLevel.Fastest);
+            using (var entryStream = ilMetaEntry.Open())
+            {
+                entryStream.Write(ilMetadata, 0, ilMetadata.Length);
+            }
+
+            var ilCodeEntry = zip.CreateEntry(ILCodeEntry, CompressionLevel.Fastest);
+            using (var entryStream = ilCodeEntry.Open())
+            {
+                entryStream.Write(ilCode, 0, ilCode.Length);
+            }
+        }
+
+        /// <summary>
+        /// Reads only the Go metadata from a .ngo archive.
         /// Returns a PackageSymbol for type checking, without loading IL.
         /// </summary>
         public static PackageSymbol? ReadGoMetadata(string path,
             Func<string, string, TypeSymbol?>? crossPkgResolver = null)
         {
-            var savedArchivePath = _currentArchivePath;
-            _currentArchivePath = path;
             if (!File.Exists(path))
             {
-                _currentArchivePath = savedArchivePath;
                 return null;
-            }
-
-            // Try v2 (ZIP) format first
-            if (NgoArchiveV2.IsV2Archive(path))
-            {
-                var v2result = NgoArchiveV2.ReadMetadata(path, crossPkgResolver);
-                _currentArchivePath = savedArchivePath;
-                return v2result;
             }
 
             try
             {
                 using var stream = new FileStream(path, FileMode.Open, FileAccess.Read);
-                using var reader = new BinaryReader(stream);
+                using var zip = new ZipArchive(stream, ZipArchiveMode.Read);
 
-                // Validate v1 header
-                var magic = reader.ReadBytes(4);
-                if (magic.Length < 4 || magic[0] != 'N' || magic[1] != 'G' || magic[2] != 'O' || magic[3] != 0)
-                    return null;
-
-                var version = reader.ReadUInt16();
-                if (version != CurrentVersion)
+                var entry = zip.GetEntry(GoMetadataEntry);
+                if (entry == null)
                 {
                     return null;
                 }
 
-                var goMetaOffset = reader.ReadUInt32();
-                var goMetaLen = reader.ReadUInt32();
-                reader.ReadUInt32(); reader.ReadUInt32(); // ilMeta
-                reader.ReadUInt32(); reader.ReadUInt32(); // ilCode
-                reader.ReadUInt32(); reader.ReadUInt32(); // cgo
-
-                if (goMetaLen == 0)
-                    return null;
-
-                stream.Seek(goMetaOffset, SeekOrigin.Begin);
-                var result = ReadGoMetadataSection(reader, crossPkgResolver);
-                _currentArchivePath = savedArchivePath;
-                return result;
+                using var entryStream = entry.Open();
+                using var reader = new BinaryReader(entryStream);
+                return ReadGoMetadataSection(reader, crossPkgResolver);
             }
             catch
             {
-                _currentArchivePath = savedArchivePath;
                 return null;
             }
         }
 
         /// <summary>
-        /// Write CGo metadata into an existing .ngo archive's Section 4.
-        /// Called after C compilation to store the native library path and probe results.
+        /// Reads IL metadata and IL code from a .ngo archive.
+        /// Returns null if the archive has no IL entries.
         /// </summary>
-        public static void WriteCgoSection(string archivePath, Cgo.CgoCompilationResult cgoResult)
+        public static (byte[]? ilMetadata, byte[]? ilCode) ReadIL(string path)
         {
-            if (!File.Exists(archivePath) || cgoResult == null || !cgoResult.Success)
+            if (!File.Exists(path))
+            {
+                return (null, null);
+            }
+
+            try
+            {
+                using var stream = new FileStream(path, FileMode.Open, FileAccess.Read);
+                using var zip = new ZipArchive(stream, ZipArchiveMode.Read);
+
+                var metaEntry = zip.GetEntry(ILMetadataEntry);
+                var codeEntry = zip.GetEntry(ILCodeEntry);
+                if (metaEntry == null || codeEntry == null)
+                {
+                    return (null, null);
+                }
+
+                byte[] ilMeta;
+                using (var entryStream = metaEntry.Open())
+                using (var memStream = new MemoryStream())
+                {
+                    entryStream.CopyTo(memStream);
+                    ilMeta = memStream.ToArray();
+                }
+
+                byte[] ilCode;
+                using (var entryStream = codeEntry.Open())
+                using (var memStream = new MemoryStream())
+                {
+                    entryStream.CopyTo(memStream);
+                    ilCode = memStream.ToArray();
+                }
+
+                return (ilMeta, ilCode);
+            }
+            catch
+            {
+                return (null, null);
+            }
+        }
+
+        /// <summary>
+        /// Adds CGo native library and probe data to an existing .ngo archive.
+        /// </summary>
+        public static void WriteCgoData(string path, string nativeLibraryPath,
+            Cgo.CgoProbeResult? probeResult)
+        {
+            if (!File.Exists(path) || !File.Exists(nativeLibraryPath))
             {
                 return;
             }
 
-            // Read current archive, append CGo section, update header
-            var data = File.ReadAllBytes(archivePath);
-            using var stream = new FileStream(archivePath, FileMode.Create, FileAccess.Write);
-            using var writer = new BinaryWriter(stream);
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.ReadWrite);
+            using var zip = new ZipArchive(stream, ZipArchiveMode.Update);
 
-            // Copy existing data
-            writer.Write(data);
-
-            // Write CGo section at the end
-            var cgoOffset = (uint)stream.Position;
-            writer.Write(cgoResult.NativeLibraryPath ?? "");
-            if (cgoResult.ProbeResult != null)
+            // Add the static library
+            var libFileName = Path.GetFileName(nativeLibraryPath);
+            var libEntry = zip.CreateEntry(NativeDir + libFileName, CompressionLevel.Fastest);
+            using (var entryStream = libEntry.Open())
             {
-                writer.Write(cgoResult.ProbeResult.TypeSizes.Count);
-                foreach (var kv in cgoResult.ProbeResult.TypeSizes)
+                var libBytes = File.ReadAllBytes(nativeLibraryPath);
+                entryStream.Write(libBytes, 0, libBytes.Length);
+            }
+
+            // Add probe results as JSON
+            if (probeResult != null)
+            {
+                var probeEntry = zip.CreateEntry(ProbeEntry, CompressionLevel.Fastest);
+                using var entryStream = probeEntry.Open();
+                using var writer = new StreamWriter(entryStream);
+                var probeData = new Dictionary<string, object>
                 {
-                    writer.Write(kv.Key);
-                    writer.Write(kv.Value);
-                }
+                    ["typeSizes"] = probeResult.TypeSizes,
+                    ["enumValues"] = probeResult.EnumValues,
+                };
+                writer.Write(System.Text.Json.JsonSerializer.Serialize(probeData,
+                    new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
             }
-            else
-            {
-                writer.Write(0);
-            }
-            var cgoLen = (uint)(stream.Position - cgoOffset);
-
-            // Update Section 4 offset/length in header
-            stream.Seek(MagicSize + VersionSize + (3 * SectionEntrySize), SeekOrigin.Begin);
-            writer.Write(cgoOffset);
-            writer.Write(cgoLen);
         }
 
         /// <summary>
-        /// Read CGo native library path from a .ngo archive's Section 4.
+        /// Reads the CGo native library path from a .ngo archive.
+        /// Extracts the library to a temp directory if needed.
         /// </summary>
-        public static string? ReadCgoNativeLibraryPath(string archivePath)
+        public static string? ReadCgoNativeLibrary(string archivePath)
         {
             if (!File.Exists(archivePath))
             {
@@ -250,48 +255,47 @@ namespace Ngo.Compiler.Emit
             try
             {
                 using var stream = new FileStream(archivePath, FileMode.Open, FileAccess.Read);
-                using var reader = new BinaryReader(stream);
+                using var zip = new ZipArchive(stream, ZipArchiveMode.Read);
 
-                var magic = reader.ReadBytes(4);
-                if (magic.Length < 4 || magic[0] != 'N' || magic[1] != 'G' || magic[2] != 'O')
+                foreach (var entry in zip.Entries)
                 {
-                    return null;
+                    if (entry.FullName.StartsWith(NativeDir) && entry.FullName.EndsWith(".a"))
+                    {
+                        // Extract to temp directory
+                        var tempDir = Path.Combine(Path.GetTempPath(), "ngo", "native",
+                            Path.GetFileNameWithoutExtension(archivePath));
+                        Directory.CreateDirectory(tempDir);
+                        var extractPath = Path.Combine(tempDir, entry.Name);
+                        if (!File.Exists(extractPath))
+                        {
+                            entry.ExtractToFile(extractPath);
+                        }
+                        return extractPath;
+                    }
                 }
-
-                var version = reader.ReadUInt16();
-                if (version < 3)
-                {
-                    return null; // No CGo section in version 2
-                }
-
-                // Skip sections 1-3
-                for (int i = 0; i < 3; i++)
-                {
-                    reader.ReadUInt32(); // offset
-                    reader.ReadUInt32(); // length
-                }
-
-                var cgoOffset = reader.ReadUInt32();
-                var cgoLen = reader.ReadUInt32();
-
-                if (cgoLen == 0)
-                {
-                    return null;
-                }
-
-                stream.Seek(cgoOffset, SeekOrigin.Begin);
-                return reader.ReadString();
             }
             catch
             {
-                return null;
+                // Archive corrupt or unreadable
             }
+
+            return null;
         }
 
-        // ----- Go Metadata Serialization (Section 1) -----
+        // ----- ZIP entry helpers -----
+
+        private static void WriteGoMetadataToZip(ZipArchive zip, PackageSymbol pkg, string importPath)
+        {
+            var entry = zip.CreateEntry(GoMetadataEntry, CompressionLevel.Fastest);
+            using var entryStream = entry.Open();
+            using var writer = new BinaryWriter(entryStream);
+            WriteGoMetadata(writer, pkg, importPath);
+        }
 
         internal static void WriteGoMetadataPublic(BinaryWriter w, PackageSymbol pkg, string importPath)
             => WriteGoMetadata(w, pkg, importPath);
+
+        // ----- Go Metadata Serialization -----
 
         private static void WriteGoMetadata(BinaryWriter w, PackageSymbol pkg, string importPath)
         {
@@ -320,8 +324,6 @@ namespace Ngo.Compiler.Emit
                         interfaces.Add(i);
                         break;
                     case TypeSymbol t:
-                        // Type alias to anonymous struct: promote to named struct
-                        // so the archive preserves the struct's fields.
                         if (t.IsAlias && t.UnderlyingType is StructTypeSymbol aliasedStruct
                             && aliasedStruct.Name.StartsWith("struct"))
                         {
@@ -353,22 +355,11 @@ namespace Ngo.Compiler.Emit
                 }
             }
 
-            // Collect all unexported types reachable from the exported API.
-            // Walk the type graph from every export — any type reachable from
-            // any export must be in the archive.
+            // Collect all unexported types reachable from the exported API
             var visited = new HashSet<string>();
-            foreach (var s in structs)
-            {
-                visited.Add(s.Name);
-            }
-            foreach (var i in interfaces)
-            {
-                visited.Add(i.Name);
-            }
-            foreach (var nt in namedTypes)
-            {
-                visited.Add(nt.Name);
-            }
+            foreach (var s in structs) { visited.Add(s.Name); }
+            foreach (var i in interfaces) { visited.Add(i.Name); }
+            foreach (var nt in namedTypes) { visited.Add(nt.Name); }
 
             var reachableStructs = new List<StructTypeSymbol>();
             var reachableInterfaces = new List<InterfaceTypeSymbol>();
@@ -376,60 +367,29 @@ namespace Ngo.Compiler.Emit
 
             void WalkType(TypeSymbol type)
             {
-                if (type == null)
-                {
-                    return;
-                }
+                if (type == null) { return; }
 
                 switch (type)
                 {
-                    case PointerTypeSymbol ptr:
-                        WalkType(ptr.ElementType);
-                        return;
-                    case SliceTypeSymbol slice:
-                        WalkType(slice.ElementType);
-                        return;
-                    case ArrayTypeSymbol array:
-                        WalkType(array.ElementType);
-                        return;
-                    case MapTypeSymbol map:
-                        WalkType(map.KeyType);
-                        WalkType(map.ValueType);
-                        return;
-                    case ChannelTypeSymbol chan:
-                        WalkType(chan.ElementType);
-                        return;
+                    case PointerTypeSymbol ptr: WalkType(ptr.ElementType); return;
+                    case SliceTypeSymbol slice: WalkType(slice.ElementType); return;
+                    case ArrayTypeSymbol array: WalkType(array.ElementType); return;
+                    case MapTypeSymbol map: WalkType(map.KeyType); WalkType(map.ValueType); return;
+                    case ChannelTypeSymbol chan: WalkType(chan.ElementType); return;
                     case FunctionTypeSymbol funcType:
-                        foreach (var p in funcType.ParameterTypes)
-                        {
-                            WalkType(p);
-                        }
-                        foreach (var r in funcType.ReturnTypes)
-                        {
-                            WalkType(r);
-                        }
+                        foreach (var p in funcType.ParameterTypes) { WalkType(p); }
+                        foreach (var r in funcType.ReturnTypes) { WalkType(r); }
                         return;
                 }
 
-                // Only collect types from this package (no PackagePath or same as importPath)
-                if (!string.IsNullOrEmpty(type.PackagePath) && type.PackagePath != importPath)
-                {
-                    return;
-                }
-
-                if (type.Name.Length == 0 || !visited.Add(type.Name))
-                {
-                    return;
-                }
+                if (!string.IsNullOrEmpty(type.PackagePath) && type.PackagePath != importPath) { return; }
+                if (type.Name.Length == 0 || !visited.Add(type.Name)) { return; }
 
                 switch (type)
                 {
                     case StructTypeSymbol st:
                         reachableStructs.Add(st);
-                        foreach (var field in st.Fields)
-                        {
-                            WalkType(field.Type);
-                        }
+                        foreach (var field in st.Fields) { WalkType(field.Type); }
                         WalkMethods(st.Methods);
                         break;
                     case InterfaceTypeSymbol iface:
@@ -437,36 +397,23 @@ namespace Ngo.Compiler.Emit
                         WalkMethods(iface.Methods);
                         break;
                     default:
-                        // Type alias to anonymous struct: promote to named struct
                         if (type.IsAlias && type.UnderlyingType is StructTypeSymbol anonSt
                             && (anonSt.Name == "struct" || anonSt.Name == "struct{}"))
                         {
                             var promoted = new StructTypeSymbol(type.Name, anonSt.Fields);
-                            foreach (var method in anonSt.Methods)
-                            {
-                                promoted.AddMethod(method);
-                            }
+                            foreach (var method in anonSt.Methods) { promoted.AddMethod(method); }
                             foreach (var method in type.Methods)
                             {
-                                if (promoted.LookupMethod(method.Name) == null)
-                                {
-                                    promoted.AddMethod(method);
-                                }
+                                if (promoted.LookupMethod(method.Name) == null) { promoted.AddMethod(method); }
                             }
                             reachableStructs.Add(promoted);
-                            foreach (var field in anonSt.Fields)
-                            {
-                                WalkType(field.Type);
-                            }
+                            foreach (var field in anonSt.Fields) { WalkType(field.Type); }
                             WalkMethods(promoted.Methods);
                         }
                         else
                         {
                             reachableNamedTypes.Add(type);
-                            if (type.UnderlyingType != null)
-                            {
-                                WalkType(type.UnderlyingType);
-                            }
+                            if (type.UnderlyingType != null) { WalkType(type.UnderlyingType); }
                             WalkMethods(type.Methods);
                         }
                         break;
@@ -477,55 +424,19 @@ namespace Ngo.Compiler.Emit
             {
                 foreach (var method in methods)
                 {
-                    foreach (var p in method.Parameters)
-                    {
-                        WalkType(p.Type);
-                    }
-                    foreach (var r in method.ReturnTypes)
-                    {
-                        WalkType(r);
-                    }
+                    foreach (var p in method.Parameters) { WalkType(p.Type); }
+                    foreach (var r in method.ReturnTypes) { WalkType(r); }
                 }
             }
 
             // Walk from all exported symbols
-            foreach (var s in structs)
-            {
-                foreach (var field in s.Fields)
-                {
-                    WalkType(field.Type);
-                }
-                WalkMethods(s.Methods);
-            }
-            foreach (var i in interfaces)
-            {
-                WalkMethods(i.Methods);
-            }
-            foreach (var nt in namedTypes)
-            {
-                if (nt.UnderlyingType != null)
-                {
-                    WalkType(nt.UnderlyingType);
-                }
-                WalkMethods(nt.Methods);
-            }
-            foreach (var f in functions)
-            {
-                foreach (var p in f.Parameters)
-                {
-                    WalkType(p.Type);
-                }
-                foreach (var r in f.ReturnTypes)
-                {
-                    WalkType(r);
-                }
-            }
-            foreach (var v in variables)
-            {
-                WalkType(v.Type);
-            }
+            foreach (var s in structs) { foreach (var field in s.Fields) { WalkType(field.Type); } WalkMethods(s.Methods); }
+            foreach (var i in interfaces) { WalkMethods(i.Methods); }
+            foreach (var nt in namedTypes) { if (nt.UnderlyingType != null) { WalkType(nt.UnderlyingType); } WalkMethods(nt.Methods); }
+            foreach (var f in functions) { foreach (var p in f.Parameters) { WalkType(p.Type); } foreach (var r in f.ReturnTypes) { WalkType(r); } }
+            foreach (var v in variables) { WalkType(v.Type); }
 
-            // Merge reachable unexported types into the main lists
+            // Merge reachable unexported types
             var allStructs = new List<StructTypeSymbol>(reachableStructs);
             allStructs.AddRange(structs);
             var allInterfaces = new List<InterfaceTypeSymbol>(reachableInterfaces);
@@ -533,73 +444,40 @@ namespace Ngo.Compiler.Emit
             var allNamedTypes = new List<TypeSymbol>(reachableNamedTypes);
             allNamedTypes.AddRange(namedTypes);
 
-            // TypeNameTable: all type names and kinds, written before any bodies
+            // TypeNameTable
             int totalTypeNames = allNamedTypes.Count + allInterfaces.Count + allStructs.Count;
             w.Write(totalTypeNames);
-            foreach (var nt in allNamedTypes)
-            {
-                w.Write(nt.Name);
-                w.Write((byte)0); // Named
-            }
-            foreach (var i in allInterfaces)
-            {
-                w.Write(i.Name);
-                w.Write((byte)1); // Interface
-            }
-            foreach (var s in allStructs)
-            {
-                w.Write(s.Name);
-                w.Write((byte)2); // Struct
-            }
+            foreach (var nt in allNamedTypes) { w.Write(nt.Name); w.Write((byte)0); }
+            foreach (var i in allInterfaces) { w.Write(i.Name); w.Write((byte)1); }
+            foreach (var s in allStructs) { w.Write(s.Name); w.Write((byte)2); }
 
             // Functions
             w.Write(functions.Count);
-            foreach (var func in functions)
-            {
-                WriteFunction(w, func, importPath);
-            }
+            foreach (var func in functions) { WriteFunction(w, func, importPath); }
 
             // Named types
             w.Write(allNamedTypes.Count);
-            foreach (var t in allNamedTypes)
-            {
-                WriteNamedType(w, t, importPath);
-            }
+            foreach (var t in allNamedTypes) { WriteNamedType(w, t, importPath); }
 
             // Interfaces
             w.Write(allInterfaces.Count);
-            foreach (var i in allInterfaces)
-            {
-                WriteInterfaceType(w, i, importPath);
-            }
+            foreach (var i in allInterfaces) { WriteInterfaceType(w, i, importPath); }
 
             // Structs
             w.Write(allStructs.Count);
-            foreach (var s in allStructs)
-            {
-                WriteStructType(w, s, importPath);
-            }
+            foreach (var s in allStructs) { WriteStructType(w, s, importPath); }
 
             // Constants
             w.Write(constants.Count);
-            foreach (var c in constants)
-            {
-                WriteConstant(w, c, importPath);
-            }
+            foreach (var c in constants) { WriteConstant(w, c, importPath); }
 
             // Variables
             w.Write(variables.Count);
-            foreach (var v in variables)
-            {
-                WriteVariable(w, v, importPath);
-            }
+            foreach (var v in variables) { WriteVariable(w, v, importPath); }
 
             // Imports
             w.Write(pkg.Imports.Count);
-            foreach (var imp in pkg.Imports)
-            {
-                w.Write(imp);
-            }
+            foreach (var imp in pkg.Imports) { w.Write(imp); }
         }
 
         private static PackageSymbol ReadGoMetadataSection(BinaryReader r,
@@ -610,9 +488,7 @@ namespace Ngo.Compiler.Emit
             var pkg = new PackageSymbol(name, importPath);
             var typeMap = new Dictionary<string, TypeSymbol>();
 
-            // Read TypeNameTable — creates all type objects before any bodies are read.
-            // This eliminates forward reference problems: any same-package type string
-            // in a body will find the correct object in typeMap.
+            // TypeNameTable
             int typeNameCount = r.ReadInt32();
             for (int i = 0; i < typeNameCount; i++)
             {
@@ -622,20 +498,14 @@ namespace Ngo.Compiler.Emit
                 {
                     switch (kind)
                     {
-                        case 0: // Named
-                            typeMap[typeName] = new TypeSymbol(typeName, TypeKind.Struct, null);
-                            break;
-                        case 1: // Interface
-                            typeMap[typeName] = new InterfaceTypeSymbol(typeName, new List<MethodSymbol>());
-                            break;
-                        case 2: // Struct
-                            typeMap[typeName] = new StructTypeSymbol(typeName, new List<FieldSymbol>());
-                            break;
+                        case 0: typeMap[typeName] = new TypeSymbol(typeName, TypeKind.Struct, null); break;
+                        case 1: typeMap[typeName] = new InterfaceTypeSymbol(typeName, new List<MethodSymbol>()); break;
+                        case 2: typeMap[typeName] = new StructTypeSymbol(typeName, new List<FieldSymbol>()); break;
                     }
                 }
             }
 
-            // Read functions
+            // Functions
             int funcCount = r.ReadInt32();
             for (int i = 0; i < funcCount; i++)
             {
@@ -643,7 +513,7 @@ namespace Ngo.Compiler.Emit
                 pkg.AddExport(func);
             }
 
-            // Read named types
+            // Named types
             int namedCount = r.ReadInt32();
             for (int i = 0; i < namedCount; i++)
             {
@@ -653,7 +523,7 @@ namespace Ngo.Compiler.Emit
                 pkg.AddExport(t);
             }
 
-            // Read interfaces
+            // Interfaces
             int ifaceCount = r.ReadInt32();
             for (int i = 0; i < ifaceCount; i++)
             {
@@ -663,7 +533,7 @@ namespace Ngo.Compiler.Emit
                 pkg.AddExport(iface);
             }
 
-            // Read structs
+            // Structs
             int structCount = r.ReadInt32();
             for (int i = 0; i < structCount; i++)
             {
@@ -673,7 +543,7 @@ namespace Ngo.Compiler.Emit
                 pkg.AddExport(s);
             }
 
-            // Read constants
+            // Constants
             int constCount = r.ReadInt32();
             for (int i = 0; i < constCount; i++)
             {
@@ -681,7 +551,7 @@ namespace Ngo.Compiler.Emit
                 pkg.AddExport(c);
             }
 
-            // Read variables
+            // Variables
             int varCount = r.ReadInt32();
             for (int i = 0; i < varCount; i++)
             {
@@ -689,7 +559,7 @@ namespace Ngo.Compiler.Emit
                 pkg.AddExport(v);
             }
 
-            // Read imports
+            // Imports
             int importCount = r.ReadInt32();
             var importPaths = new List<string>(importCount);
             for (int i = 0; i < importCount; i++)
@@ -708,21 +578,11 @@ namespace Ngo.Compiler.Emit
             w.Write(func.Name);
             w.Write(func.IsVariadic);
             w.Write(func.TypeParameters.Count);
-            foreach (var tp in func.TypeParameters)
-            {
-                w.Write(tp.Name);
-            }
+            foreach (var tp in func.TypeParameters) { w.Write(tp.Name); }
             w.Write(func.Parameters.Count);
-            foreach (var p in func.Parameters)
-            {
-                w.Write(p.Name);
-                w.Write(TypeToString(p.Type, pkgPath));
-            }
+            foreach (var p in func.Parameters) { w.Write(p.Name); w.Write(TypeToString(p.Type, pkgPath)); }
             w.Write(func.ReturnTypes.Count);
-            foreach (var r in func.ReturnTypes)
-            {
-                w.Write(TypeToString(r, pkgPath));
-            }
+            foreach (var r in func.ReturnTypes) { w.Write(TypeToString(r, pkgPath)); }
         }
 
         private static void WriteMethod(BinaryWriter w, MethodSymbol method, string? pkgPath = null)
@@ -730,50 +590,31 @@ namespace Ngo.Compiler.Emit
             w.Write(method.Name);
             w.Write(method.IsVariadic);
             w.Write(method.Parameters.Count);
-            foreach (var p in method.Parameters)
-            {
-                w.Write(p.Name);
-                w.Write(TypeToString(p.Type, pkgPath));
-            }
+            foreach (var p in method.Parameters) { w.Write(p.Name); w.Write(TypeToString(p.Type, pkgPath)); }
             w.Write(method.ReturnTypes.Count);
-            foreach (var r in method.ReturnTypes)
-                w.Write(TypeToString(r, pkgPath));
+            foreach (var r in method.ReturnTypes) { w.Write(TypeToString(r, pkgPath)); }
         }
 
         private static void WriteStructType(BinaryWriter w, StructTypeSymbol s, string? pkgPath = null)
         {
             w.Write(s.Name);
-            // Write type parameters for generic structs
-            var typeParams = s.IsGeneric ? s.TypeParameters : System.Array.Empty<TypeParameterSymbol>();
+            var typeParams = s.IsGeneric ? s.TypeParameters : Array.Empty<TypeParameterSymbol>();
             w.Write(typeParams.Count);
-            foreach (var tp in typeParams)
-            {
-                w.Write(tp.Name);
-            }
+            foreach (var tp in typeParams) { w.Write(tp.Name); }
             w.Write(s.Fields.Count);
-            foreach (var f in s.Fields)
-            {
-                w.Write(f.Name);
-                w.Write(TypeToString(f.Type, pkgPath));
-                w.Write(f.IsEmbedded);
-            }
+            foreach (var f in s.Fields) { w.Write(f.Name); w.Write(TypeToString(f.Type, pkgPath)); w.Write(f.IsEmbedded); }
             w.Write(s.Methods.Count);
-            foreach (var m in s.Methods)
-                WriteMethod(w, m, pkgPath);
+            foreach (var m in s.Methods) { WriteMethod(w, m, pkgPath); }
         }
 
         private static void WriteInterfaceType(BinaryWriter w, InterfaceTypeSymbol iface, string? pkgPath = null)
         {
             w.Write(iface.Name);
-            var ifaceTypeParams = iface.IsGeneric ? iface.TypeParameters : System.Array.Empty<TypeParameterSymbol>();
+            var ifaceTypeParams = iface.IsGeneric ? iface.TypeParameters : Array.Empty<TypeParameterSymbol>();
             w.Write(ifaceTypeParams.Count);
-            foreach (var tp in ifaceTypeParams)
-            {
-                w.Write(tp.Name);
-            }
+            foreach (var tp in ifaceTypeParams) { w.Write(tp.Name); }
             w.Write(iface.Methods.Count);
-            foreach (var m in iface.Methods)
-                WriteMethod(w, m, pkgPath);
+            foreach (var m in iface.Methods) { WriteMethod(w, m, pkgPath); }
         }
 
         private static void WriteNamedType(BinaryWriter w, TypeSymbol t, string? pkgPath = null)
@@ -781,8 +622,7 @@ namespace Ngo.Compiler.Emit
             w.Write(t.Name);
             w.Write(t.UnderlyingType != null ? TypeToString(t.UnderlyingType, pkgPath) : "");
             w.Write(t.Methods.Count);
-            foreach (var m in t.Methods)
-                WriteMethod(w, m, pkgPath);
+            foreach (var m in t.Methods) { WriteMethod(w, m, pkgPath); }
         }
 
         private static void WriteConstant(BinaryWriter w, ConstantSymbol c, string? pkgPath = null)
@@ -809,8 +649,7 @@ namespace Ngo.Compiler.Emit
             var typeParameters = new List<TypeParameterSymbol>(typeParamCount);
             for (int i = 0; i < typeParamCount; i++)
             {
-                var tpName = r.ReadString();
-                typeParameters.Add(new TypeParameterSymbol(tpName, i, ConstraintInfo.Any));
+                typeParameters.Add(new TypeParameterSymbol(r.ReadString(), i, ConstraintInfo.Any));
             }
             int paramCount = r.ReadInt32();
             var parameters = new List<ParameterSymbol>(paramCount);
@@ -846,7 +685,9 @@ namespace Ngo.Compiler.Emit
             int retCount = r.ReadInt32();
             var returnTypes = new List<TypeSymbol>(retCount);
             for (int i = 0; i < retCount; i++)
+            {
                 returnTypes.Add(StringToType(r.ReadString(), typeMap, crossPkgResolver));
+            }
 
             return new MethodSymbol(name, receiver, false,
                 Array.Empty<TypeParameterSymbol>(), parameters, returnTypes, isVariadic);
@@ -856,13 +697,11 @@ namespace Ngo.Compiler.Emit
             Func<string, string, TypeSymbol?>? crossPkgResolver = null)
         {
             var name = r.ReadString();
-            // Read type parameters for generic structs
             int typeParamCount = r.ReadInt32();
             var structTypeParams = new List<TypeParameterSymbol>(typeParamCount);
             for (int i = 0; i < typeParamCount; i++)
             {
-                var tpName = r.ReadString();
-                structTypeParams.Add(new TypeParameterSymbol(tpName, i, ConstraintInfo.Any));
+                structTypeParams.Add(new TypeParameterSymbol(r.ReadString(), i, ConstraintInfo.Any));
             }
             int fieldCount = r.ReadInt32();
             var fields = new List<FieldSymbol>(fieldCount);
@@ -873,7 +712,7 @@ namespace Ngo.Compiler.Emit
                 var isEmbedded = r.ReadBoolean();
                 fields.Add(new FieldSymbol(fName, fType, i, isEmbedded));
             }
-            // Reuse existing placeholder if pre-registered (two-pass struct reading)
+
             StructTypeSymbol structType;
             if (typeMap.TryGetValue(name, out var existing) && existing is StructTypeSymbol existingStruct)
             {
@@ -888,13 +727,12 @@ namespace Ngo.Compiler.Emit
             {
                 structType.SetTypeParameters(structTypeParams);
             }
-            typeMap[name] = structType; // register before reading methods (methods may reference this type)
+            typeMap[name] = structType;
 
             int methodCount = r.ReadInt32();
             for (int i = 0; i < methodCount; i++)
             {
-                var method = ReadMethod(r, structType, typeMap, crossPkgResolver);
-                structType.AddMethod(method);
+                structType.AddMethod(ReadMethod(r, structType, typeMap, crossPkgResolver));
             }
             return structType;
         }
@@ -907,11 +745,10 @@ namespace Ngo.Compiler.Emit
             var ifaceTypeParams = new List<TypeParameterSymbol>(ifaceTypeParamCount);
             for (int i = 0; i < ifaceTypeParamCount; i++)
             {
-                var tpName = r.ReadString();
-                ifaceTypeParams.Add(new TypeParameterSymbol(tpName, i, ConstraintInfo.Any));
+                ifaceTypeParams.Add(new TypeParameterSymbol(r.ReadString(), i, ConstraintInfo.Any));
             }
             int methodCount = r.ReadInt32();
-            // Reuse pre-registered placeholder so existing references stay valid
+
             InterfaceTypeSymbol iface;
             if (typeMap.TryGetValue(name, out var existing) && existing is InterfaceTypeSymbol existingIface)
             {
@@ -929,8 +766,7 @@ namespace Ngo.Compiler.Emit
 
             for (int i = 0; i < methodCount; i++)
             {
-                var method = ReadMethod(r, iface, typeMap, crossPkgResolver);
-                iface.AddMethod(method);
+                iface.AddMethod(ReadMethod(r, iface, typeMap, crossPkgResolver));
             }
             return iface;
         }
@@ -943,7 +779,7 @@ namespace Ngo.Compiler.Emit
             var underlying = string.IsNullOrEmpty(underlyingStr)
                 ? BuiltinTypes.EmptyInterface
                 : StringToType(underlyingStr, typeMap, crossPkgResolver);
-            // Reuse pre-registered placeholder so existing references stay valid
+
             TypeSymbol namedType;
             if (typeMap.TryGetValue(name, out var existing) && existing.GetType() == typeof(TypeSymbol))
             {
@@ -960,8 +796,7 @@ namespace Ngo.Compiler.Emit
             int methodCount = r.ReadInt32();
             for (int i = 0; i < methodCount; i++)
             {
-                var method = ReadMethod(r, namedType, typeMap, crossPkgResolver);
-                namedType.AddMethod(method);
+                namedType.AddMethod(ReadMethod(r, namedType, typeMap, crossPkgResolver));
             }
             return namedType;
         }
@@ -984,12 +819,10 @@ namespace Ngo.Compiler.Emit
             return new PackageVarSymbol(name, type);
         }
 
-        // ----- Type string conversion (delegates to PackageMetadataSerializer) -----
+        // ----- Type string conversion -----
 
         private static string TypeToString(TypeSymbol type, string? currentPackagePath = null)
             => PackageMetadataSerializer.TypeToString(type, currentPackagePath);
-
-        [System.ThreadStatic] internal static string? _currentArchivePath;
 
         private static TypeSymbol StringToType(string typeStr, Dictionary<string, TypeSymbol> typeMap,
             Func<string, string, TypeSymbol?>? crossPkgResolver = null)
@@ -997,12 +830,11 @@ namespace Ngo.Compiler.Emit
 
         private static object? ParseConstValue(string? value, TypeSymbol type)
         {
-            if (string.IsNullOrEmpty(value)) return null;
-            if (type.TypeKind == TypeKind.String || type.TypeKind == TypeKind.UntypedString)
-                return value;
-            if (long.TryParse(value, out long l)) return l;
-            if (double.TryParse(value, out double d)) return d;
-            if (bool.TryParse(value, out bool b)) return b;
+            if (string.IsNullOrEmpty(value)) { return null; }
+            if (type.TypeKind == TypeKind.String || type.TypeKind == TypeKind.UntypedString) { return value; }
+            if (long.TryParse(value, out long l)) { return l; }
+            if (double.TryParse(value, out double d)) { return d; }
+            if (bool.TryParse(value, out bool b)) { return b; }
             return value;
         }
     }

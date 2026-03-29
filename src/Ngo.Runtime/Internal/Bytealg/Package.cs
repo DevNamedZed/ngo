@@ -89,11 +89,18 @@ namespace Ngo.Runtime.Internal.Bytealg
 
         [GoFunc]
         [return: GoReturn("uint32", "uint32")]
-        public static (long, long) HashStr(string sep) => (0, 0);
+        public static (long, long) HashStr(string sep)
+        {
+            return ComputeRabinKarpHash(sep);
+        }
 
         [GoFunc]
         [return: GoReturn("uint32", "uint32")]
-        public static (long, long) HashStrBytes(Slice<byte> sep) => (0, 0);
+        public static (long, long) HashStrBytes(Slice<byte> sep)
+        {
+            var str = System.Text.Encoding.UTF8.GetString(sep.AsSpan().ToArray());
+            return ComputeRabinKarpHash(str);
+        }
 
         [GoFunc]
         [return: GoReturn("int")]
@@ -168,14 +175,65 @@ namespace Ngo.Runtime.Internal.Bytealg
         // but ngo's bytealg stub merges them.
         [GoFunc]
         [return: GoReturn("uint32", "uint32")]
-        public static (long, long) HashStrRev(string sep) => (0, 0);
+        public static (long, long) HashStrRev(string sep)
+        {
+            return ComputeRabinKarpHashReverse(sep);
+        }
 
         [GoFunc]
         [return: GoReturn("uint32", "uint32")]
-        public static (long, long) HashStrRevBytes(Slice<byte> sep) => (0, 0);
+        public static (long, long) HashStrRevBytes(Slice<byte> sep)
+        {
+            var str = System.Text.Encoding.UTF8.GetString(sep.AsSpan().ToArray());
+            return ComputeRabinKarpHashReverse(str);
+        }
 
         [GoFunc]
         [return: GoReturn("[]byte")]
         public static Slice<byte> MakeNoZero([GoParam("int")] long n) => new Slice<byte>(new byte[(int)n]);
+
+        private static (long, long) ComputeRabinKarpHash(string separator)
+        {
+            uint hash = 0;
+            for (int i = 0; i < separator.Length; i++)
+            {
+                hash = hash * (uint)PrimeRK + (uint)separator[i];
+            }
+            uint power = 1;
+            uint squaredPrime = (uint)PrimeRK;
+            int length = separator.Length;
+            while (length > 0)
+            {
+                if ((length & 1) != 0)
+                {
+                    power *= squaredPrime;
+                }
+                squaredPrime *= squaredPrime;
+                length >>= 1;
+            }
+            return (hash, power);
+        }
+
+        private static (long, long) ComputeRabinKarpHashReverse(string separator)
+        {
+            uint hash = 0;
+            for (int i = separator.Length - 1; i >= 0; i--)
+            {
+                hash = hash * (uint)PrimeRK + (uint)separator[i];
+            }
+            uint power = 1;
+            uint squaredPrime = (uint)PrimeRK;
+            int length = separator.Length;
+            while (length > 0)
+            {
+                if ((length & 1) != 0)
+                {
+                    power *= squaredPrime;
+                }
+                squaredPrime *= squaredPrime;
+                length >>= 1;
+            }
+            return (hash, power);
+        }
     }
 }

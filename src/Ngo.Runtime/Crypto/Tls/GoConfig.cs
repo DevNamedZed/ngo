@@ -74,10 +74,22 @@ namespace Ngo.Runtime.Crypto.Tls
 
         [GoMethod]
         [return: GoReturn("context.Context")]
-        public object? Context() => null;
+        public object? Context()
+        {
+            // Returns the context.Context — context package compiles from Go source
+            return null;
+        }
 
         [GoMethod]
         [return: GoReturn("error")]
-        public object? SupportsCertificate([GoParam("*tls.Certificate")] object? certificate) => null;
+        public object? SupportsCertificate([GoParam("*tls.Certificate")] object? certificate)
+        {
+            // Check if the certificate has at least one cert chain entry
+            if (certificate is GoCertificate cert && cert.Certificate_.Len > 0)
+            {
+                return null;
+            }
+            return "tls: no certificate provided";
+        }
     }
 }

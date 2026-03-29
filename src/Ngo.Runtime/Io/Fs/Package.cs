@@ -370,7 +370,13 @@ namespace Ngo.Runtime.Io.Fs
         public GoFileMode Mode() => _isDir ? new GoFileMode(Package.ModeDir | Package.ModePerm) : new GoFileMode(Package.ModePerm);
         public object ModTime() => new object();
         public bool IsDir() => _isDir;
-        public object Sys() => null!;
+        public object Sys()
+        {
+            var stat = new Ngo.Runtime.Syscall.GoStat_t();
+            stat.Size = _size;
+            stat.Mode = _isDir ? 0x41FF : 0x81FF;
+            return stat;
+        }
     }
 
     internal class SubDirFS : IGoFS

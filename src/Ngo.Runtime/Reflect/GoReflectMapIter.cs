@@ -24,11 +24,49 @@ namespace Ngo.Runtime.Reflect
     [GoType("struct", Name = "MapIter", Package = "reflect")]
     public class GoReflectMapIter
     {
+        private System.Collections.IEnumerator? _enumerator;
+        private object? _currentKey;
+        private object? _currentValue;
+
+        internal GoReflectMapIter(System.Collections.IDictionary? dict)
+        {
+            if (dict != null)
+            {
+                _enumerator = dict.GetEnumerator();
+            }
+        }
+
+        public GoReflectMapIter() { }
+
         [GoMethod]
-        public bool Next() { return false; }
+        public bool Next()
+        {
+            if (_enumerator == null)
+            {
+                return false;
+            }
+            if (_enumerator.MoveNext())
+            {
+                if (_enumerator.Current is System.Collections.DictionaryEntry entry)
+                {
+                    _currentKey = entry.Key;
+                    _currentValue = entry.Value;
+                }
+                return true;
+            }
+            return false;
+        }
+
         [GoMethod]
-        public GoReflectValue Key() { return GoReflectValue.InvalidValue; }
+        public GoReflectValue Key()
+        {
+            return new GoReflectValue(_currentKey, new GoReflectType(_currentKey?.GetType() ?? typeof(object)));
+        }
+
         [GoMethod]
-        public GoReflectValue Value() { return GoReflectValue.InvalidValue; }
+        public GoReflectValue Value()
+        {
+            return new GoReflectValue(_currentValue, new GoReflectType(_currentValue?.GetType() ?? typeof(object)));
+        }
     }
 }

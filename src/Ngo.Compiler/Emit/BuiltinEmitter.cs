@@ -83,8 +83,7 @@ namespace Ngo.Compiler.Emit
                 _packageTypes.TryGetValue(pkg, out targetType);
                 if (targetType != null)
                 {
-                    try { return EmitStaticCall(call, targetType, name); }
-                    catch { /* method not found — fall through to builtins */ }
+                    return EmitStaticCall(call, targetType, name);
                 }
             }
 
@@ -152,20 +151,6 @@ namespace Ngo.Compiler.Emit
                     return EmitBuiltinImag(call);
 
                 default:
-                    // Unqualified function name — try annotation lookup by name alone
-                    // This handles cases like fmt.Println imported as just "Println"
-                    if (pkg == null)
-                    {
-                        foreach (var kv in _packageTypes)
-                        {
-                            var method = kv.Value.GetMethod(name, BindingFlags.Public | BindingFlags.Static);
-                            if (method != null)
-                            {
-                                try { return EmitStaticCall(call, kv.Value, name); }
-                                catch { continue; }
-                            }
-                        }
-                    }
                     return false;
             }
         }
@@ -474,7 +459,7 @@ namespace Ngo.Compiler.Emit
         {
             var method = typeof(Ngo.Runtime.GoDotnet).GetMethod(name);
             if (method == null)
-                throw new NotSupportedException($"dotnet.{name} not found");
+                throw new NotSupportedException($"Method GoDotnet.{name} not found (pkg={call.Function.PackageName}, argCount={call.Arguments.Count})");
 
             var methodParams = method.GetParameters();
             bool isVariadic = methodParams.Length > 0 &&
@@ -759,9 +744,43 @@ namespace Ngo.Compiler.Emit
         private bool EmitBuiltinAppend(CallExpression call)
         {
             var sliceArg = call.Arguments[0];
-            var sliceType = (SliceTypeSymbol)sliceArg.Type.Resolved();
-            var elemClrType = _ctx.Mapper.Map(sliceType.ElementType);
-            var sliceClrType = _ctx.Mapper.Map(sliceType);
+            var resolved = sliceArg.Type.Resolved();
+            TypeSymbol elemType;
+            if (resolved is SliceTypeSymbol sliceType)
+            {
+                elemType = sliceType.ElementType;
+            }
+            else if (resolved is TypeParameterSymbol || sliceArg.Type is TypeParameterSymbol)
+            {
+                elemType = BuiltinTypes.EmptyInterface;
+            }
+            else
+            {
+                var underlying = resolved.UnderlyingType;
+                while (underlying != null && !(underlying is SliceTypeSymbol))
+                {
+                    underlying = underlying.UnderlyingType;
+                }
+                elemType = (underlying as SliceTypeSymbol)?.ElementType ?? BuiltinTypes.EmptyInterface;
+            }
+            var elemClrType = _ctx.Mapper.Map(elemType);
+            var sliceClrType = _ctx.Mapper.Map(resolved is SliceTypeSymbol ? resolved : sliceArg.Type);
+            var appendSliceType = typeof(Slice<>).MakeGenericType(elemClrType);
+
+            // Spread case: append(dst, src...) — append one slice to another
+            // Detected by: 2 args where second arg is also a slice (or string for []byte)
+            bool isSpread = call.Arguments.Count == 2
+                && (call.Arguments[1].Type.Resolved() is SliceTypeSymbol
+                || (elemType.TypeKind == TypeKind.Uint8
+                    && (call.Arguments[1].Type.TypeKind == TypeKind.String || call.Arguments[1].Type.TypeKind == TypeKind.UntypedString)));
+            if (isSpread)
+            {
+                _body.EmitExpression(sliceArg);
+                _body.EmitExpression(call.Arguments[1]);
+                var appendSliceMethod = EmitContext.GetMethodSafe(appendSliceType, "Append", new[] { sliceClrType, sliceClrType });
+                _ctx.IL.Emit(OpCodes.Call, appendSliceMethod);
+                return true;
+            }
 
             _body.EmitExpression(sliceArg);
 
@@ -774,7 +793,7 @@ namespace Ngo.Compiler.Emit
                 _ctx.IL.Emit(OpCodes.Dup);
                 _ctx.IL.Emit(OpCodes.Ldc_I4, i);
                 _body.EmitExpression(call.Arguments[i + 1]);
-                if (sliceType.ElementType is InterfaceTypeSymbol appendIfaceElem
+                if (elemType is InterfaceTypeSymbol appendIfaceElem
                     && call.Arguments[i + 1].Type.TypeKind != TypeKind.Interface)
                 {
                     _body.EmitInterfaceWrapIfNeeded(call.Arguments[i + 1].Type, appendIfaceElem, elemClrType);
@@ -783,12 +802,13 @@ namespace Ngo.Compiler.Emit
                 {
                     var argClrType = _ctx.Mapper.Map(call.Arguments[i + 1].Type);
                     if (argClrType.IsValueType && !elemClrType.IsValueType)
+                    {
                         _ctx.IL.Emit(OpCodes.Box, argClrType);
+                    }
                 }
                 _body.EmitStelem(elemClrType);
             }
 
-            var appendSliceType = typeof(Slice<>).MakeGenericType(elemClrType);
             var appendMethod = EmitContext.GetMethodSafe(appendSliceType, "Append", new[] { sliceClrType, elemClrType.MakeArrayType() });
             _ctx.IL.Emit(OpCodes.Call, appendMethod);
             return true;
@@ -869,9 +889,23 @@ namespace Ngo.Compiler.Emit
 
         private bool EmitBuiltinCopy(CallExpression call)
         {
-            var sliceType = (SliceTypeSymbol)call.Arguments[0].Type.Resolved();
-            var elemClrType = _ctx.Mapper.Map(sliceType.ElementType);
-            var sliceClrType = _ctx.Mapper.Map(sliceType);
+            var resolvedCopy = call.Arguments[0].Type.Resolved();
+            TypeSymbol copyElemType;
+            if (resolvedCopy is SliceTypeSymbol copySlice)
+            {
+                copyElemType = copySlice.ElementType;
+            }
+            else
+            {
+                var underlying = resolvedCopy.UnderlyingType;
+                while (underlying != null && !(underlying is SliceTypeSymbol))
+                {
+                    underlying = underlying.UnderlyingType;
+                }
+                copyElemType = (underlying as SliceTypeSymbol)?.ElementType ?? BuiltinTypes.EmptyInterface;
+            }
+            var elemClrType = _ctx.Mapper.Map(copyElemType);
+            var sliceClrType = _ctx.Mapper.Map(resolvedCopy is SliceTypeSymbol ? resolvedCopy : call.Arguments[0].Type);
 
             _body.EmitExpression(call.Arguments[0]);
             _body.EmitExpression(call.Arguments[1]);

@@ -108,6 +108,14 @@ namespace Ngo.Runtime.Internal.Abi
         [GoField(Name = "Str")] public int Str; // NameOff
         [GoField(Name = "PtrToThis")] public int PtrToThis; // TypeOff
 
+        // CLR type backing this abi.Type — set by reflect package
+        internal System.Type? ClrType;
+        internal GoType? ElemType;
+        internal GoType? KeyType;
+        internal GoType[]? FieldTypes;
+        internal GoType[]? InTypes;
+        internal GoType[]? OutTypes;
+
         // Go embedding: sub-types embed abi.Type, accessible as .Type
         [GoField(Name = "Type")] public GoType TypeEmbedded => this;
 
@@ -119,16 +127,53 @@ namespace Ngo.Runtime.Internal.Abi
         [GoMethod] public long Align() => Align_;
         [GoMethod] public long FieldAlign() => FieldAlign_;
         [GoMethod] public bool HasName() => (TFlag & 4) != 0;
-        [GoMethod] [return: GoReturn("*Type")] public GoType? Elem() => null;
-        [GoMethod] [return: GoReturn("*UncommonType")] public GoUncommonType? Uncommon() => null;
+
+        [GoMethod]
+        [return: GoReturn("*Type")]
+        public GoType? Elem() => ElemType;
+
+        [GoMethod]
+        [return: GoReturn("*UncommonType")]
+        public GoUncommonType? Uncommon()
+        {
+            if (ClrType != null && ClrType.GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance).Length > 0)
+            {
+                return new GoUncommonType();
+            }
+            return null;
+        }
+
         [GoMethod] [return: GoReturn("ChanDir")] public long ChanDir() => 0;
         [GoMethod] [return: GoReturn("int")] public long Len() => 0;
-        [GoMethod] [return: GoReturn("uint32")] public long NumMethod() => 0;
-        [GoMethod] public bool ExportedMethods() => false;
-        [GoMethod] [return: GoReturn("*Type")] public GoType? Key() => null;
-        [GoMethod] [return: GoReturn("*Type")] public GoType? Field([GoParam("int")] long i) => null;
+        [GoMethod] [return: GoReturn("uint32")] public long NumMethod()
+        {
+            if (ClrType != null)
+            {
+                return ClrType.GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.DeclaredOnly).Length;
+            }
+            return 0;
+        }
+
+        [GoMethod]
+        public bool ExportedMethods() => NumMethod() > 0;
+
+        [GoMethod]
+        [return: GoReturn("*Type")]
+        public GoType? Key() => KeyType;
+
+        [GoMethod]
+        [return: GoReturn("*Type")]
+        public GoType? Field([GoParam("int")] long i)
+        {
+            if (FieldTypes != null && i >= 0 && i < FieldTypes.Length)
+            {
+                return FieldTypes[i];
+            }
+            return null;
+        }
+
         [GoMethod] public bool Comparable() => true;
-        [GoMethod] public string String() => "";
+        [GoMethod] public string String() => ClrType?.Name ?? "";
         [GoMethod] [return: GoReturn("[]byte")] public Slice<byte> GcSlice([GoParam("uintptr")] long begin, [GoParam("uintptr")] long end) => default;
         [GoMethod] [return: GoReturn("*Type")] public GoType Common() => this;
     }
@@ -139,14 +184,28 @@ namespace Ngo.Runtime.Internal.Abi
     {
         [GoField(Name = "Bytes")] public long Bytes; // *byte pointer
 
-        [GoMethod] public string Name() => "";
-        [GoMethod] public string Tag() => "";
-        [GoMethod] public bool IsExported() => false;
-        [GoMethod] public bool HasTag() => false;
-        [GoMethod] public bool IsEmbedded() => false;
-        [GoMethod] public bool IsBlank() => false;
+        internal string NameValue = "";
+        internal string TagValue = "";
+        internal bool IsExportedValue;
+        internal bool HasTagValue;
+        internal bool IsEmbeddedValue;
+
+        [GoMethod] public string Name() => NameValue;
+        [GoMethod] public string Tag() => TagValue;
+        [GoMethod] public bool IsExported() => IsExportedValue || (NameValue.Length > 0 && char.IsUpper(NameValue[0]));
+        [GoMethod] public bool HasTag() => HasTagValue || TagValue.Length > 0;
+        [GoMethod] public bool IsEmbedded() => IsEmbeddedValue;
+        [GoMethod] public bool IsBlank() => NameValue == "_";
         [GoMethod] [return: GoReturn("int")] public long DataChecked([GoParam("int")] long off, string msg) => 0;
-        [GoMethod] [return: GoReturn("int", "int")] public (long, long) ReadVarint([GoParam("int")] long off) => (0, 0);
+        [GoMethod]
+        [return: GoReturn("int", "int")]
+        public (long, long) ReadVarint([GoParam("int")] long off)
+        {
+            // Go's abi.Name.ReadVarint decodes a varint from binary data
+            // Since we store names as managed strings, return the name length
+            long value = NameValue.Length;
+            return (value, 1);
+        }
     }
 
     [GoType("struct", Name = "Method", Package = "internal/abi")]
@@ -201,10 +260,45 @@ namespace Ngo.Runtime.Internal.Abi
         [GoMethod] [return: GoReturn("int")] public long NumIn() => InCount;
         [GoMethod] [return: GoReturn("int")] public long NumOut() => OutCount & ((1 << 5) - 1);
         [GoMethod] public bool IsVariadic() => (OutCount & (1 << 7)) != 0;
-        [GoMethod] [return: GoReturn("[]*Type")] public Slice<GoType> InSlice() => default;
-        [GoMethod] [return: GoReturn("[]*Type")] public Slice<GoType> OutSlice() => default;
-        [GoMethod] [return: GoReturn("*Type")] public GoType? In([GoParam("int")] long i) => null;
-        [GoMethod] [return: GoReturn("*Type")] public GoType? Out([GoParam("int")] long i) => null;
+        [GoMethod] [return: GoReturn("[]*Type")] public Slice<GoType> InSlice()
+        {
+            if (InTypes != null)
+            {
+                return new Slice<GoType>(InTypes);
+            }
+            return default;
+        }
+
+        [GoMethod] [return: GoReturn("[]*Type")] public Slice<GoType> OutSlice()
+        {
+            if (OutTypes != null)
+            {
+                return new Slice<GoType>(OutTypes);
+            }
+            return default;
+        }
+
+        [GoMethod]
+        [return: GoReturn("*Type")]
+        public GoType? In([GoParam("int")] long i)
+        {
+            if (InTypes != null && i >= 0 && i < InTypes.Length)
+            {
+                return InTypes[i];
+            }
+            return null;
+        }
+
+        [GoMethod]
+        [return: GoReturn("*Type")]
+        public GoType? Out([GoParam("int")] long i)
+        {
+            if (OutTypes != null && i >= 0 && i < OutTypes.Length)
+            {
+                return OutTypes[i];
+            }
+            return null;
+        }
     }
 
     [GoType("struct", Name = "InterfaceType", Package = "internal/abi")]

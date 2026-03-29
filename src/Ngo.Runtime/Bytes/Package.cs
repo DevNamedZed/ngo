@@ -511,12 +511,21 @@ namespace Ngo.Runtime.Bytes
         [GoFunc]
         public static Slice<long> Runes(Slice<byte> s)
         {
-            // stub: bytes.Runes(s []byte) []rune
             var str = global::System.Text.Encoding.UTF8.GetString(SliceToArray(s));
-            var result = new long[str.Length];
+            var runes = new global::System.Collections.Generic.List<long>();
             for (int i = 0; i < str.Length; i++)
-                result[i] = str[i];
-            return new Slice<long>(result);
+            {
+                if (char.IsHighSurrogate(str[i]) && i + 1 < str.Length && char.IsLowSurrogate(str[i + 1]))
+                {
+                    runes.Add(char.ConvertToUtf32(str[i], str[i + 1]));
+                    i++;
+                }
+                else
+                {
+                    runes.Add(str[i]);
+                }
+            }
+            return new Slice<long>(runes.ToArray());
         }
 
         [GoFunc]
@@ -584,7 +593,6 @@ namespace Ngo.Runtime.Bytes
         [GoFunc]
         public static Slice<Slice<byte>> SplitAfterN(Slice<byte> s, Slice<byte> sep, [GoParam("int")] long n)
         {
-            // stub: bytes.SplitAfterN(s, sep []byte, n int) [][]byte
             var str = global::System.Text.Encoding.UTF8.GetString(SliceToArray(s));
             var sepStr = global::System.Text.Encoding.UTF8.GetString(SliceToArray(sep));
             var partsList = new System.Collections.Generic.List<Slice<byte>>();

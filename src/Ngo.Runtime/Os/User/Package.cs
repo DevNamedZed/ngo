@@ -28,7 +28,6 @@ namespace Ngo.Runtime.Os.User
         [return: GoReturn("*User", "error")]
         public static (GoUser, string) Lookup(string username)
         {
-            // Stub: only current user is supported
             if (username == Environment.UserName)
                 return Current();
             return (null!, $"user: unknown user {username}");

@@ -1,21 +1,3 @@
-// -----------------------------------------------------------------------
-// <copyright file="GoWaitStatus.cs" company="Ziad">
-//  Copyright 2016 Ziad
-//
-//  Licensed under the Apache License, Version 2.0 (the "License");
-//  you may not use this file except in compliance with the License.
-//  You may obtain a copy of the License at
-//
-//  http://www.apache.org/licenses/LICENSE-2.0
-//
-//  Unless required by applicable law or agreed to in writing, software
-//  distributed under the License is distributed on an "AS IS" BASIS,
-//  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-//  See the License for the specific language governing permissions and
-//  limitations under the License.
-// </copyright>
-// -----------------------------------------------------------------------
-
 using Ngo.Runtime.Discovery;
 
 namespace Ngo.Runtime.Syscall
@@ -25,25 +7,42 @@ namespace Ngo.Runtime.Syscall
     {
         public long Value;
 
+        // Linux wait status encoding:
+        // If WIFEXITED: bits 15-8 = exit status, bits 7-0 = 0
+        // If WIFSIGNALED: bits 7-0 = signal number (non-zero), bit 7 = core dump
+        // If WIFSTOPPED: bits 15-8 = stop signal, bits 7-0 = 0x7f
+
         [GoMethod]
-        public bool Exited() => true;
+        public bool Exited() => ((int)Value & 0x7f) == 0;
+
         [GoMethod]
-        public long ExitStatus() => 0;
+        public long ExitStatus() => ((int)Value >> 8) & 0xff;
+
         [GoMethod]
-        public bool Signaled() => false;
+        public bool Signaled()
+        {
+            int signal = (int)Value & 0x7f;
+            return signal != 0 && signal != 0x7f;
+        }
+
         [GoMethod]
         [return: GoReturn("Signal")]
-        public long Signal() => 0;
+        public long Signal() => (int)Value & 0x7f;
+
         [GoMethod]
-        public bool CoreDump() => false;
+        public bool CoreDump() => Signaled() && ((int)Value & 0x80) != 0;
+
         [GoMethod]
-        public bool Stopped() => false;
+        public bool Stopped() => ((int)Value & 0xff) == 0x7f;
+
         [GoMethod]
-        public bool Continued() => false;
+        public bool Continued() => (int)Value == 0xffff;
+
         [GoMethod]
         [return: GoReturn("Signal")]
-        public long StopSignal() => 0;
+        public long StopSignal() => ((int)Value >> 8) & 0xff;
+
         [GoMethod]
-        public long TrapCause() => 0;
+        public long TrapCause() => ((int)Value >> 8) & 0xff;
     }
 }

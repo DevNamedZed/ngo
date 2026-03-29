@@ -38,7 +38,15 @@ namespace Ngo.Runtime.Os
         [GoMethod]
         public string Error() => $"{Syscall}: {Err}";
         [GoMethod]
-        public bool Timeout() => false;
+        public bool Timeout()
+        {
+            var timeoutMethod = Err?.GetType().GetMethod("Timeout");
+            if (timeoutMethod != null)
+            {
+                return timeoutMethod.Invoke(Err, null) is true;
+            }
+            return false;
+        }
         [GoMethod]
         [return: GoReturn("error")]
         public object Unwrap() => Err;

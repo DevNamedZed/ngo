@@ -31,16 +31,19 @@ namespace Ngo.Compiler.Emit
     /// </summary>
     internal sealed class EmitContext
     {
-        public EmitContext(IModuleBuilder module, TypeMapper mapper, EmitOptions? options = null)
+        public EmitContext(IModuleBuilder module, TypeMapper mapper, EmitOptions? options = null,
+            ICompilerLog? log = null)
         {
             Module = module;
             Mapper = mapper;
             Options = options ?? EmitOptions.Default;
+            Log = log ?? NullLog.Instance;
         }
 
         public IModuleBuilder Module { get; }
         public TypeMapper Mapper { get; }
         public EmitOptions Options { get; }
+        public ICompilerLog Log { get; }
         public ITypeBuilder PackageType { get; set; } = null!;
 
         // Track types that have been finalized (CreateType called) across packages
@@ -245,10 +248,29 @@ namespace Ngo.Compiler.Emit
             {
                 if (paramsHaveTB || IsNonRuntimeType(type))
                 {
-                    foreach (var m in type.GetMethods())
+                    try
                     {
-                        if (m.Name == name && m.GetParameters().Length == paramTypes.Length)
-                            return m;
+                        foreach (var m in type.GetMethods())
+                        {
+                            if (m.Name == name && m.GetParameters().Length == paramTypes.Length)
+                                return m;
+                        }
+                    }
+                    catch (NotSupportedException)
+                    {
+                        // TypeBuilderInstantiation doesn't support GetMethods()
+                        // Use TypeBuilder.GetMethod for generic type instantiations
+                        if (type.IsGenericType && type.GetGenericTypeDefinition() is System.Reflection.Emit.TypeBuilder genericDef)
+                        {
+                            var baseMethods = genericDef.GetMethods();
+                            foreach (var baseMethod in baseMethods)
+                            {
+                                if (baseMethod.Name == name && baseMethod.GetParameters().Length == paramTypes.Length)
+                                {
+                                    return System.Reflection.Emit.TypeBuilder.GetMethod(type, baseMethod);
+                                }
+                            }
+                        }
                     }
                 }
                 try

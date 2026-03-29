@@ -5,21 +5,14 @@ using System.Text.Json;
 namespace Ngo.Compiler.Cgo
 {
     /// <summary>
-    /// Manages CGo compilation artifacts alongside .ngo package archives.
-    /// Stores native library references and probe results as a companion .ngo.cgo file.
-    ///
-    /// Layout:
-    ///   ~/.ngo/cache/pkg/
-    ///   ├── mypackage.ngo         (Go metadata + IL)
-    ///   ├── mypackage.ngo.cgo     (CGo metadata: lib hash, probe results)
-    ///   └── cgo/                   (static libraries by hash, linked at build time)
-    ///       └── {hash}/
-    ///           └── libcgo_{pkg}.a
+    /// Manages CGo compilation artifacts inside .ngo ZIP archives.
+    /// Native libraries and probe results are stored in the native/ directory
+    /// within the ZIP archive.
     /// </summary>
     public static class CgoArchiveManager
     {
         /// <summary>
-        /// Save CGo compilation results alongside a .ngo archive.
+        /// Save CGo compilation results into a .ngo ZIP archive.
         /// </summary>
         public static void SaveCgoMetadata(string ngoArchivePath, CgoCompilationResult result)
         {
@@ -28,53 +21,12 @@ namespace Ngo.Compiler.Cgo
                 return;
             }
 
-            string cgoMetaPath = ngoArchivePath + ".cgo";
-            var metadata = new CgoArchiveMetadata
+            if (!File.Exists(ngoArchivePath))
             {
-                NativeLibraryPath = result.NativeLibraryPath,
-                CacheHit = result.CacheHit,
-                CompilerKind = result.CompilerInfo?.Kind.ToString() ?? "",
-                CompilerVersion = result.CompilerInfo?.Version ?? "",
-            };
-
-            // Copy probe results
-            if (result.ProbeResult != null)
-            {
-                foreach (var kv in result.ProbeResult.TypeSizes)
-                {
-                    metadata.TypeSizes[kv.Key] = kv.Value;
-                }
-                foreach (var kv in result.ProbeResult.EnumValues)
-                {
-                    metadata.EnumValues[kv.Key] = kv.Value;
-                }
+                return;
             }
 
-            string json = JsonSerializer.Serialize(metadata, new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(cgoMetaPath, json);
-        }
-
-        /// <summary>
-        /// Load CGo metadata from a .ngo.cgo companion file.
-        /// Returns null if no CGo metadata exists.
-        /// </summary>
-        public static CgoArchiveMetadata? LoadCgoMetadata(string ngoArchivePath)
-        {
-            string cgoMetaPath = ngoArchivePath + ".cgo";
-            if (!File.Exists(cgoMetaPath))
-            {
-                return null;
-            }
-
-            try
-            {
-                string json = File.ReadAllText(cgoMetaPath);
-                return JsonSerializer.Deserialize<CgoArchiveMetadata>(json);
-            }
-            catch
-            {
-                return null;
-            }
+            Emit.NgoArchive.WriteCgoData(ngoArchivePath, result.NativeLibraryPath, result.ProbeResult);
         }
 
         /// <summary>
@@ -82,31 +34,22 @@ namespace Ngo.Compiler.Cgo
         /// </summary>
         public static bool HasValidNativeLibrary(string ngoArchivePath)
         {
-            var metadata = LoadCgoMetadata(ngoArchivePath);
-            if (metadata == null)
-            {
-                return false;
-            }
-            return !string.IsNullOrEmpty(metadata.NativeLibraryPath) &&
-                   File.Exists(metadata.NativeLibraryPath);
+            var libPath = GetNativeLibraryPath(ngoArchivePath);
+            return libPath != null;
         }
 
         /// <summary>
         /// Get the native library path for a cached CGo package.
+        /// Extracts the library from the ZIP archive to a temp directory.
         /// </summary>
         public static string? GetNativeLibraryPath(string ngoArchivePath)
         {
-            var metadata = LoadCgoMetadata(ngoArchivePath);
-            if (metadata?.NativeLibraryPath != null && File.Exists(metadata.NativeLibraryPath))
-            {
-                return metadata.NativeLibraryPath;
-            }
-            return null;
+            return Emit.NgoArchive.ReadCgoNativeLibrary(ngoArchivePath);
         }
     }
 
     /// <summary>
-    /// Serializable metadata for CGo compilation stored alongside .ngo archives.
+    /// Serializable metadata for CGo compilation.
     /// </summary>
     public class CgoArchiveMetadata
     {

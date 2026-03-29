@@ -346,8 +346,19 @@ namespace Ngo.Runtime.Reflect
         [GoMethod]
         public long ChanDir()
         {
-            // BothDir = 3, SendDir = 2, RecvDir = 1
-            return 3; // stub — assume BothDir
+            if (_clrType != null && _clrType.IsGenericType)
+            {
+                var genericDef = _clrType.GetGenericTypeDefinition();
+                if (genericDef.Name.Contains("SendOnly"))
+                {
+                    return 2;
+                }
+                if (genericDef.Name.Contains("RecvOnly"))
+                {
+                    return 1;
+                }
+            }
+            return 3;
         }
 
         [GoMethod]

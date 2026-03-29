@@ -47,13 +47,15 @@ namespace Ngo.Compiler.Emit
     public sealed class SerializedMethodInfo
     {
         public SerializedMethodInfo(string methodName, MethodAttributes attributes,
-            string returnTypeName, string[] paramTypeNames, int bodyIndex)
+            string returnTypeName, string[] paramTypeNames, int bodyIndex,
+            string[] genericParamNames)
         {
             MethodName = methodName;
             Attributes = attributes;
             ReturnTypeName = returnTypeName;
             ParamTypeNames = paramTypeNames;
             BodyIndex = bodyIndex;
+            GenericParamNames = genericParamNames;
         }
 
         public string MethodName { get; }
@@ -65,6 +67,8 @@ namespace Ngo.Compiler.Emit
         public string[] ParamTypeNames { get; }
 
         public int BodyIndex { get; }
+
+        public string[] GenericParamNames { get; }
     }
 
     /// <summary>

@@ -16,6 +16,11 @@ namespace Ngo.Runtime.Os.Exec
 
         [GoMethod]
         [return: GoReturn("interface{}")]
-        public object? Sys() => null;
+        public object? Sys()
+        {
+            var waitStatus = new Syscall.GoWaitStatus();
+            waitStatus.Value = (ExitCode() & 0xff) << 8;
+            return waitStatus;
+        }
     }
 }

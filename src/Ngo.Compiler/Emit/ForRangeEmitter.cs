@@ -442,20 +442,139 @@ namespace Ngo.Compiler.Emit
         {
             // Go 1.23 range-over-func: for k, v := range iterFunc { body }
             // Lowers to: iterFunc(func(k K, v V) bool { body; return true })
-            //
-            // Full implementation requires creating a delegate wrapping the loop body.
-            // For dependency compilation, skip emission (types are already resolved).
-            // Runtime emission requires ClosureEmitter integration — tracked separately.
+            // break → return false, continue → return true
+
             if (_ctx.IsDependencyEmit)
             {
                 return;
             }
 
-            // Emit the iterator expression and pop — the body cannot be emitted inline
-            // because it must be wrapped in a delegate. This is a known limitation
-            // pending ClosureEmitter integration for range-over-func.
+            // Determine yield function parameter types from the range key/value
+            var yieldParamTypes = new System.Collections.Generic.List<Type>();
+            if (forRange.Key != null)
+            {
+                yieldParamTypes.Add(_ctx.Mapper.Map(forRange.Key.Type));
+            }
+            if (forRange.Value != null)
+            {
+                yieldParamTypes.Add(_ctx.Mapper.Map(forRange.Value.Type));
+            }
+
+            // Create the yield method: func(k K, v V) bool { body; return true }
+            var yieldName = $"__range_yield_{_body.LambdaCounter++}";
+            var yieldMethod = _ctx.PackageType.DefineMethod(
+                yieldName,
+                System.Reflection.MethodAttributes.Private | System.Reflection.MethodAttributes.Static,
+                typeof(bool),
+                yieldParamTypes.ToArray());
+
+            // Define parameter names
+            int paramIndex = 0;
+            if (forRange.Key != null)
+            {
+                yieldMethod.DefineParameter(paramIndex + 1, System.Reflection.ParameterAttributes.None, forRange.Key.Name);
+                paramIndex++;
+            }
+            if (forRange.Value != null)
+            {
+                yieldMethod.DefineParameter(paramIndex + 1, System.Reflection.ParameterAttributes.None, forRange.Value.Name);
+                paramIndex++;
+            }
+
+            // Save current method state
+            var savedIL = _ctx.IL;
+            var savedLocals = new System.Collections.Generic.Dictionary<Symbols.Symbol, LocalBuilder>(_ctx.Locals);
+            var savedParams = new System.Collections.Generic.Dictionary<Symbols.Symbol, int>(_ctx.Parameters);
+            var savedReturnTypes = _body.CurrentReturnTypes;
+
+            // Switch to yield method body
+            _ctx.IL = yieldMethod.GetILWriter();
+            _ctx.Locals.Clear();
+            _ctx.Parameters.Clear();
+            _body.CurrentReturnTypes = new Symbols.TypeSymbol[] { Symbols.BuiltinTypes.Bool };
+
+            // Map key/value params
+            paramIndex = 0;
+            if (forRange.Key != null)
+            {
+                _ctx.Parameters[forRange.Key] = paramIndex++;
+            }
+            if (forRange.Value != null)
+            {
+                _ctx.Parameters[forRange.Value] = paramIndex++;
+            }
+
+            // break → return false, continue → return true
+            var breakLabel = _ctx.IL.DefineLabel();
+            var continueLabel = _ctx.IL.DefineLabel();
+
+            _body.PushLoopLabels(breakLabel, continueLabel);
+            _body.EmitBlock(forRange.Body);
+            _ctx.LoopLabels.Pop();
+
+            // Normal completion: return true (continue iterating)
+            _ctx.IL.MarkLabel(continueLabel);
+            _ctx.IL.Emit(OpCodes.Ldc_I4_1);
+            _ctx.IL.Emit(OpCodes.Ret);
+
+            // break: return false (stop iterating)
+            _ctx.IL.MarkLabel(breakLabel);
+            _ctx.IL.Emit(OpCodes.Ldc_I4_0);
+            _ctx.IL.Emit(OpCodes.Ret);
+
+            // Restore method state
+            _ctx.IL = savedIL;
+            _ctx.Locals.Clear();
+            foreach (var kvp in savedLocals)
+            {
+                _ctx.Locals[kvp.Key] = kvp.Value;
+            }
+            _ctx.Parameters.Clear();
+            foreach (var kvp in savedParams)
+            {
+                _ctx.Parameters[kvp.Key] = kvp.Value;
+            }
+            _body.CurrentReturnTypes = savedReturnTypes;
+
+            // Build the delegate type: Func<K, V, bool> or Func<V, bool> or Func<bool>
+            Type delegateType;
+            if (yieldParamTypes.Count == 0)
+            {
+                delegateType = typeof(System.Func<bool>);
+            }
+            else if (yieldParamTypes.Count == 1)
+            {
+                delegateType = typeof(System.Func<,>).MakeGenericType(yieldParamTypes[0], typeof(bool));
+            }
+            else
+            {
+                delegateType = typeof(System.Func<,,>).MakeGenericType(yieldParamTypes[0], yieldParamTypes[1], typeof(bool));
+            }
+
+            // Create the delegate: new Func<K,V,bool>(null, &yieldMethod)
+            _ctx.IL.Emit(OpCodes.Ldnull);
+            _ctx.IL.Emit(OpCodes.Ldftn, yieldMethod.AsMethodInfo());
+            var delegateCtor = EmitContext.GetConstructorSafe(delegateType, new[] { typeof(object), typeof(System.IntPtr) });
+            _ctx.IL.Emit(OpCodes.Newobj, delegateCtor);
+
+            // Build the iterator delegate type: Action<Func<K,V,bool>>
+            var iteratorDelegateType = typeof(System.Action<>).MakeGenericType(delegateType);
+
+            // Wrap in Action if the iterator expression is a raw function value
+            var iteratorLocal = _ctx.IL.DeclareLocal(delegateType);
+            _ctx.IL.Emit(OpCodes.Stloc, iteratorLocal);
+
+            // Emit the iterator function expression
             _body.EmitExpression(forRange.Iterable);
-            _ctx.IL.Emit(OpCodes.Pop);
+
+            // Cast to Action<Func<...>> and invoke with the yield delegate
+            var iterLocal = _ctx.IL.DeclareLocal(iteratorDelegateType);
+            _ctx.IL.Emit(OpCodes.Castclass, iteratorDelegateType);
+            _ctx.IL.Emit(OpCodes.Stloc, iterLocal);
+            _ctx.IL.Emit(OpCodes.Ldloc, iterLocal);
+            _ctx.IL.Emit(OpCodes.Ldloc, iteratorLocal);
+            var invokeMethod = iteratorDelegateType.GetMethod("Invoke")!;
+            _ctx.IL.Emit(OpCodes.Callvirt, invokeMethod);
         }
 
         /// <summary>

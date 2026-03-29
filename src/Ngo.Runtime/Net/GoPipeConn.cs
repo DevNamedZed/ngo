@@ -12,6 +12,8 @@ namespace Ngo.Runtime.Net
         private int _currentOffset;
         private volatile bool _closed;
         private readonly string _name;
+        private int _readTimeoutMs;
+        private int _writeTimeoutMs;
 
         internal GoPipeConn(BlockingCollection<byte[]> readQueue, BlockingCollection<byte[]> writeQueue, string name)
         {
@@ -104,9 +106,40 @@ namespace Ngo.Runtime.Net
 
         public IGoNetAddr LocalAddr() => new PipeAddr();
         public IGoNetAddr RemoteAddr() => new PipeAddr();
-        public string SetDeadline(object t) => null!;
-        public string SetReadDeadline(object t) => null!;
-        public string SetWriteDeadline(object t) => null!;
+        public string SetDeadline(object t)
+        {
+            SetReadDeadline(t);
+            SetWriteDeadline(t);
+            return null!;
+        }
+
+        public string SetReadDeadline(object t)
+        {
+            if (t is Ngo.Runtime.Time.GoTimeValue timeVal)
+            {
+                var duration = timeVal.Sub(Ngo.Runtime.Time.GoTime.Now());
+                _readTimeoutMs = duration > 0 ? (int)(duration / 1_000_000) : 1;
+            }
+            else
+            {
+                _readTimeoutMs = 0;
+            }
+            return null!;
+        }
+
+        public string SetWriteDeadline(object t)
+        {
+            if (t is Ngo.Runtime.Time.GoTimeValue timeVal)
+            {
+                var duration = timeVal.Sub(Ngo.Runtime.Time.GoTime.Now());
+                _writeTimeoutMs = duration > 0 ? (int)(duration / 1_000_000) : 1;
+            }
+            else
+            {
+                _writeTimeoutMs = 0;
+            }
+            return null!;
+        }
 
         internal static (GoPipeConn, GoPipeConn) CreatePair()
         {

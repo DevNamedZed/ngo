@@ -279,11 +279,15 @@ namespace Ngo.Compiler.Emit
                 delegateType = funcLit.FunctionType.ReturnTypes.Count == 0
                     ? typeof(Action) : typeof(Func<object>);
             }
-            MethodInfo? runtimeMethod = null;
-            try { runtimeMethod = closureType.GetMethod("Invoke"); } catch { }
-            if (runtimeMethod == null)
+            MethodInfo runtimeMethod;
+            if (closureType is TypeBuilder)
             {
                 runtimeMethod = new Builder.NgoProxyMethodInfo(closureType, "Invoke");
+            }
+            else
+            {
+                runtimeMethod = closureType.GetMethod("Invoke")
+                    ?? new Builder.NgoProxyMethodInfo(closureType, "Invoke");
             }
             _ctx.IL.Emit(OpCodes.Ldloc, closureLocal);
             _ctx.IL.Emit(OpCodes.Ldftn, runtimeMethod);

@@ -33,9 +33,25 @@ namespace Ngo.Runtime.Net
         public string Error() => $"{Op} {Net}: {Err}";
 
         [GoMethod]
-        public bool Timeout() => false;
+        public bool Timeout()
+        {
+            var timeoutMethod = Err?.GetType().GetMethod("Timeout");
+            if (timeoutMethod != null)
+            {
+                return timeoutMethod.Invoke(Err, null) is true;
+            }
+            return false;
+        }
 
         [GoMethod]
-        public bool Temporary() => false;
+        public bool Temporary()
+        {
+            var tempMethod = Err?.GetType().GetMethod("Temporary");
+            if (tempMethod != null)
+            {
+                return tempMethod.Invoke(Err, null) is true;
+            }
+            return false;
+        }
     }
 }

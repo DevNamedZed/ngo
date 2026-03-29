@@ -36,21 +36,24 @@ namespace Ngo.Runtime.Internal.Poll
         [return: GoReturn("int64", "bool", "error")]
         public static (long, bool, object?) CopyFileRange(GoFD dst, GoFD src, long remain)
         {
-            return (0, false, "not supported");
+            // Return (0, false, null) to indicate syscall not handled — Go uses userspace fallback
+            return (0, false, null);
         }
 
         [GoFunc]
         [return: GoReturn("int64", "bool", "string", "error")]
         public static (long, bool, string, object?) Splice(GoFD dst, GoFD src, long remain)
         {
-            return (0, false, "", "not supported");
+            // Return false to indicate splice not handled — Go uses userspace fallback
+            return (0, false, "", null);
         }
 
         [GoFunc]
         [return: GoReturn("int64", "error", "bool")]
         public static (long, object?, bool) SendFile(GoFD dstFD, [GoParam("int")] long src, long remain)
         {
-            return (0, "not supported", false);
+            // Return false to indicate sendfile not handled — Go uses userspace fallback
+            return (0, null, false);
         }
 
         [GoFunc]

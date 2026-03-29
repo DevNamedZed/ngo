@@ -20,6 +20,8 @@ namespace Ngo.Runtime.Net
             _stream = client.GetStream();
         }
 
+        internal TcpClient? GetTcpClient() => _client;
+
         public (int, string) Read(Slice<byte> b)
         {
             try
@@ -231,7 +233,14 @@ namespace Ngo.Runtime.Net
 
         [GoMethod]
         [return: GoReturn("net.Conn")]
-        public object? SyscallConn() => null;
+        public object? SyscallConn()
+        {
+            if (_client?.Client != null)
+            {
+                return _client.Client.Handle.ToInt64();
+            }
+            return null;
+        }
 
         private static int ExtractTimeoutMs(object t)
         {

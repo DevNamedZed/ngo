@@ -124,7 +124,14 @@ namespace Ngo.Runtime.Crypto.Tls
 
         [GoMethod]
         [return: GoReturn("net.Conn")]
-        public object? NetConn() => null;
+        public object? NetConn()
+        {
+            if (_tcpClient != null)
+            {
+                return new Net.GoTCPConn(_tcpClient);
+            }
+            return null;
+        }
 
         [GoMethod]
         [return: GoReturn("net.Addr")]
@@ -150,23 +157,76 @@ namespace Ngo.Runtime.Crypto.Tls
 
         [GoMethod]
         [return: GoReturn("error")]
-        public object? SetDeadline([GoParam("time.Time")] object? t) => null;
+        public object? SetDeadline([GoParam("time.Time")] object? t)
+        {
+            SetReadDeadline(t);
+            SetWriteDeadline(t);
+            return null;
+        }
 
         [GoMethod]
         [return: GoReturn("error")]
-        public object? SetReadDeadline([GoParam("time.Time")] object? t) => null;
+        public object? SetReadDeadline([GoParam("time.Time")] object? t)
+        {
+            if (_tcpClient?.Client != null && t is Ngo.Runtime.Time.GoTimeValue timeVal)
+            {
+                var duration = timeVal.Sub(Ngo.Runtime.Time.GoTime.Now());
+                _tcpClient.Client.ReceiveTimeout = duration > 0 ? (int)(duration / 1_000_000) : 1;
+            }
+            return null;
+        }
 
         [GoMethod]
         [return: GoReturn("error")]
-        public object? SetWriteDeadline([GoParam("time.Time")] object? t) => null;
+        public object? SetWriteDeadline([GoParam("time.Time")] object? t)
+        {
+            if (_tcpClient?.Client != null && t is Ngo.Runtime.Time.GoTimeValue timeVal)
+            {
+                var duration = timeVal.Sub(Ngo.Runtime.Time.GoTime.Now());
+                _tcpClient.Client.SendTimeout = duration > 0 ? (int)(duration / 1_000_000) : 1;
+            }
+            return null;
+        }
 
         [GoMethod]
         [return: GoReturn("error")]
-        public object? CloseWrite() => null;
+        public object? CloseWrite()
+        {
+            try
+            {
+                _tcpClient?.Client?.Shutdown(SocketShutdown.Send);
+                return null;
+            }
+            catch (System.Exception ex)
+            {
+                return ex.Message;
+            }
+        }
 
         [GoMethod]
         [return: GoReturn("error")]
-        public object? VerifyHostname(string host) => null;
+        public object? VerifyHostname(string host)
+        {
+            if (_sslStream == null)
+            {
+                return "tls: no TLS connection";
+            }
+            if (!_sslStream.IsAuthenticated)
+            {
+                return "tls: handshake has not yet been performed";
+            }
+            if (_sslStream.RemoteCertificate == null)
+            {
+                return "tls: no peer certificate";
+            }
+            var cert = new System.Security.Cryptography.X509Certificates.X509Certificate2(_sslStream.RemoteCertificate);
+            bool match = cert.GetNameInfo(System.Security.Cryptography.X509Certificates.X509NameType.DnsName, false) == host;
+            if (!match)
+            {
+                return $"x509: certificate is valid for {cert.GetNameInfo(System.Security.Cryptography.X509Certificates.X509NameType.DnsName, false)}, not {host}";
+            }
+            return null;
+        }
 
         private static long MapSslProtocol(System.Security.Authentication.SslProtocols protocol)
         {

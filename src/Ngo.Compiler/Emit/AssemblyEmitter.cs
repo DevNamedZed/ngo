@@ -175,7 +175,7 @@ namespace Ngo.Compiler.Emit
 
                     if (linkError != null)
                     {
-                        Console.Error.WriteLine($"cgo: warning: link failed: {linkError}");
+                        compilation.Log.Warn($"cgo: warning: link failed: {linkError}");
                         return;
                     }
 
@@ -194,7 +194,7 @@ namespace Ngo.Compiler.Emit
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"cgo: warning: failed to compile C code: {ex.Message}");
+                compilation.Log.Warn($"cgo: warning: failed to compile C code: {ex.Message}");
             }
         }
 
@@ -204,7 +204,7 @@ namespace Ngo.Compiler.Emit
         private static EmitContext EmitCore(AnalysisResult result, ModuleBuilder moduleBuilder, EmitOptions? options, Semantics.CompilationContext compilationContext)
         {
             var mapper = new TypeMapper(compilationContext);
-            var ctx = new EmitContext(new LiveModuleBuilder(moduleBuilder), mapper, options);
+            var ctx = new EmitContext(new LiveModuleBuilder(moduleBuilder), mapper, options, compilationContext.Log);
             mapper.SetEmitContext(ctx);
 
             // Link dependency IL from .ngo archives on disk
@@ -324,7 +324,7 @@ namespace Ngo.Compiler.Emit
                     }
                     catch (Exception ex)
                     {
-                        System.Console.Error.WriteLine($"ngo: dependency link failed for '{importPath}': {ex.GetType().Name}: {ex.Message}");
+                        compilationContext.Log.Warn($"ngo: dependency link failed for '{importPath}': {ex.GetType().Name}: {ex.Message}");
                     }
                 }
             }
@@ -455,8 +455,8 @@ namespace Ngo.Compiler.Emit
             }
             catch (Exception ex)
             {
-                System.Console.Error.WriteLine($"ngo: dependency emit failed for '{importPath}': {ex.GetType().Name}: {ex.Message}");
-                System.Console.Error.WriteLine(ex.StackTrace);
+                compilationContext.Log.Warn($"ngo: dependency emit failed for '{importPath}': {ex.GetType().Name}: {ex.Message}");
+                compilationContext.Log.Debug(ex.StackTrace ?? "");
             }
         }
 
@@ -554,7 +554,7 @@ namespace Ngo.Compiler.Emit
                     }
                     catch (TypeLoadException ex)
                     {
-                        System.Console.Error.WriteLine($"ngo: struct finalize failed '{kvp.Key.Name}': {ex.Message}");
+                        ctx.Log.Warn($"ngo: struct finalize failed '{kvp.Key.Name}': {ex.Message} (base={kvp.Value.AsType().BaseType?.Name})");
                     }
                 }
             }

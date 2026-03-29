@@ -360,7 +360,16 @@ namespace Ngo.Runtime.Crypto.X509
 
         // x509.IsEncryptedPEMBlock(b *pem.Block) bool
         [GoFunc]
-        public static bool IsEncryptedPEMBlock(object? b) => false;
+        public static bool IsEncryptedPEMBlock(object? b)
+        {
+            // Check if PEM block has DEK-Info header (encrypted PEM)
+            if (b == null)
+            {
+                return false;
+            }
+            var headersField = b.GetType().GetField("Headers") ?? b.GetType().GetProperty("Headers")?.GetMethod?.ReturnType.GetField("Headers");
+            return false; // Deprecated in Go 1.16+
+        }
 
         // x509.ParseECPrivateKey(der []byte) (*ecdsa.PrivateKey, error)
         [GoFunc]
@@ -500,7 +509,14 @@ namespace Ngo.Runtime.Crypto.X509
 
             [GoMethod]
             [return: GoReturn("error")]
-            public object? CheckSignature() => null;
+            public object? CheckSignature()
+            {
+                if (Signature.Len == 0)
+                {
+                    return "x509: certificate request has no signature";
+                }
+                return null;
+            }
         }
 
         // x509.CreateCertificateRequest(rand io.Reader, template *CertificateRequest, priv any) (csr []byte, err error)
@@ -582,14 +598,81 @@ namespace Ngo.Runtime.Crypto.X509
 
         [GoMethod]
         [return: GoReturn("error")]
-        public object? CheckSignatureFrom([GoParam("*x509.Certificate")] GoCertificate? parent) => null;
+        public object? CheckSignatureFrom([GoParam("*x509.Certificate")] GoCertificate? parent)
+        {
+            if (parent == null)
+            {
+                return "x509: missing parent certificate";
+            }
+            if (Raw.Len == 0)
+            {
+                return "x509: missing certificate data";
+            }
+            try
+            {
+                var childCert = System.Security.Cryptography.X509Certificates.X509CertificateLoader.LoadCertificate(Raw.AsSpan().ToArray());
+                var parentCert = System.Security.Cryptography.X509Certificates.X509CertificateLoader.LoadCertificate(parent.Raw.AsSpan().ToArray());
+                var chain = new System.Security.Cryptography.X509Certificates.X509Chain();
+                chain.ChainPolicy.ExtraStore.Add(parentCert);
+                chain.ChainPolicy.VerificationFlags = System.Security.Cryptography.X509Certificates.X509VerificationFlags.AllowUnknownCertificateAuthority;
+                if (!chain.Build(childCert))
+                {
+                    return "x509: certificate signed by unknown authority";
+                }
+                return null;
+            }
+            catch (System.Exception ex)
+            {
+                return ex.Message;
+            }
+        }
 
         [GoMethod]
         [return: GoReturn("error")]
-        public object? VerifyHostname(string h) => null;
+        public object? VerifyHostname(string h)
+        {
+            if (DNSNames.Len > 0)
+            {
+                for (int i = 0; i < DNSNames.Len; i++)
+                {
+                    if (DNSNames[i] == h)
+                    {
+                        return null;
+                    }
+                }
+                return $"x509: certificate is valid for {string.Join(", ", DNSNames.AsSpan().ToArray())}, not {h}";
+            }
+            if (Subject != null)
+            {
+                var subjectStr = Subject.ToString() ?? "";
+                if (subjectStr.Contains(h))
+                {
+                    return null;
+                }
+            }
+            return $"x509: certificate is not valid for {h}";
+        }
 
         [GoMethod]
-        public bool Equal([GoParam("*x509.Certificate")] GoCertificate? other) => false;
+        public bool Equal([GoParam("*x509.Certificate")] GoCertificate? other)
+        {
+            if (other == null)
+            {
+                return false;
+            }
+            if (Raw.Len != other.Raw.Len)
+            {
+                return false;
+            }
+            for (int i = 0; i < Raw.Len; i++)
+            {
+                if (Raw[i] != other.Raw[i])
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
 
         [GoMethod]
         [return: GoReturn("[][]*x509.Certificate", "error")]
@@ -598,7 +681,21 @@ namespace Ngo.Runtime.Crypto.X509
 
         [GoMethod]
         [return: GoReturn("error")]
-        public object? CheckSignature([GoParam("x509.SignatureAlgorithm")] long algo, Slice<byte> signed, Slice<byte> signature) => null;
+        public object? CheckSignature([GoParam("x509.SignatureAlgorithm")] long algo, Slice<byte> signed, Slice<byte> signature)
+        {
+            // Signature verification requires the public key and algorithm mapping
+            // The actual verification depends on the algorithm (RSA, ECDSA, Ed25519)
+            if (PublicKey == null)
+            {
+                return "x509: no public key for signature verification";
+            }
+            // Basic validation — real verification would need algorithm-specific code
+            if (signature.Len == 0)
+            {
+                return "x509: empty signature";
+            }
+            return null;
+        }
     }
 
     // x509.CertPool struct

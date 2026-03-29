@@ -26,11 +26,20 @@ namespace Ngo.Compiler.Emit.Builder
     {
         private readonly Type _declaringType;
         private readonly string _name;
+        private readonly Type[] _parameterTypes;
+        private readonly Type _returnType;
 
         public NgoProxyMethodInfo(Type declaringType, string name)
+            : this(declaringType, name, Type.EmptyTypes, typeof(void))
+        {
+        }
+
+        public NgoProxyMethodInfo(Type declaringType, string name, Type[] parameterTypes, Type returnType)
         {
             _declaringType = declaringType;
             _name = name;
+            _parameterTypes = parameterTypes ?? Type.EmptyTypes;
+            _returnType = returnType ?? typeof(void);
         }
 
         public override Type DeclaringType => _declaringType;
@@ -38,15 +47,57 @@ namespace Ngo.Compiler.Emit.Builder
         public override Type ReflectedType => _declaringType;
         public override MethodAttributes Attributes => MethodAttributes.Public | MethodAttributes.Static;
         public override RuntimeMethodHandle MethodHandle => throw new NotSupportedException();
-        public override Type ReturnType => typeof(void);
+        public override Type ReturnType => _returnType;
         public override MethodInfo GetBaseDefinition() => this;
         public override object[] GetCustomAttributes(bool inherit) => Array.Empty<object>();
         public override object[] GetCustomAttributes(Type attributeType, bool inherit) => Array.Empty<object>();
         public override MethodImplAttributes GetMethodImplementationFlags() => MethodImplAttributes.IL;
-        public override ParameterInfo[] GetParameters() => Array.Empty<ParameterInfo>();
+
+        public override ParameterInfo[] GetParameters()
+        {
+            var result = new ParameterInfo[_parameterTypes.Length];
+            for (int i = 0; i < _parameterTypes.Length; i++)
+            {
+                result[i] = new NgoProxyParameterInfo(_parameterTypes[i], i);
+            }
+            return result;
+        }
         public override object Invoke(object? obj, BindingFlags invokeAttr, Binder? binder, object?[]? parameters, CultureInfo? culture)
             => throw new NotSupportedException();
         public override ICustomAttributeProvider ReturnTypeCustomAttributes => throw new NotSupportedException();
         public override bool IsDefined(Type attributeType, bool inherit) => false;
+
+        public override bool IsGenericMethod => _genericArgs != null;
+        public override bool IsGenericMethodDefinition => _isGenericDef;
+
+        private Type[]? _genericArgs;
+        private bool _isGenericDef;
+
+        internal void SetIsGenericDefinition()
+        {
+            _isGenericDef = true;
+        }
+
+        public override MethodInfo MakeGenericMethod(params Type[] typeArguments)
+        {
+            var instantiated = new NgoProxyMethodInfo(_declaringType, _name, _parameterTypes, _returnType);
+            instantiated._genericArgs = typeArguments;
+            return instantiated;
+        }
+
+        public override Type[] GetGenericArguments()
+        {
+            return _genericArgs ?? Type.EmptyTypes;
+        }
     }
+
+    internal sealed class NgoProxyParameterInfo : ParameterInfo
+    {
+        public NgoProxyParameterInfo(Type parameterType, int position)
+        {
+            ClassImpl = parameterType;
+            PositionImpl = position;
+        }
+    }
+
 }

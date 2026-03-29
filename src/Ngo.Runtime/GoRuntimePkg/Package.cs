@@ -159,18 +159,56 @@ namespace Ngo.Runtime.GoRuntimePkg
             throw new ThreadInterruptedException("runtime.Goexit");
         }
 
-        public static void LockOSThread() { }
-        public static void UnlockOSThread() { }
+        public static void LockOSThread()
+        {
+            System.Threading.Thread.BeginThreadAffinity();
+        }
+
+        public static void UnlockOSThread()
+        {
+            System.Threading.Thread.EndThreadAffinity();
+        }
+
+        internal static bool _tracing;
+        private static long _blockProfileRate;
+        private static long _mutexProfileFraction;
+        private static long _cpuProfileRate;
 
         [return: GoReturn("error")]
-        public static object? StartTrace() { return null; }
-        public static Slice<byte> ReadTrace() { return new Slice<byte>(Array.Empty<byte>()); }
-        public static void StopTrace() { }
+        public static object? StartTrace()
+        {
+            _tracing = true;
+            return null;
+        }
+
+        public static Slice<byte> ReadTrace()
+        {
+            return new Slice<byte>(Array.Empty<byte>());
+        }
+
+        public static void StopTrace()
+        {
+            _tracing = false;
+        }
+
         public static long MemProfileRate { get; set; } = 512 * 1024;
 
-        public static void SetBlockProfileRate(long rate) { }
-        public static long SetMutexProfileFraction(long rate) { return 0; }
-        public static void SetCPUProfileRate(long hz) { }
+        public static void SetBlockProfileRate(long rate)
+        {
+            _blockProfileRate = rate;
+        }
+
+        public static long SetMutexProfileFraction(long rate)
+        {
+            long previous = _mutexProfileFraction;
+            _mutexProfileFraction = rate;
+            return previous;
+        }
+
+        public static void SetCPUProfileRate(long hz)
+        {
+            _cpuProfileRate = hz;
+        }
 
         public static GoRuntimeFrames CallersFrames(Slice<long> callers)
         {

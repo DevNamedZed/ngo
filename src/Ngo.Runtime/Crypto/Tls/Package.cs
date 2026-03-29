@@ -219,13 +219,55 @@ namespace Ngo.Runtime.Crypto.Tls
         [GoFunc]
         [return: GoReturn("*tls.Conn")]
         public static object? Client([GoParam("net.Conn")] object? conn, [GoParam("*tls.Config")] GoConfig? config)
-            => null;
+        {
+            if (conn is Net.GoTCPConn tcpConn && tcpConn.GetTcpClient() is TcpClient client)
+            {
+                try
+                {
+                    var serverName = config?.ServerName ?? "";
+                    var sslStream = new SslStream(client.GetStream(), false);
+                    sslStream.AuthenticateAsClient(serverName);
+                    return new GoConn(client, sslStream, serverName);
+                }
+                catch (System.Exception)
+                {
+                    return null;
+                }
+            }
+            return null;
+        }
 
         // tls.Server(conn net.Conn, config *Config) *Conn
         [GoFunc]
         [return: GoReturn("*tls.Conn")]
         public static object? Server([GoParam("net.Conn")] object? conn, [GoParam("*tls.Config")] GoConfig? config)
-            => null;
+        {
+            // Server-side TLS requires a certificate
+            if (conn is Net.GoTCPConn tcpConn && tcpConn.GetTcpClient() is TcpClient client
+                && config?.Certificates != null && config.Certificates.Len > 0)
+            {
+                try
+                {
+                    var sslStream = new SslStream(client.GetStream(), false);
+                    var tlsCert = config.Certificates[0];
+                    if (tlsCert.Certificate_.Len > 0)
+                    {
+                        var certBytes = new byte[tlsCert.Certificate_[0].Len];
+                        for (int i = 0; i < certBytes.Length; i++)
+                        {
+                            certBytes[i] = tlsCert.Certificate_[0][i];
+                        }
+                        var x509Cert = System.Security.Cryptography.X509Certificates.X509CertificateLoader.LoadCertificate(certBytes);
+                        sslStream.AuthenticateAsServer(x509Cert);
+                        return new GoConn(client, sslStream, "");
+                    }
+                }
+                catch (System.Exception)
+                {
+                }
+            }
+            return null;
+        }
 
         // tls.NewListener(inner net.Listener, config *Config) net.Listener
         [GoFunc]

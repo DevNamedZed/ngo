@@ -31,6 +31,7 @@ namespace Ngo.Compiler.Emit.Builder
         private readonly List<string> _paramTypeNames;
         private NgoWriter? _writer;
         private readonly NgoProxyMethodInfo _proxy;
+        private string[] _genericParamNames = Array.Empty<string>();
 
         public NgoMethodBuilder(Type declaringType, string name, MethodAttributes attrs, Type? returnType, Type[]? paramTypes)
         {
@@ -44,7 +45,7 @@ namespace Ngo.Compiler.Emit.Builder
                 foreach (var pt in paramTypes)
                     _paramTypeNames.Add(NgoWriter.GetTypeNameStatic(pt));
             }
-            _proxy = new NgoProxyMethodInfo(declaringType, name);
+            _proxy = new NgoProxyMethodInfo(declaringType, name, paramTypes ?? Type.EmptyTypes, returnType ?? typeof(void));
         }
 
         public string Name => _name;
@@ -52,12 +53,16 @@ namespace Ngo.Compiler.Emit.Builder
         public string ReturnTypeName => _returnTypeName;
         public IReadOnlyList<string> ParamTypeNames => _paramTypeNames;
         public NgoWriter? Writer => _writer;
+        public IReadOnlyList<string> GenericParamNames => _genericParamNames;
 
         public Type[] DefineGenericParameters(string[] names)
         {
+            _genericParamNames = names;
             var result = new Type[names.Length];
             for (int i = 0; i < names.Length; i++)
+            {
                 result[i] = new NgoProxyType(names[i]);
+            }
             return result;
         }
 

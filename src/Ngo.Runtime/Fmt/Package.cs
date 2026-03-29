@@ -468,7 +468,12 @@ namespace Ngo.Runtime.Fmt
 
         private static string FormatPointer(object? arg)
         {
-            return "0x0"; // Simplified — real pointers not tracked
+            if (arg == null)
+            {
+                return "0x0";
+            }
+            int hash = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(arg);
+            return $"0x{hash:x}";
         }
 
         private static string FormatType(object? arg)

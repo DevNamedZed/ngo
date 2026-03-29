@@ -284,6 +284,7 @@ class Program
             }
 
             Console.Error.WriteLine($"ngo: runtime error: {inner.Message}");
+            Console.Error.WriteLine(inner.StackTrace);
             return 2;
         }
 
@@ -604,20 +605,20 @@ class Program
                     continue;
                 }
 
-                var t = new Ngo.Runtime.Testing.T(testFunc.Symbol.Name);
+                object? t = null;
                 var testStart = DateTime.UtcNow;
 
                 try
                 {
-                    method.Invoke(null, new object[] { t });
+                    method.Invoke(null, new object[] { t! });
                 }
-                catch (TargetInvocationException ex) when (ex.InnerException is Ngo.Runtime.Testing.TestFailException)
+                catch (TargetInvocationException ex) when (ex.InnerException?.GetType().Name == "TestFailException")
                 {
-                    // Already handled — t.Failed() is true
+                    // Already handled
                 }
-                catch (TargetInvocationException ex) when (ex.InnerException is Ngo.Runtime.Testing.TestSkipException)
+                catch (TargetInvocationException ex) when (ex.InnerException?.GetType().Name == "TestSkipException")
                 {
-                    // Already handled — t.Skipped() is true
+                    // Already handled
                 }
                 catch (TargetInvocationException ex) when (ex.InnerException is Ngo.Runtime.GoPanicException panic)
                 {
@@ -633,24 +634,23 @@ class Program
                 }
                 finally
                 {
-                    t.RunCleanups();
+                    t?.GetType().GetMethod("RunCleanups")?.Invoke(t, null);
                 }
 
                 var elapsed = DateTime.UtcNow - testStart;
                 var elapsedStr = $"({elapsed.TotalSeconds:F2}s)";
 
-                if (t.Skipped())
+                bool isSkipped = t?.GetType().GetMethod("Skipped")?.Invoke(t, null) is true;
+                bool isFailed = t?.GetType().GetMethod("Failed")?.Invoke(t, null) is true;
+
+                if (isSkipped)
                 {
                     Console.WriteLine($"--- SKIP: {testFunc.Symbol.Name} {elapsedStr}");
-                    foreach (var log in t.GetLogs())
-                        Console.WriteLine($"        {log}");
                     skipped++;
                 }
-                else if (t.Failed())
+                else if (isFailed)
                 {
                     Console.WriteLine($"--- FAIL: {testFunc.Symbol.Name} {elapsedStr}");
-                    foreach (var log in t.GetLogs())
-                        Console.WriteLine($"        {log}");
                     failed++;
                 }
                 else

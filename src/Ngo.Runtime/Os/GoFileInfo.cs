@@ -63,7 +63,21 @@ namespace Ngo.Runtime.Os
         public object ModTime() => new Time.GoTimeValue(_modTime);
 
         [GoMethod]
-        public object? Sys() => null;
+        public object? Sys()
+        {
+            // Return a Stat_t populated from file metadata
+            var stat = new Syscall.GoStat_t();
+            stat.Size = SizeValue;
+            if (IsDirValue)
+            {
+                stat.Mode = 0x41FF; // S_IFDIR | 0777
+            }
+            else
+            {
+                stat.Mode = 0x81FF; // S_IFREG | 0777
+            }
+            return stat;
+        }
 
         public override string ToString() => NameValue;
 

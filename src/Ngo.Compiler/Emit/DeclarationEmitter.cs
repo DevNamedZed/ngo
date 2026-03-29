@@ -144,17 +144,38 @@ namespace Ngo.Compiler.Emit
                 && !_ctx.Methods.ContainsKey(stringMethod))
             {
                 var staticMethodName = structType.Name + "_String";
+                var structClrType = typeBuilder.AsType();
+                Type receiverParamType;
+                if (stringMethod.IsPointerReceiver)
+                {
+                    receiverParamType = typeof(Ptr<>).MakeGenericType(structClrType);
+                }
+                else
+                {
+                    receiverParamType = structClrType;
+                }
+
                 var staticStringMethod = _ctx.PackageType.DefineMethod(staticMethodName,
                     MethodAttributes.Public | MethodAttributes.Static,
-                    typeof(string), new[] { typeBuilder.AsType() });
+                    typeof(string), new[] { receiverParamType });
                 _ctx.Methods[stringMethod] = staticStringMethod;
 
                 var toString = typeBuilder.DefineMethod("ToString",
                     MethodAttributes.Public | MethodAttributes.Virtual | MethodAttributes.HideBySig,
                     typeof(string), Type.EmptyTypes);
                 var il = toString.GetILWriter();
-                il.Emit(OpCodes.Ldarg_0);
-                il.Emit(OpCodes.Ldobj, typeBuilder.AsType());
+                if (stringMethod.IsPointerReceiver)
+                {
+                    il.Emit(OpCodes.Ldarg_0);
+                    il.Emit(OpCodes.Ldobj, structClrType);
+                    var ptrCtor = EmitContext.GetConstructorSafe(receiverParamType, new[] { structClrType });
+                    il.Emit(OpCodes.Newobj, ptrCtor);
+                }
+                else
+                {
+                    il.Emit(OpCodes.Ldarg_0);
+                    il.Emit(OpCodes.Ldobj, structClrType);
+                }
                 il.Emit(OpCodes.Call, staticStringMethod.AsMethodInfo());
                 il.Emit(OpCodes.Ret);
                 typeBuilder.DefineMethodOverride(toString,
@@ -175,6 +196,14 @@ namespace Ngo.Compiler.Emit
             {
                 return;
             }
+
+            // Skip constraint-only interfaces (type unions like cmp.Ordered)
+            // These have type parameters but no methods — they're compile-time only
+            if (interfaceType.TypeParameters.Count > 0 && interfaceType.Methods.Count == 0)
+            {
+                _ctx.Mapper.Register(interfaceType, typeof(object));
+                return;
+            }
             var qualifiedIfaceName = _ctx.QualifyName(interfaceType.Name);
             foreach (var kvp in _ctx.InterfaceTypes)
             {
@@ -191,7 +220,8 @@ namespace Ngo.Compiler.Emit
                 : TypeAttributes.Public;
             var typeBuilder = _ctx.Module.DefineType(
                 qualifiedIfaceName,
-                typeVisibility | TypeAttributes.Interface | TypeAttributes.Abstract);
+                typeVisibility | TypeAttributes.Interface | TypeAttributes.Abstract,
+                null!, System.Type.EmptyTypes);
 
             foreach (var method in interfaceType.Methods)
             {
@@ -703,7 +733,21 @@ namespace Ngo.Compiler.Emit
                 _ctx.WrapperTypes[key] = new WrapperTypeInfo(typeof(object), typeof(object).GetConstructors()[0]);
                 return typeof(object);
             }
-            var ctor = wrapperType.GetConstructor(new[] { concreteClrType })!;
+
+            ConstructorInfo ctor;
+            try
+            {
+                ctor = wrapperType.GetConstructor(new[] { concreteClrType })!;
+            }
+            catch (NotSupportedException)
+            {
+                // NgoProxyType doesn't support GetConstructor — use NgoProxyConstructorInfo
+                ctor = new Builder.NgoProxyConstructorInfo(wrapperType, new[] { concreteClrType });
+            }
+            if (ctor == null)
+            {
+                ctor = new Builder.NgoProxyConstructorInfo(wrapperType, new[] { concreteClrType });
+            }
             _ctx.WrapperTypes[key] = new WrapperTypeInfo(wrapperType, ctor);
 
             return wrapperType;

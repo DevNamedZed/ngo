@@ -268,13 +268,44 @@ namespace Ngo.Runtime.Net
         [GoType("named", Name = "Buffers", Package = "net", Underlying = "[][]byte")]
         public class GoBuffers
         {
+            public Slice<Slice<byte>> Data;
+
             [GoMethod]
             [return: GoReturn("int64", "error")]
-            public (long, object?) WriteTo(object? writer) => (0, null);
+            public (long, object?) WriteTo(object? writer)
+            {
+                long total = 0;
+                if (writer is Io.IGoWriter goWriter)
+                {
+                    for (int i = 0; i < Data.Len; i++)
+                    {
+                        var (bytesWritten, err) = goWriter.Write(Data[i]);
+                        total += bytesWritten;
+                        if (err != null && err.ToString() != "")
+                        {
+                            return (total, err);
+                        }
+                    }
+                }
+                return (total, null);
+            }
 
             [GoMethod]
             [return: GoReturn("int", "error")]
-            public (long, object?) Read(Slice<byte> p) => (0, null);
+            public (long, object?) Read(Slice<byte> p)
+            {
+                int offset = 0;
+                for (int i = 0; i < Data.Len && offset < p.Len; i++)
+                {
+                    var chunk = Data[i];
+                    int toCopy = System.Math.Min(chunk.Len, p.Len - offset);
+                    for (int j = 0; j < toCopy; j++)
+                    {
+                        p[offset++] = chunk[j];
+                    }
+                }
+                return (offset, null);
+            }
         }
 
         [GoVar(Type = "func() ([]Addr, error)")]
@@ -286,7 +317,17 @@ namespace Ngo.Runtime.Net
 
         [GoFunc]
         [return: GoReturn("IP")]
-        public static object? IPv4(long a, long b, long c, long d) => null;
+        public static object? IPv4(long a, long b, long c, long d)
+        {
+            var ip = new byte[16];
+            ip[10] = 0xff;
+            ip[11] = 0xff;
+            ip[12] = (byte)a;
+            ip[13] = (byte)b;
+            ip[14] = (byte)c;
+            ip[15] = (byte)d;
+            return new Slice<byte>(ip);
+        }
 
         [GoFunc]
         [return: GoReturn("*net.UnixConn", "error")]
@@ -344,7 +385,30 @@ namespace Ngo.Runtime.Net
 
         [GoFunc]
         [return: GoReturn("int", "error")]
-        public static (long, object?) LookupPort(string network, string service) => (0, null);
+        public static (long, object?) LookupPort(string network, string service)
+        {
+            if (int.TryParse(service, out int port))
+            {
+                return (port, null);
+            }
+            return service.ToLowerInvariant() switch
+            {
+                "http" => (80, null),
+                "https" => (443, null),
+                "ftp" => (21, null),
+                "ssh" => (22, null),
+                "telnet" => (23, null),
+                "smtp" => (25, null),
+                "dns" => (53, null),
+                "pop3" => (110, null),
+                "imap" => (143, null),
+                "ldap" => (389, null),
+                "mysql" => (3306, null),
+                "postgresql" => (5432, null),
+                "redis" => (6379, null),
+                _ => (0, (object?)$"lookup {network}/{service}: unknown port"),
+            };
+        }
     }
 
     // net.Flags named type

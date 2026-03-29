@@ -1,21 +1,3 @@
-// -----------------------------------------------------------------------
-// <copyright file="GoIPMask.cs" company="Ziad">
-//  Copyright 2016 Ziad
-//
-//  Licensed under the Apache License, Version 2.0 (the "License");
-//  you may not use this file except in compliance with the License.
-//  You may obtain a copy of the License at
-//
-//  http://www.apache.org/licenses/LICENSE-2.0
-//
-//  Unless required by applicable law or agreed to in writing, software
-//  distributed under the License is distributed on an "AS IS" BASIS,
-//  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-//  See the License for the specific language governing permissions and
-//  limitations under the License.
-// </copyright>
-// -----------------------------------------------------------------------
-
 using Ngo.Runtime.Discovery;
 
 namespace Ngo.Runtime.Net
@@ -23,11 +5,67 @@ namespace Ngo.Runtime.Net
     [GoType("named", Name = "IPMask", Package = "net", Underlying = "[]byte")]
     public class GoIPMask
     {
+        public Slice<byte> Bytes;
+
+        public GoIPMask() { Bytes = default; }
+        public GoIPMask(Slice<byte> bytes) { Bytes = bytes; }
+
         [GoMethod]
-        public string String() => "";
+        public string String()
+        {
+            if (Bytes.Len == 0)
+            {
+                return "<nil>";
+            }
+            var hex = new System.Text.StringBuilder(Bytes.Len * 2);
+            for (int i = 0; i < Bytes.Len; i++)
+            {
+                hex.Append(Bytes[i].ToString("x2"));
+            }
+            return hex.ToString();
+        }
 
         [GoMethod]
         [return: GoReturn("int", "int")]
-        public (long, long) Size() => (0, 0);
+        public (long, long) Size()
+        {
+            int ones = 0;
+            int bits = Bytes.Len * 8;
+            bool seenZero = false;
+            for (int i = 0; i < Bytes.Len; i++)
+            {
+                byte maskByte = Bytes[i];
+                if (maskByte == 0xff)
+                {
+                    if (seenZero)
+                    {
+                        return (0, 0);
+                    }
+                    ones += 8;
+                }
+                else if (maskByte == 0)
+                {
+                    seenZero = true;
+                }
+                else
+                {
+                    if (seenZero)
+                    {
+                        return (0, 0);
+                    }
+                    seenZero = true;
+                    while ((maskByte & 0x80) != 0)
+                    {
+                        ones++;
+                        maskByte <<= 1;
+                    }
+                    if ((byte)(maskByte << 1) != 0)
+                    {
+                        return (0, 0);
+                    }
+                }
+            }
+            return (ones, bits);
+        }
     }
 }

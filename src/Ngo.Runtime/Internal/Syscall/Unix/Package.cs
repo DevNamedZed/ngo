@@ -38,13 +38,18 @@ namespace Ngo.Runtime.Internal.Syscall.Unix
         [return: GoReturn("int", "error")]
         public static (long, object?) Fcntl([GoParam("int")] long fd, [GoParam("int")] long cmd, [GoParam("int")] long arg)
         {
-            return (0, "not supported");
+            int result = LinuxUnixSyscalls.fcntl((int)fd, (int)cmd, (int)arg);
+            if (result == -1)
+            {
+                return (0, $"fcntl: errno {System.Runtime.InteropServices.Marshal.GetLastPInvokeError()}");
+            }
+            return (result, null);
         }
 
         [GoFunc]
         public static bool HasNonblockFlag([GoParam("int")] long flag)
         {
-            return false;
+            return (flag & 0x800) != 0;
         }
 
         [GoFunc]
@@ -66,7 +71,12 @@ namespace Ngo.Runtime.Internal.Syscall.Unix
         [return: GoReturn("int", "error")]
         public static (long, object?) Openat([GoParam("int")] long dirfd, string path, [GoParam("int")] long flags, [GoParam("uint32")] long perm)
         {
-            return (-1, "not supported");
+            int fd = LinuxUnixSyscalls.openat((int)dirfd, path, (int)flags, (uint)perm);
+            if (fd == -1)
+            {
+                return (-1, $"openat: errno {System.Runtime.InteropServices.Marshal.GetLastPInvokeError()}");
+            }
+            return (fd, null);
         }
 
         [GoFunc]
@@ -89,7 +99,12 @@ namespace Ngo.Runtime.Internal.Syscall.Unix
         [return: GoReturn("error")]
         public static object? Fstatat([GoParam("int")] long dirfd, string path, object stat, [GoParam("int")] long flags)
         {
-            return "not supported";
+            int result = LinuxUnixSyscalls.fstatat((int)dirfd, path, System.IntPtr.Zero, (int)flags);
+            if (result == -1)
+            {
+                return $"fstatat: errno {System.Runtime.InteropServices.Marshal.GetLastPInvokeError()}";
+            }
+            return null;
         }
 
         // KernelVersion returns major and minor kernel version numbers.
@@ -110,8 +125,25 @@ namespace Ngo.Runtime.Internal.Syscall.Unix
                     return (major, minor);
                 }
             }
-            catch { }
+            catch (System.IO.IOException)
+            {
+            }
+            catch (FormatException)
+            {
+            }
             return (5, 15); // default fallback
         }
+    }
+
+    internal static class LinuxUnixSyscalls
+    {
+        [System.Runtime.InteropServices.DllImport("libc", SetLastError = true)]
+        internal static extern int fcntl(int fd, int cmd, int arg);
+
+        [System.Runtime.InteropServices.DllImport("libc", SetLastError = true)]
+        internal static extern int openat(int dirfd, [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPUTF8Str)] string pathname, int flags, uint mode);
+
+        [System.Runtime.InteropServices.DllImport("libc", SetLastError = true)]
+        internal static extern int fstatat(int dirfd, [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPUTF8Str)] string pathname, System.IntPtr statbuf, int flags);
     }
 }

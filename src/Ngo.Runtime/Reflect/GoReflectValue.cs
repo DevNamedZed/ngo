@@ -338,13 +338,17 @@ namespace Ngo.Runtime.Reflect
         [GoMethod]
         public long Pointer()
         {
-            return 0; // stub
+            if (_value == null)
+            {
+                return 0;
+            }
+            return System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(_value);
         }
 
         [GoMethod]
         public long UnsafePointer()
         {
-            return 0; // stub
+            return Pointer();
         }
 
         [GoMethod]
@@ -490,20 +494,59 @@ namespace Ngo.Runtime.Reflect
         }
 
         [GoMethod]
-        public bool OverflowInt(long x) => false;
+        public bool OverflowInt(long x)
+        {
+            long kind = Kind();
+            return kind switch
+            {
+                2 => x < sbyte.MinValue || x > sbyte.MaxValue,   // Int8
+                3 => x < short.MinValue || x > short.MaxValue,   // Int16
+                4 => x < int.MinValue || x > int.MaxValue,       // Int32
+                _ => false, // Int64/Int — no overflow possible in long
+            };
+        }
 
         [GoMethod]
-        public bool OverflowUint(long x) => false;
+        public bool OverflowUint(long x)
+        {
+            long kind = Kind();
+            return kind switch
+            {
+                8 => x < 0 || x > byte.MaxValue,     // Uint8
+                9 => x < 0 || x > ushort.MaxValue,   // Uint16
+                10 => x < 0 || x > uint.MaxValue,    // Uint32
+                _ => x < 0, // Uint64/Uint/Uintptr — negative overflows
+            };
+        }
 
         [GoMethod]
-        public bool OverflowFloat(double x) => false;
+        public bool OverflowFloat(double x)
+        {
+            long kind = Kind();
+            if (kind == 13) // Float32
+            {
+                return x > float.MaxValue || x < -float.MaxValue;
+            }
+            return false; // Float64 — no overflow possible in double
+        }
 
         [GoMethod]
-        public bool OverflowComplex(object x) => false;
+        public bool OverflowComplex(object x) => false; // Complex128 — no overflow possible
 
         [GoMethod]
         [return: GoReturn("complex128")]
-        public long Complex() => 0; // stub — complex numbers
+        public long Complex()
+        {
+            if (_value is System.Numerics.Complex complexValue)
+            {
+                return BitConverter.DoubleToInt64Bits(complexValue.Real);
+            }
+            if (_value is double doubleValue)
+            {
+                return BitConverter.DoubleToInt64Bits(doubleValue);
+            }
+            return 0;
+        }
 
         [GoMethod]
         public void SetLen(long n)
@@ -714,20 +757,22 @@ namespace Ngo.Runtime.Reflect
         [GoMethod]
         public long UnsafeAddr()
         {
-            return 0; // stub — no real pointer support in .NET
+            return Pointer();
         }
 
         [GoMethod]
         public Slice<GoReflectValue> CallSlice(Slice<GoReflectValue> args)
         {
-            // stub — like Call but last arg is a slice
+            // CallSlice calls a variadic function with the last arg as an already-packed slice.
+            // In ngo's runtime model, Call already handles slices directly.
             return Call(args);
         }
 
         [GoMethod]
         public GoReflectValue Resolve()
         {
-            return this; // stub
+            // In ngo, interface values are already unwrapped to concrete types.
+            return this;
         }
 
         public override string ToString()

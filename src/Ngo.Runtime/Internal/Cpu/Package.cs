@@ -27,7 +27,26 @@ namespace Ngo.Runtime.Internal.Cpu
         public static readonly GoMIPS64X MIPS64X = new GoMIPS64X();
 
         [GoFunc]
-        public static void Initialize(string env) { }
+        public static void Initialize(string env)
+        {
+            if (string.IsNullOrEmpty(env))
+            {
+                return;
+            }
+            foreach (var feature in env.Split(','))
+            {
+                var parts = feature.Split('=');
+                if (parts.Length == 2 && parts[1] == "off")
+                {
+                    var name = parts[0].Trim();
+                    var field = typeof(GoX86).GetField(name, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                    if (field != null && field.FieldType == typeof(bool))
+                    {
+                        field.SetValue(X86, false);
+                    }
+                }
+            }
+        }
     }
 
     [GoType("struct", Name = "CacheLinePad", Package = "internal/cpu")]

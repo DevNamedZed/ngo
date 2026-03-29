@@ -649,7 +649,28 @@ namespace Ngo.Compiler.Semantics
 
         private string? ResolvePackageDir(string importPath)
         {
-            // Module-relative path: import path starts with the module name
+            // Go module resolution follows a strict order:
+            // 1. Stdlib (import paths without dots: fmt, strconv, net/http, etc.)
+            // 2. Current module (import path starts with module name from go.mod)
+            // 3. Required modules (import path matches a require in go.mod)
+            // 4. Vendor directory
+            // 5. Module cache fallback
+
+            // 1. Stdlib: paths without dots are always standard library
+            if (!importPath.Contains('.'))
+            {
+                if (_goStdlibSrc != null)
+                {
+                    var stdlibDir = Path.Combine(_goStdlibSrc, importPath.Replace('/', Path.DirectorySeparatorChar));
+                    if (Directory.Exists(stdlibDir))
+                    {
+                        return stdlibDir;
+                    }
+                }
+                return null;
+            }
+
+            // 2. Current module: import path starts with the module name
             var moduleName = _moduleResolver.ModuleName;
             if (moduleName != null && (importPath == moduleName || importPath.StartsWith(moduleName + "/")))
             {
@@ -662,34 +683,9 @@ namespace Ngo.Compiler.Semantics
                 {
                     return dir;
                 }
-                // Sub-path doesn't exist — it might be a separate module with the same prefix
-                // (e.g., go.opentelemetry.io/otel/trace is a separate module from go.opentelemetry.io/otel).
-                // Fall through to external module resolution.
             }
 
-            // Simple relative path (no dots in first segment — likely a local subdirectory or stdlib)
-            if (!importPath.Contains('.'))
-            {
-                // Check project-local first
-                var dir = Path.Combine(ProjectRoot, importPath.Replace('/', Path.DirectorySeparatorChar));
-                if (Directory.Exists(dir))
-                    return dir;
-
-                // Check Go stdlib source (GOROOT/src or ~/.ngo/gosrc/...)
-                if (_goStdlibSrc != null)
-                {
-                    var stdlibDir = Path.Combine(_goStdlibSrc, importPath.Replace('/', Path.DirectorySeparatorChar));
-                    if (Directory.Exists(stdlibDir))
-                        return stdlibDir;
-                }
-            }
-
-            // Check vendor directory (common in Go projects)
-            var vendorDir = Path.Combine(ProjectRoot, "vendor", importPath.Replace('/', Path.DirectorySeparatorChar));
-            if (Directory.Exists(vendorDir))
-                return vendorDir;
-
-            // External module: find via go.mod requirements
+            // 3. Required modules from go.mod
             var match = _moduleResolver.FindModule(importPath);
             if (match != null)
             {
@@ -700,7 +696,14 @@ namespace Ngo.Compiler.Semantics
                 }
             }
 
-            // Last resort: check if the import path is a sub-package of a cached module.
+            // 4. Vendor directory
+            var vendorDir = Path.Combine(ProjectRoot, "vendor", importPath.Replace('/', Path.DirectorySeparatorChar));
+            if (Directory.Exists(vendorDir))
+            {
+                return vendorDir;
+            }
+
+            // 5. Module cache fallback
             var cached = _moduleResolver.FindInCache(importPath);
             if (cached != null)
             {
@@ -819,7 +822,14 @@ namespace Ngo.Compiler.Semantics
             _resolvedDirs.TryGetValue(importPath, out var writeSourceDir);
             var archivePath = NgoArchive.GetArchivePath(cacheDir, importPath, writeSourceDir);
 
-            Emit.ILSerializer.WriteArchive(archivePath, pkg, importPath, result, _ctx);
+            try
+            {
+                Emit.ILSerializer.WriteArchive(archivePath, pkg, importPath, result, _ctx);
+            }
+            catch (Exception ex)
+            {
+                _ctx.Log.Warn($"failed to cache {importPath}: {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
+            }
         }
 
         // Current target platform — used for file filtering

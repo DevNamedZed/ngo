@@ -119,13 +119,11 @@ namespace Ngo.Runtime.Time
         [GoConst(Type = "Weekday")]
         public const long Saturday = 6;
 
-        // time.UTC — placeholder (null represents UTC)
         [GoVar(Type = "*Location")]
-        public static object? UTC => null;
+        public static readonly object UTC = new GoLocation("UTC", System.TimeZoneInfo.Utc);
 
-        // time.Local — placeholder (null represents local)
         [GoVar(Type = "*Location")]
-        public static object? Local => null;
+        public static readonly object Local = new GoLocation("Local", System.TimeZoneInfo.Local);
 
         // time.Sleep(d Duration)
         [GoFunc]
