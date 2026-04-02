@@ -323,7 +323,7 @@ namespace Ngo.Runtime.Os.Exec
             _stream = stream;
         }
 
-        public (int, string) Write(Slice<byte> p)
+        public (long, string) Write(Slice<byte> p)
         {
             var buf = new byte[p.Len];
             for (int i = 0; i < p.Len; i++)

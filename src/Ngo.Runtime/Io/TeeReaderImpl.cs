@@ -30,12 +30,12 @@ namespace Ngo.Runtime.Io
             _writer = writer;
         }
 
-        public (int, string) Read(Slice<byte> p)
+        public (long, string) Read(Slice<byte> p)
         {
             var (n, err) = _reader.Read(p);
             if (n > 0)
             {
-                var (nw, wErr) = _writer.Write(p.Reslice(0, n));
+                var (nw, wErr) = _writer.Write(p.Reslice(0, (int)n));
                 if (wErr != "")
                     return (n, wErr);
                 if (nw != n)

@@ -60,13 +60,43 @@ namespace Ngo.Compiler.Emit
             _typeCache[symbol] = type;
         }
 
+        private static bool ContainsGenericParameter(Type type)
+        {
+            if (type.IsGenericParameter)
+            {
+                return true;
+            }
+            if (type is Builder.NgoProxyType proxy && proxy.IsGenericParam)
+            {
+                return true;
+            }
+            if (type.IsGenericType && !type.IsGenericTypeDefinition)
+            {
+                foreach (var arg in type.GetGenericArguments())
+                {
+                    if (ContainsGenericParameter(arg))
+                    {
+                        return true;
+                    }
+                }
+            }
+            if (type.IsArray || type.IsByRef || type.IsPointer)
+            {
+                var elementType = type.GetElementType();
+                if (elementType != null)
+                {
+                    return ContainsGenericParameter(elementType);
+                }
+            }
+            return false;
+        }
+
         public Type Map(TypeSymbol symbol)
         {
             if (symbol == null)
             {
                 throw new ArgumentNullException(nameof(symbol), "TypeMapper: cannot map null type symbol");
             }
-
 
             if (_typeCache.TryGetValue(symbol, out var cached))
             {
@@ -88,7 +118,10 @@ namespace Ngo.Compiler.Emit
                     throw new InvalidOperationException(
                         $"TypeMapper: failed to map type '{symbol.Name}' (kind={symbol.TypeKind})");
                 }
-                _typeCache[symbol] = result;
+                if (!ContainsGenericParameter(result))
+                {
+                    _typeCache[symbol] = result;
+                }
                 return result;
             }
             finally

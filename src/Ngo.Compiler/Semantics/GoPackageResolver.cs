@@ -108,30 +108,38 @@ namespace Ngo.Compiler.Semantics
                 // CGo pseudo-package
                 "C" => true,
 
+                // Packages with complete C# runtime implementations.
+                // These MUST use C# types to avoid TypeBuilder/runtime type conflicts
+                // when other Go-source packages reference their interfaces.
+                "io" => true,
+                "io/fs" => true,
+                "fmt" => true,
+                "errors" => true,
+                "sync" => true,
+                "math" => true,
+                "strings" => true,
+                "bytes" => true,
+                "os" => true,
+                "time" => true,
+                "syscall" => true,
+                "net" => true,
+                "iter" => true,
+
                 // Internal packages WITH assembly that need C# bridges
-                "internal/bytealg" => true,    // has assembly + generics; C# stub handles both types
-                "internal/cpu" => true,         // CPU feature detection via asm
-                // internal/abi: prefer Go source (has all struct types for reflect)
-                // but fall through — it's handled by PreferGoSource()
-                "internal/chacha8rand" => true, // ChaCha8 in asm
-                "internal/reflectlite" => true, // needs runtime reflect bridge
+                "internal/bytealg" => true,
+                "internal/cpu" => true,
+                "internal/chacha8rand" => true,
+                "internal/reflectlite" => true,
 
                 // Internal packages that bridge to .NET runtime
-                "internal/poll" => true,        // I/O polling — needs .NET async
-                "internal/syscall/unix" => true, // syscall bridge
+                "internal/poll" => true,
+                "internal/syscall/unix" => true,
                 "internal/syscall/execenv" => true,
 
                 // go/internal packages (Go toolchain internals, not in stdlib source tree)
                 _ when importPath.StartsWith("go/internal/") => true,
 
-                // Everything else compiles from Go source — including pure-Go internal packages:
-                // internal/fmtsort, internal/itoa, internal/race, internal/godebug,
-                // internal/goversion, internal/gover, internal/goroot, internal/safefilepath,
-                // internal/singleflight, internal/testlog, internal/unsafeheader,
-                // internal/oserror, internal/nettrace, internal/lazyregexp, internal/saferio,
-                // internal/intern, internal/profile, internal/diff, internal/platform,
-                // internal/bisect, internal/fuzz, internal/coverage/rtcov,
-                // internal/goarch, internal/goos, internal/goexperiment, internal/godebugs
+                // Everything else compiles from Go source
                 _ => false,
             };
         }

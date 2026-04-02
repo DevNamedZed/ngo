@@ -22,7 +22,7 @@ namespace Ngo.Runtime.Net
             _name = name;
         }
 
-        public (int, string) Read(Slice<byte> b)
+        public (long, string) Read(Slice<byte> b)
         {
             if (_closed)
             {
@@ -72,7 +72,7 @@ namespace Ngo.Runtime.Net
             return (totalRead, null!);
         }
 
-        public (int, string) Write(Slice<byte> b)
+        public (long, string) Write(Slice<byte> b)
         {
             if (_closed)
             {

@@ -25,17 +25,17 @@ namespace Ngo.Compiler.Archive
     /// A deserialized type definition with its builder and deferred method metadata.
     /// Used during two-pass deserialization: types are created first, then methods.
     /// </summary>
-    public sealed class DeserializedTypeInfo
+    internal sealed class DeserializedTypeInfo
     {
         public DeserializedTypeInfo(string fullTypeName, TypeBuilder typeBuilder,
             int methodCount, List<SerializedMethodInfo> methods,
-            List<SerializedMethodOverride> overrides)
+            InterfaceMethodMapping[] interfaceMappings)
         {
             FullTypeName = fullTypeName;
             TypeBuilder = typeBuilder;
             MethodCount = methodCount;
             Methods = methods;
-            Overrides = overrides;
+            InterfaceMappings = interfaceMappings;
         }
 
         public string FullTypeName { get; }
@@ -46,6 +46,6 @@ namespace Ngo.Compiler.Archive
 
         public List<SerializedMethodInfo> Methods { get; }
 
-        public List<SerializedMethodOverride> Overrides { get; }
+        public InterfaceMethodMapping[] InterfaceMappings { get; }
     }
 }

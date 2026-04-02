@@ -17,6 +17,7 @@
 // -----------------------------------------------------------------------
 
 using System;
+using System.Collections.Generic;
 using System.Reflection;
 using System.Reflection.Emit;
 using Ngo.Compiler.Ast;
@@ -293,7 +294,6 @@ namespace Ngo.Compiler.Emit
                     ApplyConstraints(genericParams[i], typeParams[i].Constraint);
                 }
 
-                // Now set return type and parameter types (type params now resolve)
                 var parameters = func.Symbol.Parameters;
                 var paramTypes = new Type[parameters.Count];
                 for (int i = 0; i < parameters.Count; i++)
@@ -384,7 +384,6 @@ namespace Ngo.Compiler.Emit
                     ApplyConstraints(genericParams[i], typeParams[i].Constraint);
                 }
 
-                // Now set types (type params now resolve)
                 var receiverType = _ctx.Mapper.Map(decl.Receiver.Type);
                 var parameters = decl.Symbol.Parameters;
                 var paramTypes = new Type[parameters.Count + 1];
@@ -494,6 +493,10 @@ namespace Ngo.Compiler.Emit
             var interfaceClrType = _ctx.Mapper.Map(interfaceType);
 
             var wrapperName = $"{concreteType.Name}__{interfaceType.Name}__Wrapper";
+            if (interfaceType.Methods.Count == 0)
+            {
+                Console.Error.WriteLine($"WARNING: wrapper '{wrapperName}' — interface '{interfaceType.Name}' has 0 methods, CLR type={interfaceClrType.GetType().Name}");
+            }
 
             var wrapperBuilder = _ctx.Module.DefineType(
                 _ctx.QualifyName(wrapperName),
@@ -521,16 +524,68 @@ namespace Ngo.Compiler.Emit
             ctorIL.Emit(OpCodes.Stfld, valueField.AsFieldInfo());
             ctorIL.Emit(OpCodes.Ret);
 
-            // Implement each interface method by delegating to the Go static method
-            foreach (var ifaceMethod in interfaceType.Methods)
+            // Collect all interface methods — including inherited ones from embedded interfaces.
+            var interfaceMethodNames = new HashSet<string>();
+            foreach (var method in interfaceType.Methods)
             {
-                var concreteMethod = concreteType.LookupMethod(ifaceMethod.Name);
+                interfaceMethodNames.Add(method.Name);
+            }
+
+            var allMethodsToImplement = new List<(string name, MethodSymbol? goSymbol)>();
+            foreach (var method in interfaceType.Methods)
+            {
+                allMethodsToImplement.Add((method.Name, method));
+            }
+
+            if (interfaceClrType.IsInterface)
+            {
+                try
+                {
+                    foreach (var clrMethod in interfaceClrType.GetMethods())
+                    {
+                        if (!interfaceMethodNames.Contains(clrMethod.Name))
+                        {
+                            interfaceMethodNames.Add(clrMethod.Name);
+                            allMethodsToImplement.Add((clrMethod.Name, null));
+                        }
+                    }
+                    foreach (var parentInterface in interfaceClrType.GetInterfaces())
+                    {
+                        foreach (var clrMethod in parentInterface.GetMethods())
+                        {
+                            if (!interfaceMethodNames.Contains(clrMethod.Name))
+                            {
+                                interfaceMethodNames.Add(clrMethod.Name);
+                                allMethodsToImplement.Add((clrMethod.Name, null));
+                            }
+                        }
+                    }
+                }
+                catch (NotSupportedException)
+                {
+                    // TypeBuilder interfaces may not support GetMethods/GetInterfaces
+                }
+            }
+
+            foreach (var (ifaceMethodName, ifaceMethodSymbol) in allMethodsToImplement)
+            {
+                var ifaceMethod = ifaceMethodSymbol;
+
+                // Inherited CLR interface method with no Go symbol — generate stub from CLR signature
+                if (ifaceMethod == null)
+                {
+                    EmitInheritedInterfaceStub(wrapperBuilder, interfaceClrType, ifaceMethodName,
+                        concreteType, concreteClrType, valueField);
+                    continue;
+                }
+
+                var concreteMethod = concreteType.LookupMethod(ifaceMethodName);
                 FieldSymbol? embeddedField = null;
 
                 // For pointer types, look up method on element type
                 if (concreteMethod == null && concreteType is PointerTypeSymbol ptrSymbol)
                 {
-                    concreteMethod = ptrSymbol.ElementType.LookupMethod(ifaceMethod.Name);
+                    concreteMethod = ptrSymbol.ElementType.LookupMethod(ifaceMethodName);
                 }
 
                 // Check promoted methods from embedded structs
@@ -539,7 +594,7 @@ namespace Ngo.Compiler.Emit
                     : concreteType as StructTypeSymbol;
                 if (concreteMethod == null && structLookupType != null)
                 {
-                    var promoted = structLookupType.LookupPromotedMethod(ifaceMethod.Name);
+                    var promoted = structLookupType.LookupPromotedMethod(ifaceMethodName);
                     if (promoted != null)
                     {
                         concreteMethod = promoted.Method;
@@ -565,7 +620,7 @@ namespace Ngo.Compiler.Emit
                     {
                         try
                         {
-                            clrMethod = concreteClrType2.GetMethod(ifaceMethod.Name);
+                            clrMethod = concreteClrType2.GetMethod(ifaceMethodName);
                         }
                         catch (NotSupportedException)
                         {
@@ -593,7 +648,7 @@ namespace Ngo.Compiler.Emit
                         // Check if the interface CLR type has this method — if so, match THAT signature
                         if (interfaceClrType.IsInterface)
                         {
-                            var ifaceClrMethod = interfaceClrType.GetMethod(ifaceMethod.Name);
+                            var ifaceClrMethod = interfaceClrType.GetMethod(ifaceMethodName);
                             if (ifaceClrMethod != null)
                             {
                                 var ifaceClrParams = ifaceClrMethod.GetParameters();
@@ -606,7 +661,7 @@ namespace Ngo.Compiler.Emit
                             }
                         }
                         var wrapperMethod = wrapperBuilder.DefineMethod(
-                            ifaceMethod.Name,
+                            ifaceMethodName,
                             MethodAttributes.Public | MethodAttributes.Virtual,
                             wrapperReturnType, wrapperParamTypes);
                         var wrapperIL = wrapperMethod.GetILWriter();
@@ -621,7 +676,7 @@ namespace Ngo.Compiler.Emit
 
                         try
                         {
-                            var ifaceClrMethod2 = interfaceClrType.GetMethod(ifaceMethod.Name);
+                            var ifaceClrMethod2 = interfaceClrType.GetMethod(ifaceMethodName);
                             if (ifaceClrMethod2 != null)
                             {
                                 wrapperBuilder.DefineMethodOverride(wrapperMethod, ifaceClrMethod2);
@@ -630,19 +685,47 @@ namespace Ngo.Compiler.Emit
                         catch (Exception ex)
                         {
                             throw new InvalidOperationException(
-                                $"Failed to define method override for wrapper method '{ifaceMethod.Name}'", ex);
+                                $"Failed to define method override for wrapper method '{ifaceMethodName}'", ex);
                         }
                         continue;
                     }
 
-                    // Method not found — emit a stub that returns default value
-                    // This prevents "method has no implementation" runtime errors
-                    var stubParamTypes = new Type[ifaceMethod.Parameters.Count];
-                    for (int i = 0; i < ifaceMethod.Parameters.Count; i++)
-                        stubParamTypes[i] = _ctx.Mapper.Map(ifaceMethod.Parameters[i].Type);
-                    var stubReturnType = _ctx.Mapper.MapReturnType(ifaceMethod.ReturnTypes);
+                    // Method not found — emit a stub that returns default value.
+                    // Use the interface's CLR method signature to match the override.
+                    Type[] stubParamTypes;
+                    Type stubReturnType;
+                    MethodInfo? stubIfaceClrMethod = null;
+                    if (interfaceClrType.IsInterface)
+                    {
+                        try
+                        {
+                            stubIfaceClrMethod = interfaceClrType.GetMethod(ifaceMethodName);
+                        }
+                        catch (NotSupportedException)
+                        {
+                        }
+                    }
+                    if (stubIfaceClrMethod != null)
+                    {
+                        var stubClrParams = stubIfaceClrMethod.GetParameters();
+                        stubParamTypes = new Type[stubClrParams.Length];
+                        for (int i = 0; i < stubClrParams.Length; i++)
+                        {
+                            stubParamTypes[i] = stubClrParams[i].ParameterType;
+                        }
+                        stubReturnType = stubIfaceClrMethod.ReturnType;
+                    }
+                    else
+                    {
+                        stubParamTypes = new Type[ifaceMethod.Parameters.Count];
+                        for (int i = 0; i < ifaceMethod.Parameters.Count; i++)
+                        {
+                            stubParamTypes[i] = _ctx.Mapper.Map(ifaceMethod.Parameters[i].Type);
+                        }
+                        stubReturnType = _ctx.Mapper.MapReturnType(ifaceMethod.ReturnTypes);
+                    }
                     var stubMethod = wrapperBuilder.DefineMethod(
-                        ifaceMethod.Name,
+                        ifaceMethodName,
                         MethodAttributes.Public | MethodAttributes.Virtual,
                         stubReturnType, stubParamTypes);
                     var stubIL = stubMethod.GetILWriter();
@@ -663,7 +746,7 @@ namespace Ngo.Compiler.Emit
 
                     try
                     {
-                        var ifaceClrMethod = interfaceClrType.GetMethod(ifaceMethod.Name);
+                        var ifaceClrMethod = interfaceClrType.GetMethod(ifaceMethodName);
                         if (ifaceClrMethod != null)
                         {
                             wrapperBuilder.DefineMethodOverride(stubMethod, ifaceClrMethod);
@@ -672,19 +755,49 @@ namespace Ngo.Compiler.Emit
                     catch (Exception ex)
                     {
                         throw new InvalidOperationException(
-                            $"Failed to define method override for stub '{ifaceMethod.Name}'", ex);
+                            $"Failed to define method override for stub '{ifaceMethodName}'", ex);
                     }
                     continue;
                 }
 
-                var paramTypes = new Type[ifaceMethod.Parameters.Count];
-                for (int i = 0; i < ifaceMethod.Parameters.Count; i++)
-                    paramTypes[i] = _ctx.Mapper.Map(ifaceMethod.Parameters[i].Type);
-
-                var returnType = _ctx.Mapper.MapReturnType(ifaceMethod.ReturnTypes);
+                // Use the interface's actual CLR method signature to avoid type mismatches
+                // between Go type mapping (int→Int64) and C# runtime interfaces (int→Int32).
+                Type[] paramTypes;
+                Type returnType;
+                MethodInfo? interfaceClrMethod = null;
+                if (interfaceClrType.IsInterface)
+                {
+                    try
+                    {
+                        interfaceClrMethod = interfaceClrType.GetMethod(ifaceMethodName);
+                    }
+                    catch (NotSupportedException)
+                    {
+                        // TypeBuilder interfaces may not support GetMethod
+                    }
+                }
+                if (interfaceClrMethod != null)
+                {
+                    var clrParams = interfaceClrMethod.GetParameters();
+                    paramTypes = new Type[clrParams.Length];
+                    for (int i = 0; i < clrParams.Length; i++)
+                    {
+                        paramTypes[i] = clrParams[i].ParameterType;
+                    }
+                    returnType = interfaceClrMethod.ReturnType;
+                }
+                else
+                {
+                    paramTypes = new Type[ifaceMethod.Parameters.Count];
+                    for (int i = 0; i < ifaceMethod.Parameters.Count; i++)
+                    {
+                        paramTypes[i] = _ctx.Mapper.Map(ifaceMethod.Parameters[i].Type);
+                    }
+                    returnType = _ctx.Mapper.MapReturnType(ifaceMethod.ReturnTypes);
+                }
 
                 var methodBuilder = wrapperBuilder.DefineMethod(
-                    ifaceMethod.Name,
+                    ifaceMethodName,
                     MethodAttributes.Public | MethodAttributes.Virtual,
                     returnType,
                     paramTypes);
@@ -716,7 +829,7 @@ namespace Ngo.Compiler.Emit
                 // Explicit interface override so the binding is serialized in archives
                 try
                 {
-                    var interfaceMethod = interfaceClrType.GetMethod(ifaceMethod.Name);
+                    var interfaceMethod = interfaceClrType.GetMethod(ifaceMethodName);
                     if (interfaceMethod != null)
                     {
                         wrapperBuilder.DefineMethodOverride(methodBuilder, interfaceMethod);
@@ -725,7 +838,7 @@ namespace Ngo.Compiler.Emit
                 catch (Exception ex)
                 {
                     throw new InvalidOperationException(
-                        $"Failed to define method override for wrapper '{ifaceMethod.Name}'", ex);
+                        $"Failed to define method override for wrapper '{ifaceMethodName}'", ex);
                 }
             }
 
@@ -798,6 +911,100 @@ namespace Ngo.Compiler.Emit
             _ctx.WrapperTypes[key] = new WrapperTypeInfo(wrapperType, ctor);
 
             return wrapperType;
+        }
+
+        private void EmitInheritedInterfaceStub(ITypeBuilder wrapperBuilder, Type interfaceClrType,
+            string methodName, TypeSymbol concreteType, Type concreteClrType, IFieldBuilder valueField)
+        {
+            MethodInfo? interfaceMethod = null;
+            foreach (var parentInterface in interfaceClrType.GetInterfaces())
+            {
+                interfaceMethod = parentInterface.GetMethod(methodName);
+                if (interfaceMethod != null)
+                {
+                    break;
+                }
+            }
+            if (interfaceMethod == null)
+            {
+                return;
+            }
+
+            var clrParams = interfaceMethod.GetParameters();
+            var paramTypes = new Type[clrParams.Length];
+            for (int i = 0; i < clrParams.Length; i++)
+            {
+                paramTypes[i] = clrParams[i].ParameterType;
+            }
+
+            var wrapperMethod = wrapperBuilder.DefineMethod(
+                methodName,
+                MethodAttributes.Public | MethodAttributes.Virtual,
+                interfaceMethod.ReturnType,
+                paramTypes);
+
+            // Try to delegate to the concrete type's method
+            MethodInfo? concreteClrMethod = null;
+            try
+            {
+                concreteClrMethod = concreteClrType.GetMethod(methodName);
+            }
+            catch (NotSupportedException)
+            {
+            }
+
+            if (concreteClrMethod == null)
+            {
+                var concreteMethod = concreteType.LookupMethod(methodName);
+                if (concreteMethod != null && _ctx.Methods.TryGetValue(concreteMethod, out var goMethod))
+                {
+                    concreteClrMethod = goMethod.AsMethodInfo();
+                }
+                if (concreteClrMethod == null && concreteMethod != null
+                    && _ctx.CachedMethods.TryGetValue(concreteMethod, out var cachedMethod))
+                {
+                    concreteClrMethod = cachedMethod;
+                }
+            }
+
+            var methodIL = wrapperMethod.GetILWriter();
+            if (concreteClrMethod != null)
+            {
+                methodIL.Emit(OpCodes.Ldarg_0);
+                methodIL.Emit(OpCodes.Ldfld, valueField.AsFieldInfo());
+                for (int i = 0; i < clrParams.Length; i++)
+                {
+                    methodIL.Emit(OpCodes.Ldarg, i + 1);
+                }
+                methodIL.Emit(concreteClrType.IsValueType ? OpCodes.Call : OpCodes.Callvirt, concreteClrMethod);
+                methodIL.Emit(OpCodes.Ret);
+            }
+            else
+            {
+                // No concrete method found — emit default return
+                if (interfaceMethod.ReturnType == typeof(string))
+                {
+                    methodIL.Emit(OpCodes.Ldstr, "");
+                }
+                else if (interfaceMethod.ReturnType == typeof(void))
+                {
+                    // nothing
+                }
+                else if (interfaceMethod.ReturnType.IsValueType)
+                {
+                    var local = methodIL.DeclareLocal(interfaceMethod.ReturnType);
+                    methodIL.Emit(OpCodes.Ldloca, local);
+                    methodIL.Emit(OpCodes.Initobj, interfaceMethod.ReturnType);
+                    methodIL.Emit(OpCodes.Ldloc, local);
+                }
+                else
+                {
+                    methodIL.Emit(OpCodes.Ldnull);
+                }
+                methodIL.Emit(OpCodes.Ret);
+            }
+
+            wrapperBuilder.DefineMethodOverride(wrapperMethod, interfaceMethod);
         }
 
         public void EmitStringerOverrides(System.Collections.Generic.IReadOnlyList<MethodDeclaration> methods)

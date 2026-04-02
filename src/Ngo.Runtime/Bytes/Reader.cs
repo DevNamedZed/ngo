@@ -21,7 +21,7 @@ namespace Ngo.Runtime.Bytes
 
         [GoMethod]
         [return: GoReturn("int", "error")]
-        public (int, string) Read(Slice<byte> p)
+        public (long, string) Read(Slice<byte> p)
         {
             if (_pos >= _data.Length) return (0, GoIo.EOF);
             int n = global::System.Math.Min(p.Len, _data.Length - _pos);
@@ -105,7 +105,7 @@ namespace Ngo.Runtime.Bytes
                 if (remaining <= 0) return (0, null);
                 var slice = new Slice<byte>(_data, _pos, remaining);
                 var (n, err) = writer.Write(slice);
-                _pos += n;
+                _pos += (int)n;
                 return (n, string.IsNullOrEmpty(err) ? null : err);
             }
             return (0, "bytes.Reader.WriteTo: invalid writer");

@@ -28,7 +28,7 @@ namespace Ngo.Runtime.Io
         private bool _closed;
         private string _closeErr = "";
 
-        public (int, string) Write(Slice<byte> p)
+        public (long, string) Write(Slice<byte> p)
         {
             lock (_lock)
             {
@@ -42,7 +42,7 @@ namespace Ngo.Runtime.Io
             }
         }
 
-        public (int, string) Read(Slice<byte> p)
+        public (long, string) Read(Slice<byte> p)
         {
             lock (_lock)
             {

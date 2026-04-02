@@ -30,7 +30,7 @@ namespace Ngo.Runtime.Io
             _current = 0;
         }
 
-        public (int, string) Read(Slice<byte> p)
+        public (long, string) Read(Slice<byte> p)
         {
             while (_current < _readers.Length)
             {

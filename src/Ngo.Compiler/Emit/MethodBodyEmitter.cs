@@ -21,6 +21,7 @@ using System.Collections.Generic;
 using System.Reflection;
 using System.Reflection.Emit;
 using Ngo.Compiler.Ast;
+using Ngo.Compiler.Archive;
 using Ngo.Compiler.Emit.Builder;
 using Ngo.Compiler.Semantics;
 using Ngo.Compiler.Symbols;
@@ -78,19 +79,31 @@ namespace Ngo.Compiler.Emit
             _ctx.ResetMethodState();
             _currentReturnTypes = func.Symbol.ReturnTypes;
 
+            // Build the method emit context for generic param resolution
+            IReadOnlyList<Symbols.TypeParameterSymbol>? methodTypeParams = null;
+            Type[]? methodGenericParams = null;
             if (func.Symbol.TypeParameters.Count > 0)
             {
-                var names = new string[func.Symbol.TypeParameters.Count];
-                for (int i = 0; i < names.Length; i++)
+                methodTypeParams = func.Symbol.TypeParameters;
+                methodGenericParams = method.AsMethodInfo().GetGenericArguments();
+
+                var typeParams = func.Symbol.TypeParameters;
+                var names = new string[typeParams.Count];
+                var symbols = new Symbols.TypeParameterSymbol[typeParams.Count];
+                for (int i = 0; i < typeParams.Count; i++)
                 {
-                    names[i] = func.Symbol.TypeParameters[i].Name;
+                    names[i] = typeParams[i].Name;
+                    symbols[i] = typeParams[i];
                 }
                 _ctx.EnclosingGenericParamNames = names;
+                _ctx.EnclosingGenericParamSymbols = symbols;
             }
             else
             {
                 _ctx.EnclosingGenericParamNames = Array.Empty<string>();
+                _ctx.EnclosingGenericParamSymbols = Array.Empty<Symbols.TypeParameterSymbol>();
             }
+
 
             // If the function has no body (assembly-only in Go source),
             // try to emit a .NET intrinsic implementation instead of a no-op.
@@ -110,24 +123,9 @@ namespace Ngo.Compiler.Emit
 
         private void EmitFunctionBodyCore(FunctionDeclaration func)
         {
-            // Register parameters
             for (int i = 0; i < func.Symbol.Parameters.Count; i++)
             {
                 _ctx.Parameters[func.Symbol.Parameters[i]] = i;
-            }
-
-            // Re-register generic type params for body emission
-            // The TypeParameterSymbol instances in the body may differ from those at declaration
-            if (func.Symbol.TypeParameters.Count > 0 && _ctx.Methods.TryGetValue(func.Symbol, out var methodBuilder))
-            {
-                var gpTypes = methodBuilder.AsMethodInfo().GetGenericArguments();
-                if (gpTypes.Length == func.Symbol.TypeParameters.Count)
-                {
-                    for (int i = 0; i < gpTypes.Length; i++)
-                    {
-                        _ctx.Mapper.Register(func.Symbol.TypeParameters[i], gpTypes[i]);
-                    }
-                }
             }
 
             // Pre-scan for variables captured by closures
@@ -192,6 +190,29 @@ namespace Ngo.Compiler.Emit
             _ctx.IL = method.GetILWriter();
             _ctx.ResetMethodState();
             _currentReturnTypes = decl.Symbol.ReturnTypes;
+
+            var genericSource = decl.Symbol.TypeParameters.Count > 0
+                ? decl.Symbol.TypeParameters
+                : (decl.Symbol.ReceiverType as Symbols.StructTypeSymbol)?.TypeParameters;
+            if (genericSource != null && genericSource.Count > 0)
+            {
+                var names = new string[genericSource.Count];
+                var symbols = new Symbols.TypeParameterSymbol[genericSource.Count];
+                for (int i = 0; i < genericSource.Count; i++)
+                {
+                    names[i] = genericSource[i].Name;
+                    symbols[i] = genericSource[i];
+                }
+                _ctx.EnclosingGenericParamNames = names;
+                _ctx.EnclosingGenericParamSymbols = symbols;
+            }
+            else
+            {
+                _ctx.EnclosingGenericParamNames = Array.Empty<string>();
+                _ctx.EnclosingGenericParamSymbols = Array.Empty<Symbols.TypeParameterSymbol>();
+            }
+
+            // NgoWriter gets its SerializationContext at construction from NgoMethodBuilder.
 
             if (decl.Body.Statements.Count == 0)
             {

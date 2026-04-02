@@ -24,7 +24,7 @@ namespace Ngo.Runtime.Net
             _remoteEndPoint = remoteEndPoint;
         }
 
-        public (int, string) Read(Slice<byte> b)
+        public (long, string) Read(Slice<byte> b)
         {
             if (_client == null)
             {
@@ -47,7 +47,7 @@ namespace Ngo.Runtime.Net
             }
         }
 
-        public (int, string) Write(Slice<byte> b)
+        public (long, string) Write(Slice<byte> b)
         {
             if (_client == null)
             {

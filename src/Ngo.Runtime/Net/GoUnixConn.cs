@@ -16,7 +16,7 @@ namespace Ngo.Runtime.Net
             _socket = socket;
         }
 
-        public (int, string) Read(Slice<byte> b)
+        public (long, string) Read(Slice<byte> b)
         {
             if (_socket == null)
             {
@@ -42,7 +42,7 @@ namespace Ngo.Runtime.Net
             }
         }
 
-        public (int, string) Write(Slice<byte> b)
+        public (long, string) Write(Slice<byte> b)
         {
             if (_socket == null)
             {

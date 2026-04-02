@@ -28,7 +28,7 @@ namespace Ngo.Runtime.Io
             _inner = inner;
         }
 
-        public (int, string) Read(Slice<byte> p) => _inner.Read(p);
+        public (long, string) Read(Slice<byte> p) => _inner.Read(p);
         public string Close() => "";
     }
 }

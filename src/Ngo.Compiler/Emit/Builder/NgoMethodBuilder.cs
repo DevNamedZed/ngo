@@ -26,6 +26,7 @@ namespace Ngo.Compiler.Emit.Builder
     internal sealed class NgoMethodBuilder : IMethodBuilder
     {
         private readonly Type _declaringType;
+        private readonly NgoTypeBuilder? _declaringTypeBuilder;
         private readonly string _name;
         private readonly MethodAttributes _attrs;
         private string _returnTypeName;
@@ -33,10 +34,13 @@ namespace Ngo.Compiler.Emit.Builder
         private NgoWriter? _writer;
         private readonly NgoProxyMethodInfo _proxy;
         private string[] _genericParamNames = Array.Empty<string>();
+        private Type[] _genericParamTypes = Type.EmptyTypes;
 
-        public NgoMethodBuilder(Type declaringType, string name, MethodAttributes attrs, Type? returnType, Type[]? paramTypes)
+        public NgoMethodBuilder(Type declaringType, string name, MethodAttributes attrs, Type? returnType, Type[]? paramTypes,
+            NgoTypeBuilder? declaringTypeBuilder = null)
         {
             _declaringType = declaringType;
+            _declaringTypeBuilder = declaringTypeBuilder;
             _name = name;
             _attrs = attrs;
             _returnTypeName = returnType != null ? NgoWriter.GetTypeNameStatic(returnType) : "System.Void";
@@ -62,8 +66,9 @@ namespace Ngo.Compiler.Emit.Builder
             var result = new Type[names.Length];
             for (int i = 0; i < names.Length; i++)
             {
-                result[i] = new NgoProxyType(names[i]);
+                result[i] = new NgoProxyType(names[i], i, isMethodGenericParam: true);
             }
+            _genericParamTypes = result;
             return result;
         }
 
@@ -85,7 +90,12 @@ namespace Ngo.Compiler.Emit.Builder
 
         public CilWriter GetILWriter()
         {
-            _writer ??= new NgoWriter();
+            if (_writer == null)
+            {
+                var typeGenericParams = _declaringTypeBuilder?.GenericParamTypes ?? Type.EmptyTypes;
+                var context = new Archive.SerializationContext(_genericParamTypes, typeGenericParams);
+                _writer = new NgoWriter(context);
+            }
             return _writer;
         }
 

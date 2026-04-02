@@ -58,8 +58,9 @@ namespace Ngo.Compiler.Emit
         // Symbols captured by closures in the current function body (stored in Box<T>)
         public HashSet<Symbol> CapturedSymbols { get; } = new();
 
-        // Generic parameter names of the current enclosing function (for closure type propagation)
+        // Generic parameters of the current enclosing function (for closure/lambda propagation)
         public string[] EnclosingGenericParamNames { get; set; } = Array.Empty<string>();
+        public Symbols.TypeParameterSymbol[] EnclosingGenericParamSymbols { get; set; } = Array.Empty<Symbols.TypeParameterSymbol>();
 
         // Current package import path (set during dependency emit for external type detection)
         public string? CurrentPackagePath { get; set; }

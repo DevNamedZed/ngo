@@ -46,7 +46,7 @@ namespace Ngo.Runtime.Os
 
         [GoMethod]
         [return: GoReturn("int", "error")]
-        public (int, string) Read(Slice<byte> p)
+        public (long, string) Read(Slice<byte> p)
         {
             if (_stream == null) return (0, "os: file is nil");
             try
@@ -66,7 +66,7 @@ namespace Ngo.Runtime.Os
 
         [GoMethod]
         [return: GoReturn("int", "error")]
-        public (int, string) Write(Slice<byte> p)
+        public (long, string) Write(Slice<byte> p)
         {
             if (_stream == null) return (0, "os: file is nil");
             try
@@ -362,7 +362,7 @@ namespace Ngo.Runtime.Os
                     var (n, err) = reader.Read(slice);
                     if (n > 0)
                     {
-                        _stream.Write(buf, 0, n);
+                        _stream.Write(buf, 0, (int)n);
                         total += n;
                     }
                     if (err != null)

@@ -75,7 +75,7 @@ namespace Ngo.Runtime.Io
                 var (n, readErr) = src.Read(bufSlice);
                 if (n > 0)
                 {
-                    var toWrite = bufSlice.Reslice(0, n);
+                    var toWrite = bufSlice.Reslice(0, (int)n);
                     var (nw, writeErr) = dst.Write(toWrite);
                     written += nw;
                     if (writeErr != "")
@@ -139,7 +139,7 @@ namespace Ngo.Runtime.Io
             while (true)
             {
                 var (n, err) = r.Read(bufSlice);
-                for (int i = 0; i < n; i++)
+                for (long i = 0; i < n; i++)
                     result.Add(buf[i]);
                 if (err == EOF)
                     return (new Slice<byte>(result.ToArray()), "");
@@ -200,7 +200,7 @@ namespace Ngo.Runtime.Io
             var bytes = global::System.Text.Encoding.UTF8.GetBytes(s);
             var slice = new Slice<byte>(bytes);
             var (n, err) = w.Write(slice);
-            return ((long)n, err);
+            return (n, err);
         }
 
         /// <summary>

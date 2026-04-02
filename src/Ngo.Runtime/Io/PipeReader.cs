@@ -33,7 +33,7 @@ namespace Ngo.Runtime.Io
 
         [GoMethod]
         [return: GoReturn("int", "error")]
-        public (int, string) Read(Slice<byte> p)
+        public (long, string) Read(Slice<byte> p)
         {
             return _pipe.Read(p);
         }

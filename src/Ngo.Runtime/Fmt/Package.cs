@@ -494,7 +494,7 @@ namespace Ngo.Runtime.Fmt
             var bytes = global::System.Text.Encoding.UTF8.GetBytes(s);
             var slice = new Slice<byte>(bytes);
             var (n, err) = w.Write(slice);
-            return ((long)n, err);
+            return (n, err);
         }
 
         public static (long, string) Fprintln(IGoWriter w, params object?[] args)
@@ -509,7 +509,7 @@ namespace Ngo.Runtime.Fmt
             var bytes = global::System.Text.Encoding.UTF8.GetBytes(sb.ToString());
             var slice = new Slice<byte>(bytes);
             var (n, err) = w.Write(slice);
-            return ((long)n, err);
+            return (n, err);
         }
 
         public static (long, string) Fprint(IGoWriter w, params object?[] args)
@@ -524,7 +524,7 @@ namespace Ngo.Runtime.Fmt
             var bytes = global::System.Text.Encoding.UTF8.GetBytes(sb.ToString());
             var slice = new Slice<byte>(bytes);
             var (n, err) = w.Write(slice);
-            return ((long)n, err);
+            return (n, err);
         }
 
         /// <summary>

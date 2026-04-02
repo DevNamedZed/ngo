@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------
-// <copyright file="DiscardWriter.cs" company="Ziad">
+// <copyright file="FieldTokenKind.cs" company="Ziad">
 //  Copyright 2016 Ziad
 //
 //  Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,21 +16,11 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
-using Ngo.Runtime.Discovery;
-
-namespace Ngo.Runtime.Io
+namespace Ngo.Compiler.Archive
 {
-    /// <summary>An io.Writer that discards all data (io.Discard).</summary>
-    [GoType("struct", Name = "DiscardWriter", Package = "io")]
-    public sealed class DiscardWriter : IGoWriter
+    internal enum FieldTokenKind : byte
     {
-        public static readonly DiscardWriter Instance = new DiscardWriter();
-
-        [GoMethod]
-        [return: GoReturn("int", "error")]
-        public (long, string) Write(Slice<byte> p)
-        {
-            return (p.Len, "");
-        }
+        FieldDef = 0,
+        MemberRef = 1,
     }
 }

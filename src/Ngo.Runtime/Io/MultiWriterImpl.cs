@@ -28,7 +28,7 @@ namespace Ngo.Runtime.Io
             _writers = writers;
         }
 
-        public (int, string) Write(Slice<byte> p)
+        public (long, string) Write(Slice<byte> p)
         {
             foreach (var w in _writers)
             {

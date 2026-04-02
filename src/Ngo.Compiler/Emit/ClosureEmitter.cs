@@ -22,6 +22,7 @@ using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
 using Ngo.Compiler.Ast;
+using Ngo.Compiler.Archive;
 using Ngo.Compiler.Emit.Builder;
 using Ngo.Compiler.Symbols;
 using Ngo.Runtime;
@@ -56,19 +57,38 @@ namespace Ngo.Compiler.Emit
             // No captures — emit as a static method
             var lambdaName = $"__lambda_{_body.LambdaCounter++}";
 
-            var paramTypes = new Type[funcLit.Parameters.Count];
-            for (int i = 0; i < funcLit.Parameters.Count; i++)
+            IMethodBuilder lambdaMethod;
+            Type[]? lambdaGenericParams = null;
+            if (_ctx.EnclosingGenericParamNames.Length > 0)
             {
-                paramTypes[i] = _ctx.Mapper.Map(funcLit.Parameters[i].Type);
+                lambdaMethod = _ctx.PackageType.DefineMethod(
+                    lambdaName,
+                    MethodAttributes.Private | MethodAttributes.Static);
+                lambdaGenericParams = lambdaMethod.DefineGenericParameters(_ctx.EnclosingGenericParamNames);
+
+                var paramTypes = new Type[funcLit.Parameters.Count];
+                for (int i = 0; i < funcLit.Parameters.Count; i++)
+                {
+                    paramTypes[i] = _ctx.Mapper.Map(funcLit.Parameters[i].Type);
+                }
+                var returnType = _ctx.Mapper.MapReturnType(funcLit.ReturnTypes);
+                lambdaMethod.SetReturnType(returnType);
+                lambdaMethod.SetParameters(paramTypes);
             }
-
-            var returnType = _ctx.Mapper.MapReturnType(funcLit.ReturnTypes);
-
-            var lambdaMethod = _ctx.PackageType.DefineMethod(
-                lambdaName,
-                MethodAttributes.Private | MethodAttributes.Static,
-                returnType,
-                paramTypes);
+            else
+            {
+                var paramTypes = new Type[funcLit.Parameters.Count];
+                for (int i = 0; i < funcLit.Parameters.Count; i++)
+                {
+                    paramTypes[i] = _ctx.Mapper.Map(funcLit.Parameters[i].Type);
+                }
+                var returnType = _ctx.Mapper.MapReturnType(funcLit.ReturnTypes);
+                lambdaMethod = _ctx.PackageType.DefineMethod(
+                    lambdaName,
+                    MethodAttributes.Private | MethodAttributes.Static,
+                    returnType,
+                    paramTypes);
+            }
 
             for (int i = 0; i < funcLit.Parameters.Count; i++)
             {
@@ -82,7 +102,6 @@ namespace Ngo.Compiler.Emit
             var savedCaptured = new HashSet<Symbol>(_ctx.CapturedSymbols);
             var savedReturnTypes = _body.CurrentReturnTypes;
 
-            // Emit the lambda body
             _ctx.IL = lambdaMethod.GetILWriter();
             _ctx.Locals.Clear();
             _ctx.Parameters.Clear();
@@ -159,9 +178,10 @@ namespace Ngo.Compiler.Emit
             // Propagate generic parameters from the enclosing function to the closure type.
             // Without this, parameter types like Func<E, bool> serialize as references to 'E'
             // which can't be resolved at link time since the closure type isn't generic.
+            Type[]? closureGenericParams = null;
             if (_ctx.EnclosingGenericParamNames.Length > 0)
             {
-                closureBuilder.DefineGenericParameters(_ctx.EnclosingGenericParamNames);
+                closureGenericParams = closureBuilder.DefineGenericParameters(_ctx.EnclosingGenericParamNames);
             }
 
             // Fields for captured variables — use Box<T> for shared mutation

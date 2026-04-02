@@ -25,11 +25,11 @@ namespace Ngo.Runtime.Net
     {
         [GoMethod]
         [return: GoReturn("int", "error")]
-        (int, string) Read(Slice<byte> b);
+        (long, string) Read(Slice<byte> b);
 
         [GoMethod]
         [return: GoReturn("int", "error")]
-        (int, string) Write(Slice<byte> b);
+        (long, string) Write(Slice<byte> b);
 
         [GoMethod]
         [return: GoReturn("error")]

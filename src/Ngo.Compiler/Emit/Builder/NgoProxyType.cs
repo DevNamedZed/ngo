@@ -32,6 +32,11 @@ namespace Ngo.Compiler.Emit.Builder
         private int _genericParamCount;
         private Type[]? _genericTypeArgs;
 
+        // Generic parameter tracking for archive serialization
+        internal bool IsGenericParam { get; }
+        internal int GenericParamIndex { get; }
+        internal bool IsMethodGenericParam { get; }
+
         public NgoProxyType(string fullName, bool isValueType = false)
             : base(typeof(object))
         {
@@ -39,6 +44,16 @@ namespace Ngo.Compiler.Emit.Builder
             var dot = fullName.LastIndexOf('.');
             _name = dot >= 0 ? fullName.Substring(dot + 1) : fullName;
             _isValueType = isValueType;
+        }
+
+        public NgoProxyType(string name, int genericParamIndex, bool isMethodGenericParam)
+            : base(typeof(object))
+        {
+            _fullName = name;
+            _name = name;
+            IsGenericParam = true;
+            GenericParamIndex = genericParamIndex;
+            IsMethodGenericParam = isMethodGenericParam;
         }
 
         internal void SetGenericParamCount(int count)

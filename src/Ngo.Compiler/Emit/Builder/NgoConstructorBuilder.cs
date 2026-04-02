@@ -28,12 +28,15 @@ namespace Ngo.Compiler.Emit.Builder
         private readonly MethodAttributes _attrs;
         private readonly CallingConventions _callingConvention;
         private readonly List<string> _paramTypeNames;
+        private readonly NgoTypeBuilder? _declaringTypeBuilder;
         private NgoWriter? _writer;
 
-        public NgoConstructorBuilder(MethodAttributes attrs, CallingConventions callingConvention, Type[] paramTypes)
+        public NgoConstructorBuilder(MethodAttributes attrs, CallingConventions callingConvention, Type[] paramTypes,
+            NgoTypeBuilder? declaringTypeBuilder = null)
         {
             _attrs = attrs;
             _callingConvention = callingConvention;
+            _declaringTypeBuilder = declaringTypeBuilder;
             _paramTypeNames = new List<string>();
             if (paramTypes != null)
             {
@@ -54,7 +57,12 @@ namespace Ngo.Compiler.Emit.Builder
 
         public CilWriter GetILWriter()
         {
-            _writer ??= new NgoWriter();
+            if (_writer == null)
+            {
+                var typeGenericParams = _declaringTypeBuilder?.GenericParamTypes ?? Type.EmptyTypes;
+                var context = new Archive.SerializationContext(Type.EmptyTypes, typeGenericParams);
+                _writer = new NgoWriter(context);
+            }
             return _writer;
         }
     }

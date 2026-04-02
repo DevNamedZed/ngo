@@ -22,7 +22,7 @@ namespace Ngo.Runtime.Net
 
         internal TcpClient? GetTcpClient() => _client;
 
-        public (int, string) Read(Slice<byte> b)
+        public (long, string) Read(Slice<byte> b)
         {
             try
             {
@@ -44,7 +44,7 @@ namespace Ngo.Runtime.Net
             }
         }
 
-        public (int, string) Write(Slice<byte> b)
+        public (long, string) Write(Slice<byte> b)
         {
             try
             {
@@ -188,7 +188,7 @@ namespace Ngo.Runtime.Net
                     var (n, err) = reader.Read(slice);
                     if (n > 0)
                     {
-                        _stream.Write(buf, 0, n);
+                        _stream.Write(buf, 0, (int)n);
                         total += n;
                     }
                     if (err != null)

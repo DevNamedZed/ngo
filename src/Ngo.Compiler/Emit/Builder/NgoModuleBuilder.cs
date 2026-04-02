@@ -164,13 +164,12 @@ namespace Ngo.Compiler.Emit.Builder
                     writer.Write(m.BodyIndex);
                 }
 
-                // Method overrides
-                writer.Write(type.Overrides.Count);
-                foreach (var ov in type.Overrides)
+                // Interface method implementations — grouped by interface type
+                var interfaceMappings = BuildInterfaceMethodMappings(type);
+                writer.Write(interfaceMappings.Count);
+                foreach (var mapping in interfaceMappings)
                 {
-                    writer.Write(ov.BodyMethodName);
-                    writer.Write(ov.DeclarationTypeName);
-                    writer.Write(ov.DeclarationMethodName);
+                    mapping.Write(writer);
                 }
             }
 
@@ -193,6 +192,28 @@ namespace Ngo.Compiler.Emit.Builder
                 return false;
             }
             return true;
+        }
+
+        private static List<Archive.InterfaceMethodMapping> BuildInterfaceMethodMappings(NgoTypeBuilder type)
+        {
+            var mappingsByInterface = new Dictionary<string, List<Archive.MethodMapping>>();
+
+            foreach (var ov in type.Overrides)
+            {
+                if (!mappingsByInterface.TryGetValue(ov.DeclarationTypeName, out var methodList))
+                {
+                    methodList = new List<Archive.MethodMapping>();
+                    mappingsByInterface[ov.DeclarationTypeName] = methodList;
+                }
+                methodList.Add(new Archive.MethodMapping(ov.DeclarationMethodName, ov.BodyMethodName));
+            }
+
+            var result = new List<Archive.InterfaceMethodMapping>();
+            foreach (var (interfaceName, methods) in mappingsByInterface)
+            {
+                result.Add(new Archive.InterfaceMethodMapping(interfaceName, methods.ToArray()));
+            }
+            return result;
         }
     }
 }

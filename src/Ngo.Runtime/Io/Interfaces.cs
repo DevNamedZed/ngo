@@ -26,7 +26,7 @@ namespace Ngo.Runtime.Io
     {
         [GoMethod]
         [return: GoReturn("int", "error")]
-        (int, string) Read(Slice<byte> p);
+        (long, string) Read(Slice<byte> p);
     }
 
     /// <summary>Go io.Writer interface - Write(p []byte) (n int, err error)</summary>
@@ -35,7 +35,7 @@ namespace Ngo.Runtime.Io
     {
         [GoMethod]
         [return: GoReturn("int", "error")]
-        (int, string) Write(Slice<byte> p);
+        (long, string) Write(Slice<byte> p);
     }
 
     /// <summary>Go io.Closer interface - Close() error</summary>
@@ -53,7 +53,7 @@ namespace Ngo.Runtime.Io
     {
         [GoMethod]
         [return: GoReturn("int", "error")]
-        (int, string) ReadAt(Slice<byte> p, long off);
+        (long, string) ReadAt(Slice<byte> p, long off);
     }
 
     /// <summary>Go io.WriterAt interface - WriteAt(p []byte, off int64) (n int, err error)</summary>
@@ -62,7 +62,7 @@ namespace Ngo.Runtime.Io
     {
         [GoMethod]
         [return: GoReturn("int", "error")]
-        (int, string) WriteAt(Slice<byte> p, long off);
+        (long, string) WriteAt(Slice<byte> p, long off);
     }
 
     /// <summary>Go io.Seeker interface - Seek(offset int64, whence int) (int64, error)</summary>
@@ -158,7 +158,7 @@ namespace Ngo.Runtime.Io
     {
         [GoMethod]
         [return: GoReturn("rune", "int", "error")]
-        (int, int, string) ReadRune();
+        (long, long, string) ReadRune();
     }
 
     /// <summary>Go io.RuneScanner interface = RuneReader + UnreadRune()</summary>
@@ -185,6 +185,6 @@ namespace Ngo.Runtime.Io
     {
         [GoMethod]
         [return: GoReturn("int", "error")]
-        (int, string) WriteString(string s);
+        (long, string) WriteString(string s);
     }
 }

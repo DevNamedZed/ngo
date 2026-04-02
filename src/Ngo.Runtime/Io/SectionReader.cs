@@ -39,7 +39,7 @@ namespace Ngo.Runtime.Io
 
         [GoMethod]
         [return: GoReturn("int", "error")]
-        public (int, string) Read(Slice<byte> p)
+        public (long, string) Read(Slice<byte> p)
         {
             if (_off >= _limit)
                 return (0, GoIo.EOF);
@@ -53,7 +53,7 @@ namespace Ngo.Runtime.Io
 
         [GoMethod]
         [return: GoReturn("int", "error")]
-        public (int, string) ReadAt(Slice<byte> p, long off)
+        public (long, string) ReadAt(Slice<byte> p, long off)
         {
             if (off < 0 || off >= _limit - _base)
                 return (0, GoIo.EOF);

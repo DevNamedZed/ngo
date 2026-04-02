@@ -16,7 +16,7 @@ namespace Ngo.Runtime.Bytes
 
         [GoMethod]
         [return: GoReturn("int", "error")]
-        public (int, string) Write(Slice<byte> p)
+        public (long, string) Write(Slice<byte> p)
         {
             EnsureCapacity(_len + p.Len);
             for (int i = 0; i < p.Len; i++)
@@ -70,9 +70,9 @@ namespace Ngo.Runtime.Bytes
                     var (n, err) = r.Read(tmp);
                     if (n > 0)
                     {
-                        EnsureCapacity(_len + n);
-                        for (int i = 0; i < n; i++)
-                            _buf[_len++] = tmp[i];
+                        EnsureCapacity(_len + (int)n);
+                        for (long i = 0; i < n; i++)
+                            _buf[_len++] = tmp[(int)i];
                         total += n;
                     }
                     if (err is string s && s == GoIo.EOF)
@@ -89,7 +89,7 @@ namespace Ngo.Runtime.Bytes
 
         [GoMethod]
         [return: GoReturn("int", "error")]
-        public (int, string) Read(Slice<byte> p)
+        public (long, string) Read(Slice<byte> p)
         {
             if (_len == 0) return (0, GoIo.EOF);
             int n = global::System.Math.Min(p.Len, _len);

@@ -33,7 +33,7 @@ namespace Ngo.Runtime.Io
             _pos = 0;
         }
 
-        public (int, string) Read(Slice<byte> p)
+        public (long, string) Read(Slice<byte> p)
         {
             if (_pos >= _data.Length)
                 return (0, GoIo.EOF);

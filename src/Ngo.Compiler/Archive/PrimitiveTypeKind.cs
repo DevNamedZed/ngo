@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------
-// <copyright file="DiscardWriter.cs" company="Ziad">
+// <copyright file="PrimitiveTypeKind.cs" company="Ziad">
 //  Copyright 2016 Ziad
 //
 //  Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,21 +16,26 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
-using Ngo.Runtime.Discovery;
-
-namespace Ngo.Runtime.Io
+namespace Ngo.Compiler.Archive
 {
-    /// <summary>An io.Writer that discards all data (io.Discard).</summary>
-    [GoType("struct", Name = "DiscardWriter", Package = "io")]
-    public sealed class DiscardWriter : IGoWriter
+    internal enum PrimitiveTypeKind : byte
     {
-        public static readonly DiscardWriter Instance = new DiscardWriter();
-
-        [GoMethod]
-        [return: GoReturn("int", "error")]
-        public (long, string) Write(Slice<byte> p)
-        {
-            return (p.Len, "");
-        }
+        Void = 0,
+        Bool = 1,
+        Byte = 2,
+        SByte = 3,
+        Int16 = 4,
+        UInt16 = 5,
+        Int32 = 6,
+        UInt32 = 7,
+        Int64 = 8,
+        UInt64 = 9,
+        Float32 = 10,
+        Float64 = 11,
+        String = 12,
+        Object = 13,
+        IntPtr = 14,
+        UIntPtr = 15,
+        Char = 16,
     }
 }

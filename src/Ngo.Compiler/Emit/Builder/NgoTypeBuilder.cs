@@ -35,6 +35,7 @@ namespace Ngo.Compiler.Emit.Builder
         private readonly List<NgoMethodOverride> _overrides = new();
         private NgoConstructorBuilder? _constructor;
         private string[] _genericParamNames = Array.Empty<string>();
+        private Type[] _genericParamTypes = Type.EmptyTypes;
         private readonly string[] _interfaceNames;
 
         public NgoTypeBuilder(string fullName, TypeAttributes attrs, Type? baseType, Type[]? interfaces = null)
@@ -113,7 +114,7 @@ namespace Ngo.Compiler.Emit.Builder
 
         public IMethodBuilder DefineMethod(string name, MethodAttributes attrs, Type returnType, Type[] paramTypes)
         {
-            var mb = new NgoMethodBuilder(_proxyType, name, attrs, returnType, paramTypes);
+            var mb = new NgoMethodBuilder(_proxyType, name, attrs, returnType, paramTypes, declaringTypeBuilder: this);
             _methods.Add(mb);
             _proxyType.AddMethod(name, returnType, paramTypes);
             return mb;
@@ -121,7 +122,7 @@ namespace Ngo.Compiler.Emit.Builder
 
         public IMethodBuilder DefineMethod(string name, MethodAttributes attrs)
         {
-            var mb = new NgoMethodBuilder(_proxyType, name, attrs, null, null);
+            var mb = new NgoMethodBuilder(_proxyType, name, attrs, null, null, declaringTypeBuilder: this);
             _methods.Add(mb);
             _proxyType.AddMethod(name, null!, null!);
             return mb;
@@ -129,7 +130,7 @@ namespace Ngo.Compiler.Emit.Builder
 
         public IConstructorBuilder DefineConstructor(MethodAttributes attrs, CallingConventions callingConvention, Type[] paramTypes)
         {
-            _constructor = new NgoConstructorBuilder(attrs, callingConvention, paramTypes);
+            _constructor = new NgoConstructorBuilder(attrs, callingConvention, paramTypes, declaringTypeBuilder: this);
             return _constructor;
         }
 
@@ -140,10 +141,13 @@ namespace Ngo.Compiler.Emit.Builder
             var result = new Type[names.Length];
             for (int i = 0; i < names.Length; i++)
             {
-                result[i] = new NgoProxyType(names[i]);
+                result[i] = new NgoProxyType(names[i], i, isMethodGenericParam: false);
             }
+            _genericParamTypes = result;
             return result;
         }
+
+        public Type[] GenericParamTypes => _genericParamTypes;
 
         public void DefineMethodOverride(IMethodBuilder body, MethodInfo declaration)
         {

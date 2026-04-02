@@ -33,7 +33,7 @@ namespace Ngo.Runtime.Io
 
         [GoMethod]
         [return: GoReturn("int", "error")]
-        public (int, string) Write(Slice<byte> p)
+        public (long, string) Write(Slice<byte> p)
         {
             return _pipe.Write(p);
         }

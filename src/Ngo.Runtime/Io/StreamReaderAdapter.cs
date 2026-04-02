@@ -15,7 +15,7 @@ namespace Ngo.Runtime.Io
             _stream = stream ?? throw new ArgumentNullException(nameof(stream));
         }
 
-        public (int, string) Read(Slice<byte> p)
+        public (long, string) Read(Slice<byte> p)
         {
             if (p.Len == 0)
             {

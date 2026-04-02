@@ -47,7 +47,7 @@ namespace Ngo.Runtime.Io
 
         [GoMethod]
         [return: GoReturn("int", "error")]
-        public (int, string) Read(Slice<byte> p)
+        public (long, string) Read(Slice<byte> p)
         {
             if (_remaining <= 0)
                 return (0, GoIo.EOF);
