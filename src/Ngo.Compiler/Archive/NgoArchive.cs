@@ -22,7 +22,7 @@ using System.IO;
 using System.IO.Compression;
 using Ngo.Compiler.Symbols;
 
-namespace Ngo.Compiler.Emit
+namespace Ngo.Compiler.Archive
 {
     /// <summary>
     /// ZIP-based archive format for compiled Go packages.

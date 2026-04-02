@@ -58,6 +58,12 @@ namespace Ngo.Compiler.Emit
         // Symbols captured by closures in the current function body (stored in Box<T>)
         public HashSet<Symbol> CapturedSymbols { get; } = new();
 
+        // Generic parameter names of the current enclosing function (for closure type propagation)
+        public string[] EnclosingGenericParamNames { get; set; } = Array.Empty<string>();
+
+        // Current package import path (set during dependency emit for external type detection)
+        public string? CurrentPackagePath { get; set; }
+
         // All emitted methods (for resolving calls)
         public Dictionary<Symbol, IMethodBuilder> Methods { get; } = new();
 
@@ -66,6 +72,42 @@ namespace Ngo.Compiler.Emit
 
         // All linked methods by their IL-level name (e.g., "Scanner_Scan")
         public Dictionary<string, MethodBuilder> LinkedMethods { get; } = new();
+
+        // All linked type builders across all archives (for cross-archive type resolution)
+        public Dictionary<string, TypeBuilder> LinkedTypes { get; } = new();
+
+        // All linked field builders across all archives (for cross-package variable access)
+        public Dictionary<string, FieldBuilder> LinkedFields { get; } = new();
+
+        // Generic method metadata for instantiation during IL replay
+        public Dictionary<string, (string[] GenericParamNames, string[] ParamTypeNames)> MethodGenericInfo { get; } = new();
+
+        private readonly Dictionary<string, MethodInfo> _crossPkgMethodCache = new();
+
+        public MethodInfo GetCrossPackageMethod(Symbols.FunctionSymbol func, TypeMapper mapper)
+        {
+            var key = (func.PackageName ?? "") + "::" + func.Name;
+            if (_crossPkgMethodCache.TryGetValue(key, out var cached))
+            {
+                return cached;
+            }
+
+            var fullPackageName = func.PackageName ?? "unknown";
+            var lastSlash = fullPackageName.LastIndexOf('/');
+            var shortPackageName = lastSlash >= 0 ? fullPackageName.Substring(lastSlash + 1) : fullPackageName;
+            var declaringType = new Builder.NgoProxyType(shortPackageName);
+
+            var paramTypes = new Type[func.Parameters.Count];
+            for (int i = 0; i < paramTypes.Length; i++)
+            {
+                paramTypes[i] = mapper.Map(func.Parameters[i].Type);
+            }
+
+            var returnType = mapper.MapReturnType(func.ReturnTypes);
+            var proxy = new Builder.NgoProxyMethodInfo(declaringType, func.Name, paramTypes, returnType);
+            _crossPkgMethodCache[key] = proxy;
+            return proxy;
+        }
 
         // CGo native library resolver initializer (called from .cctor)
         public IMethodBuilder? CgoResolverInitMethod { get; set; }
@@ -152,13 +194,18 @@ namespace Ngo.Compiler.Emit
                 {
                     var baseCtor = genericDef.GetConstructor(paramTypes);
                     if (baseCtor != null)
-                        return TypeBuilder.GetConstructor(type, baseCtor);
+                    {
+                        try { return TypeBuilder.GetConstructor(type, baseCtor); }
+                        catch (NotSupportedException) { return new Builder.NgoProxyConstructorInfo(type, paramTypes); }
+                    }
                 }
-                // Param types contain TypeBuilders or exact match failed — match by count
                 foreach (var ctor in genericDef.GetConstructors())
                 {
                     if (ctor.GetParameters().Length == paramTypes.Length)
-                        return TypeBuilder.GetConstructor(type, ctor);
+                    {
+                        try { return TypeBuilder.GetConstructor(type, ctor); }
+                        catch (NotSupportedException) { return new Builder.NgoProxyConstructorInfo(type, paramTypes); }
+                    }
                 }
             }
 
@@ -196,7 +243,13 @@ namespace Ngo.Compiler.Emit
                     }
                 }
             }
-            return type.GetField(name)!;
+            var field = type.GetField(name);
+            if (field == null)
+            {
+                throw new InvalidOperationException(
+                    $"Field '{name}' not found on type '{type.FullName ?? type.Name}'");
+            }
+            return field;
         }
 
         /// <summary>
@@ -241,8 +294,13 @@ namespace Ngo.Compiler.Emit
                     }
                     catch (NotSupportedException)
                     {
-                        // Runtime generic with NgoProxyType args — return proxy method
-                        return new Builder.NgoProxyMethodInfo(type, name);
+                        var baseParams = baseMethod.GetParameters();
+                        var proxyParams = new Type[baseParams.Length];
+                        for (int pi = 0; pi < baseParams.Length; pi++)
+                        {
+                            proxyParams[pi] = baseParams[pi].ParameterType;
+                        }
+                        return new Builder.NgoProxyMethodInfo(type, name, proxyParams, baseMethod.ReturnType);
                     }
                 }
             }
@@ -276,21 +334,50 @@ namespace Ngo.Compiler.Emit
                         }
                     }
                 }
-                try
+                    try
                 {
                     return type.GetMethod(name, paramTypes)!;
                 }
                 catch (NotSupportedException)
                 {
-                    return new Builder.NgoProxyMethodInfo(type, name);
+                    // Verify the method exists on the generic definition before creating a proxy.
+                    // This prevents fake proxies for methods that don't exist on the type.
+                    if (type.IsGenericType)
+                    {
+                        var genDef = type.GetGenericTypeDefinition();
+                        bool found = false;
+                        foreach (var candidate in genDef.GetMethods())
+                        {
+                            if (candidate.Name == name && candidate.GetParameters().Length == paramTypes.Length)
+                            {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found)
+                        {
+                            return null;
+                        }
+                    }
+                    return new Builder.NgoProxyMethodInfo(type, name, paramTypes, typeof(object));
                 }
             }
             try
             {
-                return type.GetMethod(name)!;
+                var result = type.GetMethod(name);
+                return result;
             }
             catch (NotSupportedException)
             {
+                // Verify method exists on generic definition before creating proxy
+                if (type.IsGenericType)
+                {
+                    var genDef = type.GetGenericTypeDefinition();
+                    if (genDef.GetMethod(name) == null)
+                    {
+                        return null;
+                    }
+                }
                 return new Builder.NgoProxyMethodInfo(type, name);
             }
         }
@@ -313,7 +400,8 @@ namespace Ngo.Compiler.Emit
                     }
                     catch (NotSupportedException)
                     {
-                        return new Builder.NgoProxyMethodInfo(type, baseGetter.Name);
+                        return new Builder.NgoProxyMethodInfo(type, baseGetter.Name,
+                            Type.EmptyTypes, baseProp.PropertyType);
                     }
                 }
             }

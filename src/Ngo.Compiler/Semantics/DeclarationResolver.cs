@@ -311,6 +311,39 @@ namespace Ngo.Compiler.Semantics
                 }
             }
 
+            // Retry vars that still have $$error type — forward references to other
+            // package vars that weren't resolved in the first pass. Go allows:
+            //   var CaseRanges = _CaseRanges
+            //   var _CaseRanges = []CaseRange{...}
+            bool hasErrorVars = false;
+            foreach (var v in variables)
+            {
+                if (v.Symbol.Type == TypeSymbol.Error)
+                {
+                    hasErrorVars = true;
+                    break;
+                }
+            }
+            if (hasErrorVars)
+            {
+                var retryVars = new List<VarDeclaration>();
+                foreach (var varSyntax in varSyntaxes)
+                {
+                    foreach (var spec in varSyntax.Specs)
+                    {
+                        try
+                        {
+                            retryVars.AddRange(ResolveVarSpec(spec));
+                        }
+                        catch
+                        {
+                            continue;
+                        }
+                    }
+                }
+                variables = retryVars;
+            }
+
             var functions = new List<FunctionDeclaration>();
             foreach (var funcSyntax in functionSyntaxes)
             {

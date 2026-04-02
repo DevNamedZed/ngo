@@ -17,9 +17,10 @@
 // -----------------------------------------------------------------------
 
 using System.Collections.Generic;
+using Ngo.Compiler.Emit;
 using Ngo.Compiler.Symbols;
 
-namespace Ngo.Compiler.Emit
+namespace Ngo.Compiler.Archive
 {
     /// <summary>
     /// Converts between TypeSymbol and Go-like type strings for binary serialization.

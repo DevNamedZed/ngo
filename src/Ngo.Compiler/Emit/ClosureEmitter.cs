@@ -156,6 +156,14 @@ namespace Ngo.Compiler.Emit
                 closureName,
                 TypeAttributes.Public | TypeAttributes.Sealed);
 
+            // Propagate generic parameters from the enclosing function to the closure type.
+            // Without this, parameter types like Func<E, bool> serialize as references to 'E'
+            // which can't be resolved at link time since the closure type isn't generic.
+            if (_ctx.EnclosingGenericParamNames.Length > 0)
+            {
+                closureBuilder.DefineGenericParameters(_ctx.EnclosingGenericParamNames);
+            }
+
             // Fields for captured variables — use Box<T> for shared mutation
             var captureFields = new Dictionary<Symbol, IFieldBuilder>();
             foreach (var sym in captures)
@@ -369,6 +377,12 @@ namespace Ngo.Compiler.Emit
             _ctx.IL.Emit(OpCodes.Ldnull);
             _ctx.IL.Emit(OpCodes.Ldftn, targetMethod.AsMethodInfo());
             var delegateCtor = EmitContext.GetConstructorSafe(delegateType, new[] { typeof(object), typeof(IntPtr) });
+            if (delegateCtor == null)
+            {
+                throw new InvalidOperationException(
+                    $"Cannot find delegate constructor on '{delegateType.FullName ?? delegateType.Name}' " +
+                    $"for method expression '{mv.Method.Name}' (funcType={mv.FunctionType?.Name})");
+            }
             _ctx.IL.Emit(OpCodes.Newobj, delegateCtor);
         }
 

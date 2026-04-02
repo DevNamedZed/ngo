@@ -29,6 +29,8 @@ namespace Ngo.Compiler.Emit.Builder
         private readonly string _name;
         private readonly bool _isValueType;
         private readonly List<NgoProxyMethodInfo> _definedMethods = new();
+        private int _genericParamCount;
+        private Type[]? _genericTypeArgs;
 
         public NgoProxyType(string fullName, bool isValueType = false)
             : base(typeof(object))
@@ -37,6 +39,11 @@ namespace Ngo.Compiler.Emit.Builder
             var dot = fullName.LastIndexOf('.');
             _name = dot >= 0 ? fullName.Substring(dot + 1) : fullName;
             _isValueType = isValueType;
+        }
+
+        internal void SetGenericParamCount(int count)
+        {
+            _genericParamCount = count;
         }
 
         private readonly List<NgoProxyFieldInfo> _definedFields = new();
@@ -102,9 +109,12 @@ namespace Ngo.Compiler.Emit.Builder
             {
                 argNames[i] = typeArguments[i].FullName ?? typeArguments[i].Name;
             }
-            return new NgoProxyType($"{_fullName}[{string.Join(",", argNames)}]");
+            var result = new NgoProxyType($"{_fullName}[{string.Join(",", argNames)}]", _isValueType);
+            result._genericTypeArgs = typeArguments;
+            return result;
         }
-        public override bool IsGenericType => _fullName.Contains('[') && !_fullName.EndsWith("[]");
+        public override bool IsGenericType => _genericParamCount > 0 || (_fullName.Contains('[') && !_fullName.EndsWith("[]"));
+        public override bool IsGenericTypeDefinition => _genericParamCount > 0;
         public new bool IsArray => _fullName.EndsWith("[]");
         public override Type GetGenericTypeDefinition()
         {
@@ -118,6 +128,19 @@ namespace Ngo.Compiler.Emit.Builder
         }
         public override Type[] GetGenericArguments()
         {
+            if (_genericTypeArgs != null)
+            {
+                return _genericTypeArgs;
+            }
+            if (_genericParamCount > 0)
+            {
+                var args = new Type[_genericParamCount];
+                for (int i = 0; i < _genericParamCount; i++)
+                {
+                    args[i] = new NgoProxyType($"T{i}");
+                }
+                return args;
+            }
             return System.Array.Empty<Type>();
         }
 

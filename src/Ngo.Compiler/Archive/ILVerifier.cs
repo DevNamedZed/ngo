@@ -24,7 +24,7 @@ using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
 using ILVerify;
 
-namespace Ngo.Compiler.Emit
+namespace Ngo.Compiler.Archive
 {
     /// <summary>
     /// Verifies the IL of a persisted assembly using ILVerify.
@@ -43,7 +43,10 @@ namespace Ngo.Compiler.Emit
             // Locate .NET shared framework assemblies
             var runtimeDir = Path.GetDirectoryName(typeof(object).Assembly.Location)!;
 
-            var resolver = new AssemblyResolver(runtimeDir, assemblyDir);
+            // Ngo.Runtime.dll may be in a different directory than the assembly under test
+            var ngoRuntimeDir = Path.GetDirectoryName(typeof(Ngo.Runtime.Slice<>).Assembly.Location)!;
+
+            var resolver = new AssemblyResolver(runtimeDir, assemblyDir, ngoRuntimeDir);
             var verifier = new Verifier(resolver);
             verifier.SetSystemModuleName(new AssemblyNameInfo("System.Runtime"));
 
@@ -65,7 +68,15 @@ namespace Ngo.Compiler.Emit
                     var typeName = metadataReader.GetString(declaringType.Name);
                     methodInfo = $"{typeName}.{methodName}";
                 }
-                errors.Add($"[{methodInfo}] {result.Message}");
+                var details = $"[{methodInfo}] {result.Code}: {result.Message}";
+                if (result.ErrorArguments != null)
+                {
+                    foreach (var arg in result.ErrorArguments)
+                    {
+                        details += $" [{arg.Name}={arg.Value}]";
+                    }
+                }
+                errors.Add(details);
             }
 
             return errors;
@@ -76,7 +87,7 @@ namespace Ngo.Compiler.Emit
             private readonly Dictionary<string, string> _assemblyPaths = new(StringComparer.OrdinalIgnoreCase);
             private readonly Dictionary<string, PEReader> _cache = new(StringComparer.OrdinalIgnoreCase);
 
-            public AssemblyResolver(string runtimeDir, string assemblyDir)
+            public AssemblyResolver(string runtimeDir, string assemblyDir, string ngoRuntimeDir)
             {
                 // Index all DLLs in the .NET shared framework directory
                 foreach (var dll in Directory.GetFiles(runtimeDir, "*.dll"))
@@ -85,12 +96,24 @@ namespace Ngo.Compiler.Emit
                     _assemblyPaths[name] = dll;
                 }
 
-                // Index DLLs in the target assembly's directory (includes Ngo.Runtime.dll)
-                if (!string.Equals(runtimeDir, assemblyDir, StringComparison.OrdinalIgnoreCase))
+                // Index DLLs in the target assembly's directory
+                IndexDirectory(assemblyDir);
+
+                // Index the Ngo.Runtime directory so ILVerify can resolve runtime types
+                IndexDirectory(ngoRuntimeDir);
+            }
+
+            private void IndexDirectory(string directory)
+            {
+                if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory))
                 {
-                    foreach (var dll in Directory.GetFiles(assemblyDir, "*.dll"))
+                    return;
+                }
+                foreach (var dll in Directory.GetFiles(directory, "*.dll"))
+                {
+                    var name = Path.GetFileNameWithoutExtension(dll);
+                    if (!_assemblyPaths.ContainsKey(name))
                     {
-                        var name = Path.GetFileNameWithoutExtension(dll);
                         _assemblyPaths[name] = dll;
                     }
                 }

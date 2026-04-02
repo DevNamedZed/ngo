@@ -19,6 +19,7 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using Ngo.Compiler.Archive;
 using Ngo.Compiler.Emit;
 using Ngo.Compiler.Symbols;
 using Ngo.Runtime;

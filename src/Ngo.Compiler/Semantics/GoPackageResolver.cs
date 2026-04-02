@@ -20,6 +20,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using Ngo.Compiler.Archive;
 using Ngo.Compiler.Emit;
 using Ngo.Compiler.Language;
 using Ngo.Compiler.Symbols;
@@ -48,8 +49,8 @@ namespace Ngo.Compiler.Semantics
             ProjectRoot = projectRoot;
             _moduleResolver.LoadGoMod(projectRoot);
             _moduleResolver.LoadAllTransitiveDependencies();
-            _goStdlibSrc = FindGoStdlibSource();
             _targetGoVersion = ctx.TargetGoVersion;
+            _goStdlibSrc = FindGoStdlibSource(_targetGoVersion);
         }
 
         /// <summary>
@@ -139,7 +140,7 @@ namespace Ngo.Compiler.Semantics
         /// Find the Go stdlib source directory.
         /// Searches: GOROOT env, ~/.ngo/gosrc/go1.22.6/src, /usr/local/go/src
         /// </summary>
-        private static string? FindGoStdlibSource()
+        private static string? FindGoStdlibSource(int goVersion)
         {
             // Check GOROOT environment variable
             var goroot = System.Environment.GetEnvironmentVariable("GOROOT");
@@ -147,7 +148,9 @@ namespace Ngo.Compiler.Semantics
             {
                 var src = Path.Combine(goroot, "src");
                 if (Directory.Exists(src) && Directory.Exists(Path.Combine(src, "fmt")))
+                {
                     return src;
+                }
             }
 
             // Check ngo's cached Go source (~/.ngo/gosrc/go1.22.6/src)
@@ -155,12 +158,13 @@ namespace Ngo.Compiler.Semantics
             var ngoCache = Path.Combine(home, ".ngo", "gosrc");
             if (Directory.Exists(ngoCache))
             {
-                // Find the latest version
                 foreach (var dir in Directory.GetDirectories(ngoCache).OrderByDescending(d => d))
                 {
                     var src = Path.Combine(dir, "src");
                     if (Directory.Exists(src) && Directory.Exists(Path.Combine(src, "fmt")))
+                    {
                         return src;
+                    }
                 }
             }
 
@@ -168,10 +172,13 @@ namespace Ngo.Compiler.Semantics
             foreach (var candidate in new[] { "/usr/local/go/src", "/usr/lib/go/src", "/snap/go/current/src" })
             {
                 if (Directory.Exists(candidate) && Directory.Exists(Path.Combine(candidate, "fmt")))
+                {
                     return candidate;
+                }
             }
 
-            return null;
+            // Auto-download Go source if not found anywhere
+            return GoSourceDownloader.EnsureGoSource(goVersion);
         }
 
         public string ProjectRoot { get; }
@@ -758,7 +765,19 @@ namespace Ngo.Compiler.Semantics
             foreach (var func in result.Root.Functions)
             {
                 if (func.Symbol.Name.Length > 0 && char.IsUpper(func.Symbol.Name[0]))
-                    pkg.AddExport(func.Symbol);
+                {
+                    if (func.Symbol.PackageName == null)
+                    {
+                        var annotated = new FunctionSymbol(func.Symbol.Name,
+                            func.Symbol.TypeParameters, func.Symbol.Parameters,
+                            func.Symbol.ReturnTypes, func.Symbol.IsVariadic, importPath);
+                        pkg.AddExport(annotated);
+                    }
+                    else
+                    {
+                        pkg.AddExport(func.Symbol);
+                    }
+                }
             }
 
             foreach (var typeDecl in result.Root.Types)
@@ -838,11 +857,11 @@ namespace Ngo.Compiler.Semantics
 
             try
             {
-                Emit.ILSerializer.WriteArchive(archivePath, pkg, importPath, result, _ctx);
+                ILSerializer.WriteArchive(archivePath, pkg, importPath, result, _ctx);
             }
             catch (Exception ex)
             {
-                _ctx.Log.Warn($"failed to cache {importPath}: {ex.GetType().Name}: {ex.Message}\n{ex.StackTrace}");
+                _ctx.Log.Warn($"failed to cache {importPath}: {ex.GetType().Name}: {ex.Message}");
             }
         }
 

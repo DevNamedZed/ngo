@@ -17,6 +17,7 @@
 // -----------------------------------------------------------------------
 
 using System;
+using Ngo.Compiler.Archive;
 using System.Collections.Generic;
 using System.Reflection;
 

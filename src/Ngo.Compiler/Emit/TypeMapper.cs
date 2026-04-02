@@ -64,9 +64,10 @@ namespace Ngo.Compiler.Emit
         {
             if (symbol == null)
             {
-                _compilationContext.Log.Debug("TypeMapper: null symbol mapped to object");
-                return typeof(object);
+                throw new ArgumentNullException(nameof(symbol), "TypeMapper: cannot map null type symbol");
             }
+
+
             if (_typeCache.TryGetValue(symbol, out var cached))
             {
                 return cached;
@@ -84,8 +85,8 @@ namespace Ngo.Compiler.Emit
                 var result = MapCore(symbol);
                 if (result == null)
                 {
-                    _compilationContext.Log.Debug($"TypeMapper: unmapped type '{symbol.Name}' (kind={symbol.TypeKind}) fell back to object");
-                    result = typeof(object);
+                    throw new InvalidOperationException(
+                        $"TypeMapper: failed to map type '{symbol.Name}' (kind={symbol.TypeKind})");
                 }
                 _typeCache[symbol] = result;
                 return result;
@@ -250,11 +251,22 @@ namespace Ngo.Compiler.Emit
                     // Generate a CLR value type for anonymous/unresolved structs
                     if (symbol is StructTypeSymbol anonStruct && anonStruct.Fields.Count > 0 && _emitContext != null)
                     {
-                        // Build a content-based name so identical anonymous structs share a type
+                        // Build a qualified name to avoid CLR naming conflicts.
                         string structName;
                         if (!string.IsNullOrEmpty(anonStruct.Name) && anonStruct.Name != "struct{}")
                         {
-                            structName = anonStruct.Name;
+                            bool shouldQualify = _emitContext.IsDependencyEmit;
+                            var pkgPath = anonStruct.PackagePath ?? _emitContext.CurrentPackagePath;
+                            if (shouldQualify && pkgPath != null)
+                            {
+                                var lastSlash = pkgPath.LastIndexOf('/');
+                                var shortPkg = lastSlash >= 0 ? pkgPath.Substring(lastSlash + 1) : pkgPath;
+                                structName = shortPkg + "." + anonStruct.Name;
+                            }
+                            else
+                            {
+                                structName = anonStruct.Name;
+                            }
                         }
                         else
                         {
@@ -329,14 +341,35 @@ namespace Ngo.Compiler.Emit
                             structBuilder = _emitContext.Module.DefineType(
                                 qualifiedName2,
                                 System.Reflection.TypeAttributes.Public
-                                | System.Reflection.TypeAttributes.Sealed,
+                                | System.Reflection.TypeAttributes.Sealed
+                                | System.Reflection.TypeAttributes.SequentialLayout,
                                 typeof(System.ValueType));
                         }
-                        catch (ArgumentException)
+                        catch (ArgumentException ex)
                         {
-                            _compilationContext.Log.Debug($"TypeMapper: struct type collision for '{qualifiedName2}', mapped to object");
-                            _typeCache[symbol] = typeof(object);
-                            return typeof(object);
+                            throw new InvalidOperationException(
+                                $"TypeMapper: struct type name collision for '{qualifiedName2}'", ex);
+                        }
+
+                        if (anonStruct.TypeParameters.Count > 0)
+                        {
+                            var gpNames = new string[anonStruct.TypeParameters.Count];
+                            for (int gp = 0; gp < gpNames.Length; gp++)
+                            {
+                                gpNames[gp] = anonStruct.TypeParameters[gp].Name;
+                            }
+                            structBuilder.DefineGenericParameters(gpNames);
+                        }
+
+                        if (_emitContext.IsDependencyEmit
+                            && _emitContext.Module is Builder.NgoModuleBuilder ngoMod)
+                        {
+                            bool isCurrentPackage = anonStruct.PackagePath == null
+                                || anonStruct.PackagePath == _emitContext.CurrentPackagePath;
+                            if (!isCurrentPackage)
+                            {
+                                ngoMod.ExternalTypeNames.Add(qualifiedName2);
+                            }
                         }
 
                         foreach (var field in anonStruct.Fields)
@@ -406,6 +439,10 @@ namespace Ngo.Compiler.Emit
                             | System.Reflection.TypeAttributes.Abstract,
                             null!, // interfaces have no base type
                             System.Type.EmptyTypes);
+
+                        // Don't filter interfaces as external — they're dynamically generated
+                        // and only exist in this archive's IL context.
+
                         foreach (var method in ifaceType.Methods)
                         {
                             var paramTypes = new Type[method.Parameters.Count];
@@ -443,10 +480,29 @@ namespace Ngo.Compiler.Emit
                     return typeof(object);
 
                 case TypeKind.TypeParameter:
-                    // In dependency emit, unresolved type params map to object
+                    // Try name+ordinal matching for type params that have identity mismatch
+                    if (symbol is TypeParameterSymbol missingTp)
+                    {
+                        foreach (var kv in _typeCache)
+                        {
+                            if (kv.Key is TypeParameterSymbol cachedTp
+                                && cachedTp.Name == missingTp.Name
+                                && cachedTp.Ordinal == missingTp.Ordinal
+                                && kv.Value != typeof(object))
+                            {
+                                _typeCache[symbol] = kv.Value;
+                                return kv.Value;
+                            }
+                        }
+                    }
+                    // During dependency emit, unregistered type params come from OTHER
+                    // generic contexts (e.g., a referenced generic type's definition).
+                    // These represent "any type" in that position — map to object.
+                    // This is NOT an error: the function's own type params were registered
+                    // by DefineGenericParameters. The unregistered ones belong to types
+                    // from other packages whose definitions weren't fully instantiated.
                     if (_emitContext?.IsDependencyEmit == true)
                     {
-                        _compilationContext.Log.Debug($"TypeMapper: unresolved type param '{symbol.Name}' mapped to object in dependency emit");
                         return typeof(object);
                     }
                     throw new InvalidOperationException(
@@ -454,12 +510,12 @@ namespace Ngo.Compiler.Emit
                         "Generic type parameters must be registered before use.");
 
                 case TypeKind.Error:
-                    // Unresolved types — return object as fallback
-                    return typeof(object);
+                    throw new InvalidOperationException(
+                        $"Unresolved type '{symbol.Name}' (TypeKind.Error) — semantic analysis should have caught this.");
 
                 default:
-                    // Unknown type kind — return object instead of crashing
-                    return typeof(object);
+                    throw new InvalidOperationException(
+                        $"Unknown type kind '{symbol.TypeKind}' for type '{symbol.Name}'");
             }
         }
 
@@ -524,30 +580,6 @@ namespace Ngo.Compiler.Emit
         {
             var paramCount = funcType.ParameterTypes.Count;
             var hasReturn = funcType.ReturnTypes.Count > 0;
-
-            // Check if any type arg would be a TypeBuilder (circular reference)
-            bool hasTypeBuilderArg = false;
-            for (int i = 0; i < funcType.ParameterTypes.Count; i++)
-            {
-                var mapped = Map(funcType.ParameterTypes[i]);
-                if (EmitContext.IsNonRuntimeType(mapped) || (mapped.IsGenericType && EmitContext.HasTypeBuilderArgs(mapped)))
-                {
-                    hasTypeBuilderArg = true;
-                    break;
-                }
-            }
-            if (!hasTypeBuilderArg && hasReturn)
-            {
-                var retType = Map(funcType.ReturnTypes[0]);
-                if (EmitContext.IsNonRuntimeType(retType) || (retType.IsGenericType && EmitContext.HasTypeBuilderArgs(retType)))
-                {
-                    hasTypeBuilderArg = true;
-                }
-            }
-            if (hasTypeBuilderArg)
-            {
-                return typeof(Delegate);
-            }
 
             if (!hasReturn)
             {

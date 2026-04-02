@@ -18,7 +18,7 @@
 
 using System.Reflection;
 
-namespace Ngo.Compiler.Emit.Builder
+namespace Ngo.Compiler.Archive
 {
     /// <summary>
     /// Represents a method entry captured by NgoModuleBuilder for IL serialization.

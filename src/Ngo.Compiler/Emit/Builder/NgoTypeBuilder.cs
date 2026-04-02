@@ -17,6 +17,7 @@
 // -----------------------------------------------------------------------
 
 using System;
+using Ngo.Compiler.Archive;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Reflection.Emit;
@@ -34,8 +35,9 @@ namespace Ngo.Compiler.Emit.Builder
         private readonly List<NgoMethodOverride> _overrides = new();
         private NgoConstructorBuilder? _constructor;
         private string[] _genericParamNames = Array.Empty<string>();
+        private readonly string[] _interfaceNames;
 
-        public NgoTypeBuilder(string fullName, TypeAttributes attrs, Type? baseType)
+        public NgoTypeBuilder(string fullName, TypeAttributes attrs, Type? baseType, Type[]? interfaces = null)
         {
             _fullName = fullName;
             _attrs = attrs;
@@ -56,6 +58,26 @@ namespace Ngo.Compiler.Emit.Builder
                 _baseTypeName = "System.Object";
             }
 
+            if (interfaces != null && interfaces.Length > 0)
+            {
+                var validInterfaces = new List<string>();
+                for (int i = 0; i < interfaces.Length; i++)
+                {
+                    // Skip non-interface types like typeof(object) which is used
+                    // as a placeholder for Go's error interface
+                    if (interfaces[i] == typeof(object))
+                    {
+                        continue;
+                    }
+                    validInterfaces.Add(NgoWriter.GetTypeNameStatic(interfaces[i]));
+                }
+                _interfaceNames = validInterfaces.ToArray();
+            }
+            else
+            {
+                _interfaceNames = Array.Empty<string>();
+            }
+
             bool isValueType = !isStatic && !isInterface && baseType == typeof(ValueType);
             _proxyType = new NgoProxyType(fullName, isValueType);
         }
@@ -63,6 +85,7 @@ namespace Ngo.Compiler.Emit.Builder
         public string? FullName => _fullName;
         public TypeAttributes TypeAttrs => _attrs;
         public string BaseTypeName => _baseTypeName;
+        public IReadOnlyList<string> InterfaceNames => _interfaceNames;
         public IReadOnlyList<NgoFieldBuilder> Fields => _fields;
         public IReadOnlyList<NgoMethodBuilder> Methods => _methods;
         public IReadOnlyList<NgoMethodOverride> Overrides => _overrides;
@@ -73,11 +96,18 @@ namespace Ngo.Compiler.Emit.Builder
 
         public Type CreateType() => _proxyType;
 
+        private int _blankFieldIndex;
+
         public IFieldBuilder DefineField(string name, Type type, FieldAttributes attrs)
         {
-            var fb = new NgoFieldBuilder(_proxyType, name, type, attrs);
+            var actualName = name;
+            if (name == "_")
+            {
+                actualName = $"_pad{_blankFieldIndex++}";
+            }
+            var fb = new NgoFieldBuilder(_proxyType, actualName, type, attrs);
             _fields.Add(fb);
-            _proxyType.AddField(name, type);
+            _proxyType.AddField(actualName, type);
             return fb;
         }
 
@@ -106,6 +136,7 @@ namespace Ngo.Compiler.Emit.Builder
         public Type[] DefineGenericParameters(string[] names)
         {
             _genericParamNames = names;
+            _proxyType.SetGenericParamCount(names.Length);
             var result = new Type[names.Length];
             for (int i = 0; i < names.Length; i++)
             {

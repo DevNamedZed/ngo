@@ -17,6 +17,7 @@
 // -----------------------------------------------------------------------
 
 using System;
+using Ngo.Compiler.Archive;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
@@ -29,6 +30,8 @@ namespace Ngo.Compiler.Emit.Builder
 
         public IReadOnlyList<NgoTypeBuilder> Types => _types;
 
+        public HashSet<string> ExternalTypeNames { get; } = new();
+
 
         public ITypeBuilder DefineType(string name, TypeAttributes attrs)
             => DefineType(name, attrs, null, null);
@@ -38,7 +41,11 @@ namespace Ngo.Compiler.Emit.Builder
 
         public ITypeBuilder DefineType(string name, TypeAttributes attrs, Type? baseType, Type[]? interfaces)
         {
-            var tb = new NgoTypeBuilder(name, attrs, baseType);
+            if (string.IsNullOrEmpty(name))
+            {
+                throw new ArgumentException("Type name must not be null or empty", nameof(name));
+            }
+            var tb = new NgoTypeBuilder(name, attrs, baseType, interfaces);
             _types.Add(tb);
             return tb;
         }
@@ -113,6 +120,13 @@ namespace Ngo.Compiler.Emit.Builder
                 writer.Write((int)type.TypeAttrs);
                 writer.Write(type.BaseTypeName);
 
+                // Interfaces
+                writer.Write(type.InterfaceNames.Count);
+                foreach (var ifaceName in type.InterfaceNames)
+                {
+                    writer.Write(ifaceName);
+                }
+
                 // Generic type parameters
                 writer.Write(type.GenericParamNames.Count);
                 foreach (var gpName in type.GenericParamNames)
@@ -122,15 +136,9 @@ namespace Ngo.Compiler.Emit.Builder
 
                 // Fields
                 writer.Write(type.Fields.Count);
-                int blankFieldIndex = 0;
                 foreach (var field in type.Fields)
                 {
-                    var fieldName = field.FieldName;
-                    if (fieldName == "_")
-                    {
-                        fieldName = $"_pad{blankFieldIndex++}";
-                    }
-                    writer.Write(fieldName);
+                    writer.Write(field.FieldName);
                     writer.Write((int)field.FieldAttributes);
                     writer.Write(NgoWriter.GetTypeNameStatic(field.FieldType));
                 }
@@ -174,9 +182,17 @@ namespace Ngo.Compiler.Emit.Builder
             }
         }
 
-        private static bool BelongsToPackage(NgoTypeBuilder type)
+        private bool BelongsToPackage(NgoTypeBuilder type)
         {
-            return !string.IsNullOrEmpty(type.FullName);
+            if (string.IsNullOrEmpty(type.FullName))
+            {
+                return false;
+            }
+            if (ExternalTypeNames.Contains(type.FullName))
+            {
+                return false;
+            }
+            return true;
         }
     }
 }

@@ -19,6 +19,7 @@
 using System;
 using System.IO;
 using Ngo.Compiler.Emit;
+using Ngo.Compiler.Archive;
 using Ngo.Compiler.Language;
 using Ngo.Compiler.Semantics;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
@@ -33,6 +34,16 @@ public class EmitTests
     static EmitTests()
     {
         Directory.CreateDirectory(TestProjectRoot);
+    }
+
+    [TestInitialize]
+    public void CleanCache()
+    {
+        var cacheDir = NgoArchive.GetCacheDir(TestProjectRoot);
+        if (Directory.Exists(cacheDir))
+        {
+            Directory.Delete(cacheDir, recursive: true);
+        }
     }
 
     private static string Run(string goSource)
@@ -1598,6 +1609,41 @@ func main() {
 }
 ");
         Assert.AreEqual("3\n", output.Replace("\r\n", "\n"));
+    }
+
+    [TestMethod]
+    public void Pointer_receiver_slice_field_nil_check()
+    {
+        var output = Run(@"
+package main
+
+type Buf struct {
+    Data []byte
+    W    int
+    S    string
+}
+
+func (b *Buf) AppendByte(c byte) {
+    if b.Data == nil {
+        if b.W < len(b.S) && b.S[b.W] == c {
+            b.W++
+            return
+        }
+        b.Data = make([]byte, len(b.S))
+        copy(b.Data, b.S[:b.W])
+    }
+    b.Data[b.W] = c
+    b.W++
+}
+
+func main() {
+    b := Buf{S: ""hello""}
+    b.AppendByte(72)
+    b.AppendByte(105)
+    println(string(b.Data[:b.W]))
+}
+");
+        Assert.AreEqual("Hi\n", output.Replace("\r\n", "\n"));
     }
 
     [TestMethod]

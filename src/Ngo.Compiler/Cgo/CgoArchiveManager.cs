@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Text.Json;
+using Ngo.Compiler.Archive;
 
 namespace Ngo.Compiler.Cgo
 {
@@ -26,7 +27,7 @@ namespace Ngo.Compiler.Cgo
                 return;
             }
 
-            Emit.NgoArchive.WriteCgoData(ngoArchivePath, result.NativeLibraryPath, result.ProbeResult);
+            NgoArchive.WriteCgoData(ngoArchivePath, result.NativeLibraryPath, result.ProbeResult);
         }
 
         /// <summary>
@@ -44,7 +45,7 @@ namespace Ngo.Compiler.Cgo
         /// </summary>
         public static string? GetNativeLibraryPath(string ngoArchivePath)
         {
-            return Emit.NgoArchive.ReadCgoNativeLibrary(ngoArchivePath);
+            return NgoArchive.ReadCgoNativeLibrary(ngoArchivePath);
         }
     }
 

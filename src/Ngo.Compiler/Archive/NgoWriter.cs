@@ -17,12 +17,14 @@
 // -----------------------------------------------------------------------
 
 using System;
+using Ngo.Compiler.Emit;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using System.Reflection.Emit;
+using Ngo.Compiler.Emit.Builder;
 
-namespace Ngo.Compiler.Emit.Builder
+namespace Ngo.Compiler.Archive
 {
     /// <summary>
     /// CilWriter that captures IL into a byte buffer with symbolic token references.
@@ -31,14 +33,8 @@ namespace Ngo.Compiler.Emit.Builder
     /// </summary>
     internal sealed class NgoWriter : CilWriter
     {
-        // Token reference kinds (must match ILSerializer constants)
-        private const byte TokenKindType = 0;
-        private const byte TokenKindMethod = 1;
-        private const byte TokenKindField = 2;
-        private const byte TokenKindString = 3;
-
         private readonly MemoryStream _code = new();
-        private readonly List<TokenEntry> _tokens = new();
+        private readonly List<TokenData> _tokens = new();
         private readonly List<string> _locals = new();
         private readonly List<ExceptionClause> _exceptionClauses = new();
 
@@ -60,7 +56,7 @@ namespace Ngo.Compiler.Emit.Builder
         }
 
         public string[] GetLocalTypes() => _locals.ToArray();
-        public List<TokenEntry> GetTokenEntries() => _tokens;
+        public List<TokenData> GetTokenEntries() => _tokens;
         public List<ExceptionClause> GetExceptionClauses() => _exceptionClauses;
 
         // ----- Emit overloads -----
@@ -97,9 +93,16 @@ namespace Ngo.Compiler.Emit.Builder
         public override void Emit(OpCode op, string arg)
         {
             WriteOpCode(op);
-            // ldstr — store string in token pool
             var offset = (int)_code.Position;
-            _tokens.Add(new TokenEntry { Offset = offset, Kind = TokenKindString, Reference = arg });
+            _tokens.Add(new TokenData
+            {
+                Offset = offset,
+                Kind = TokenKind.String,
+                Reference = arg,
+                MemberName = "",
+                GenericTypeArgs = Array.Empty<string>(),
+                ParamTypes = Array.Empty<string>(),
+            });
             WriteInt32(0); // placeholder token
         }
 
@@ -113,7 +116,15 @@ namespace Ngo.Compiler.Emit.Builder
         {
             WriteOpCode(op);
             var offset = (int)_code.Position;
-            _tokens.Add(new TokenEntry { Offset = offset, Kind = TokenKindType, Reference = GetTypeName(type) });
+            _tokens.Add(new TokenData
+            {
+                Offset = offset,
+                Kind = TokenKind.Type,
+                Reference = GetTypeName(type),
+                MemberName = "",
+                GenericTypeArgs = Array.Empty<string>(),
+                ParamTypes = Array.Empty<string>(),
+            });
             WriteInt32(0); // placeholder token
         }
 
@@ -121,7 +132,7 @@ namespace Ngo.Compiler.Emit.Builder
         {
             WriteOpCode(op);
             var offset = (int)_code.Position;
-            _tokens.Add(new TokenEntry { Offset = offset, Kind = TokenKindMethod, Reference = GetMethodRef(method) });
+            _tokens.Add(BuildMethodToken(offset, method));
             WriteInt32(0); // placeholder token
         }
 
@@ -129,7 +140,7 @@ namespace Ngo.Compiler.Emit.Builder
         {
             WriteOpCode(op);
             var offset = (int)_code.Position;
-            _tokens.Add(new TokenEntry { Offset = offset, Kind = TokenKindMethod, Reference = GetCtorRef(ctor) });
+            _tokens.Add(BuildConstructorToken(offset, ctor));
             WriteInt32(0); // placeholder token
         }
 
@@ -137,7 +148,15 @@ namespace Ngo.Compiler.Emit.Builder
         {
             WriteOpCode(op);
             var offset = (int)_code.Position;
-            _tokens.Add(new TokenEntry { Offset = offset, Kind = TokenKindField, Reference = GetFieldRef(field) });
+            _tokens.Add(new TokenData
+            {
+                Offset = offset,
+                Kind = TokenKind.Field,
+                Reference = GetTypeName(field.DeclaringType!),
+                MemberName = field.Name,
+                GenericTypeArgs = Array.Empty<string>(),
+                ParamTypes = Array.Empty<string>(),
+            });
             WriteInt32(0); // placeholder token
         }
 
@@ -175,14 +194,16 @@ namespace Ngo.Compiler.Emit.Builder
 
         public override void Emit(OpCode op, LocalBuilder local)
         {
-            // ldloc, stloc, ldloca — these use inline local index
             WriteOpCode(op);
             var operandType = op.OperandType;
             if (operandType == OperandType.ShortInlineVar)
+            {
                 _code.WriteByte((byte)local.LocalIndex);
+            }
             else if (operandType == OperandType.InlineVar)
+            {
                 WriteInt16((short)local.LocalIndex);
-            // no operand for ldloc.0, stloc.0, etc. (already encoded in opcode)
+            }
         }
 
         // ----- Label/Local support -----
@@ -190,7 +211,6 @@ namespace Ngo.Compiler.Emit.Builder
         public override LocalBuilder DeclareLocal(Type type)
         {
             _locals.Add(GetTypeName(type));
-            // Create a real LocalBuilder via a dummy ILGenerator for .LocalIndex
             // Substitute non-runtime types (NgoProxyType etc.) with typeof(object)
             // since ILGenerator rejects TypeDelegator subclasses
             var safeType = type is TypeDelegator ? typeof(object) : type;
@@ -207,7 +227,6 @@ namespace Ngo.Compiler.Emit.Builder
         public override Label DefineLabel()
         {
             var label = _labelFactory.DefineLabel();
-            // The label's internal ID matches our sequential counter
             _nextLabelId++;
             return label;
         }
@@ -227,7 +246,6 @@ namespace Ngo.Compiler.Emit.Builder
 
         public override void BeginCatchBlock(Type type)
         {
-            // End the try region (or previous handler)
             if (_tryStartOffsets.Count > 0)
             {
                 _currentTryStart = _tryStartOffsets.Peek();
@@ -235,8 +253,6 @@ namespace Ngo.Compiler.Emit.Builder
             }
             _currentHandlerStart = (int)_code.Position;
 
-            // Emit a leave at the end of the try block — the real ILGenerator does this implicitly
-            // but we need to track it for the exception table
             _exceptionClauses.Add(new ExceptionClause
             {
                 Kind = 0, // Catch
@@ -250,9 +266,10 @@ namespace Ngo.Compiler.Emit.Builder
         public override void EndExceptionBlock()
         {
             if (_tryStartOffsets.Count > 0)
+            {
                 _tryStartOffsets.Pop();
+            }
 
-            // Patch the handler length on the last clause
             if (_exceptionClauses.Count > 0)
             {
                 var last = _exceptionClauses[_exceptionClauses.Count - 1];
@@ -267,25 +284,51 @@ namespace Ngo.Compiler.Emit.Builder
         {
             var ilBytes = GetILBytes();
 
-            // MaxStack (estimate — ILGenerator calculates this automatically, we approximate)
+            // MaxStack (ILGenerator calculates this automatically during replay)
             writer.Write(8);
 
             // Locals
             writer.Write(_locals.Count);
             foreach (var local in _locals)
+            {
                 writer.Write(local);
+            }
 
             // IL bytes
             writer.Write(ilBytes.Length);
             writer.Write(ilBytes);
 
-            // Token table
+            // Token table — structured per kind
             writer.Write(_tokens.Count);
             foreach (var entry in _tokens)
             {
                 writer.Write(entry.Offset);
                 writer.Write(entry.Kind);
-                writer.Write(entry.Reference);
+                switch (entry.Kind)
+                {
+                    case TokenKind.Type:
+                    case TokenKind.String:
+                        writer.Write(entry.Reference);
+                        break;
+                    case TokenKind.Field:
+                        writer.Write(entry.Reference);
+                        writer.Write(entry.MemberName);
+                        break;
+                    case TokenKind.Method:
+                        writer.Write(entry.Reference);
+                        writer.Write(entry.MemberName);
+                        writer.Write(entry.GenericTypeArgs.Length);
+                        foreach (var arg in entry.GenericTypeArgs)
+                        {
+                            writer.Write(arg);
+                        }
+                        writer.Write(entry.ParamTypes.Length);
+                        foreach (var paramType in entry.ParamTypes)
+                        {
+                            writer.Write(paramType);
+                        }
+                        break;
+                }
             }
 
             // Exception handlers
@@ -319,10 +362,102 @@ namespace Ngo.Compiler.Emit.Builder
             _localFactory = CreateFactory();
         }
 
+        // ----- Structured token builders -----
+
+        private TokenData BuildMethodToken(int offset, MethodInfo method)
+        {
+            if (method == null)
+            {
+                throw new InvalidOperationException("NgoWriter: attempted to serialize a null method reference");
+            }
+
+            var declaringType = method.DeclaringType;
+            var declaringTypeName = declaringType != null ? GetTypeName(declaringType) : "?";
+
+            // For instantiated generic types, resolve generic params in parameter types
+            // to their concrete type args. E.g., Slice<int>.Push(T) → Push(System.Int32)
+            Type[]? declaringTypeArgs = null;
+            Type[]? declaringTypeDefParams = null;
+            if (declaringType != null && declaringType.IsGenericType && !declaringType.IsGenericTypeDefinition)
+            {
+                declaringTypeArgs = declaringType.GetGenericArguments();
+                declaringTypeDefParams = declaringType.GetGenericTypeDefinition().GetGenericArguments();
+            }
+
+            // Method-level generic type args for instantiated generic methods
+            string[] genericTypeArgs;
+            var methodGenericArgs = method.GetGenericArguments();
+            if (methodGenericArgs.Length > 0 && method.IsGenericMethod && !method.IsGenericMethodDefinition)
+            {
+                genericTypeArgs = new string[methodGenericArgs.Length];
+                for (int i = 0; i < methodGenericArgs.Length; i++)
+                {
+                    genericTypeArgs[i] = GetTypeName(methodGenericArgs[i]);
+                }
+            }
+            else
+            {
+                genericTypeArgs = Array.Empty<string>();
+            }
+
+            var parameters = method.GetParameters();
+            var paramTypes = new string[parameters.Length];
+            for (int i = 0; i < parameters.Length; i++)
+            {
+                var paramType = parameters[i].ParameterType;
+                if (paramType.IsGenericParameter && declaringTypeArgs != null && declaringTypeDefParams != null)
+                {
+                    for (int g = 0; g < declaringTypeDefParams.Length; g++)
+                    {
+                        if (declaringTypeDefParams[g] == paramType || declaringTypeDefParams[g].Name == paramType.Name)
+                        {
+                            paramType = declaringTypeArgs[g];
+                            break;
+                        }
+                    }
+                }
+                paramTypes[i] = GetTypeName(paramType);
+            }
+
+            return new TokenData
+            {
+                Offset = offset,
+                Kind = TokenKind.Method,
+                Reference = declaringTypeName,
+                MemberName = method.Name,
+                GenericTypeArgs = genericTypeArgs,
+                ParamTypes = paramTypes,
+            };
+        }
+
+        private TokenData BuildConstructorToken(int offset, ConstructorInfo ctor)
+        {
+            if (ctor == null)
+            {
+                throw new InvalidOperationException("NgoWriter: attempted to serialize a null constructor reference");
+            }
+
+            var declaringType = ctor.DeclaringType;
+            var parameters = ctor.GetParameters();
+            var paramTypes = new string[parameters.Length];
+            for (int i = 0; i < parameters.Length; i++)
+            {
+                paramTypes[i] = GetTypeName(parameters[i].ParameterType);
+            }
+
+            return new TokenData
+            {
+                Offset = offset,
+                Kind = TokenKind.Method,
+                Reference = GetTypeName(declaringType!),
+                MemberName = ".ctor",
+                GenericTypeArgs = Array.Empty<string>(),
+                ParamTypes = paramTypes,
+            };
+        }
+
         // ----- Private helpers -----
 
-        // Dummy ILGenerators for minting Label and LocalBuilder values.
-        // Per-instance because Reset() creates fresh ones.
         private ILGenerator _labelFactory;
         private ILGenerator _localFactory;
 
@@ -340,8 +475,6 @@ namespace Ngo.Compiler.Emit.Builder
 
         private static int GetLabelId(Label label)
         {
-            // Label stores its ID in the only field it has
-            // We rely on sequential IDs matching our counter
             return label.GetHashCode();
         }
 
@@ -375,7 +508,9 @@ namespace Ngo.Compiler.Emit.Builder
         private void WriteInt64(long value)
         {
             for (int i = 0; i < 8; i++)
+            {
                 _code.WriteByte((byte)((value >> (i * 8)) & 0xFF));
+            }
         }
 
         private void WriteSingle(float value)
@@ -396,7 +531,9 @@ namespace Ngo.Compiler.Emit.Builder
             foreach (var fixup in _branchFixups)
             {
                 if (!_labelOffsets.TryGetValue(fixup.LabelId, out var targetOffset))
+                {
                     continue;
+                }
 
                 if (fixup.IsShort)
                 {
@@ -426,7 +563,6 @@ namespace Ngo.Compiler.Emit.Builder
 
         private static string GetTypeName(Type type)
         {
-            // Cycle detection for self-referencing generic types
             _typeNameInProgress ??= new HashSet<Type>(ReferenceEqualityComparer.Instance);
             if (!_typeNameInProgress.Add(type))
             {
@@ -462,22 +598,25 @@ namespace Ngo.Compiler.Emit.Builder
             if (type == typeof(nint)) return "System.IntPtr";
             if (type == typeof(nuint)) return "System.UIntPtr";
 
-            // Generic type parameters — write the name as-is.
-            // The linker resolves these from the method's/type's generic param definitions,
-            // or falls back to System.Object if unresolvable.
             if (type.IsGenericParameter)
             {
                 return type.Name;
             }
 
             if (type.IsArray)
+            {
                 return GetTypeName(type.GetElementType()!) + "[]";
+            }
 
             if (type.IsByRef)
+            {
                 return GetTypeName(type.GetElementType()!) + "&";
+            }
 
             if (type.IsPointer)
+            {
                 return GetTypeName(type.GetElementType()!) + "*";
+            }
 
             if (type.IsGenericType && !type.IsGenericTypeDefinition)
             {
@@ -490,56 +629,20 @@ namespace Ngo.Compiler.Emit.Builder
             return type.FullName ?? type.Name;
         }
 
-        private static string GetMethodRef(MethodInfo method)
-        {
-            if (method == null)
-            {
-                return "?::?()";
-            }
-            var declaringType = method.DeclaringType;
-            var typeName = declaringType != null ? GetTypeName(declaringType) : "?";
-            var paramTypes = method.GetParameters();
-            var paramNames = new string[paramTypes.Length];
-            for (int i = 0; i < paramTypes.Length; i++)
-            {
-                paramNames[i] = GetTypeName(paramTypes[i].ParameterType);
-            }
-            return typeName + "::" + method.Name + "(" + string.Join(",", paramNames) + ")";
-        }
-
-        private static string GetCtorRef(ConstructorInfo ctor)
-        {
-            if (ctor == null)
-            {
-                return "$$null::.ctor()";
-            }
-            var declaringType = ctor.DeclaringType;
-            var paramTypes = ctor.GetParameters();
-            var paramNames = new string[paramTypes.Length];
-            for (int i = 0; i < paramTypes.Length; i++)
-            {
-                paramNames[i] = GetTypeName(paramTypes[i].ParameterType);
-            }
-            return GetTypeName(declaringType!) + "::.ctor(" + string.Join(",", paramNames) + ")";
-        }
-
-        private static string GetFieldRef(FieldInfo field)
-        {
-            if (field == null)
-            {
-                return "$$null::$$null";
-            }
-            var declaringType = field.DeclaringType;
-            return GetTypeName(declaringType!) + "::" + field.Name;
-        }
-
         // ----- Data types -----
 
-        internal struct TokenEntry
+        /// <summary>
+        /// Internal structured token data captured during emission.
+        /// Carries typed fields per token kind — no string formatting or parsing needed.
+        /// </summary>
+        internal struct TokenData
         {
             public int Offset;
             public byte Kind;
             public string Reference;
+            public string MemberName;
+            public string[] GenericTypeArgs;
+            public string[] ParamTypes;
         }
 
         internal struct ExceptionClause

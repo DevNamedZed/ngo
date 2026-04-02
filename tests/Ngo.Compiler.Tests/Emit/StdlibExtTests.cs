@@ -19,6 +19,7 @@
 using System;
 using System.IO;
 using Ngo.Compiler.Emit;
+using Ngo.Compiler.Archive;
 using Ngo.Compiler.Language;
 using Ngo.Compiler.Semantics;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
@@ -33,6 +34,16 @@ public class StdlibExtTests
     static StdlibExtTests()
     {
         Directory.CreateDirectory(TestProjectRoot);
+    }
+
+    [TestInitialize]
+    public void CleanCache()
+    {
+        var cacheDir = NgoArchive.GetCacheDir(TestProjectRoot);
+        if (Directory.Exists(cacheDir))
+        {
+            Directory.Delete(cacheDir, recursive: true);
+        }
     }
 
     private static string Run(string goSource)

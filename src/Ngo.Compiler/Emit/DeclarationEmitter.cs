@@ -67,7 +67,21 @@ namespace Ngo.Compiler.Emit
             {
                 return;
             }
-            var qualifiedName = _ctx.QualifyName(structType.Name);
+
+            // Qualify struct names with the package name during dependency emit
+            // to avoid CLR naming conflicts and ensure consistent cross-archive names.
+            var baseName = structType.Name;
+            if (_ctx.IsDependencyEmit)
+            {
+                var pkgPath = structType.PackagePath ?? _ctx.CurrentPackagePath;
+                if (pkgPath != null)
+                {
+                    var lastSlash = pkgPath.LastIndexOf('/');
+                    var shortPkg = lastSlash >= 0 ? pkgPath.Substring(lastSlash + 1) : pkgPath;
+                    baseName = shortPkg + "." + structType.Name;
+                }
+            }
+            var qualifiedName = _ctx.QualifyName(baseName);
             foreach (var kvp in _ctx.StructTypes)
             {
                 if (kvp.Value.AsType().FullName == qualifiedName)
@@ -604,6 +618,20 @@ namespace Ngo.Compiler.Emit
                         }
                         wrapperIL.Emit(concreteClrType2.IsValueType ? OpCodes.Call : OpCodes.Callvirt, clrMethod);
                         wrapperIL.Emit(OpCodes.Ret);
+
+                        try
+                        {
+                            var ifaceClrMethod2 = interfaceClrType.GetMethod(ifaceMethod.Name);
+                            if (ifaceClrMethod2 != null)
+                            {
+                                wrapperBuilder.DefineMethodOverride(wrapperMethod, ifaceClrMethod2);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            throw new InvalidOperationException(
+                                $"Failed to define method override for wrapper method '{ifaceMethod.Name}'", ex);
+                        }
                         continue;
                     }
 
@@ -632,6 +660,20 @@ namespace Ngo.Compiler.Emit
                     else
                         stubIL.Emit(OpCodes.Ldnull);
                     stubIL.Emit(OpCodes.Ret);
+
+                    try
+                    {
+                        var ifaceClrMethod = interfaceClrType.GetMethod(ifaceMethod.Name);
+                        if (ifaceClrMethod != null)
+                        {
+                            wrapperBuilder.DefineMethodOverride(stubMethod, ifaceClrMethod);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        throw new InvalidOperationException(
+                            $"Failed to define method override for stub '{ifaceMethod.Name}'", ex);
+                    }
                     continue;
                 }
 
@@ -670,6 +712,21 @@ namespace Ngo.Compiler.Emit
                 // Call the static Go method
                 methodIL.Emit(OpCodes.Call, goMethod.AsMethodInfo());
                 methodIL.Emit(OpCodes.Ret);
+
+                // Explicit interface override so the binding is serialized in archives
+                try
+                {
+                    var interfaceMethod = interfaceClrType.GetMethod(ifaceMethod.Name);
+                    if (interfaceMethod != null)
+                    {
+                        wrapperBuilder.DefineMethodOverride(methodBuilder, interfaceMethod);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    throw new InvalidOperationException(
+                        $"Failed to define method override for wrapper '{ifaceMethod.Name}'", ex);
+                }
             }
 
             // If this wraps the error interface, override ToString() to call Error()
@@ -722,17 +779,7 @@ namespace Ngo.Compiler.Emit
                 }
             }
 
-            Type wrapperType;
-            try
-            {
-                wrapperType = wrapperBuilder.CreateType()!;
-            }
-            catch (TypeLoadException)
-            {
-                // Wrapper type creation failed (method signature mismatch) — register as failed and return object
-                _ctx.WrapperTypes[key] = new WrapperTypeInfo(typeof(object), typeof(object).GetConstructors()[0]);
-                return typeof(object);
-            }
+            Type wrapperType = wrapperBuilder.CreateType()!;
 
             ConstructorInfo ctor;
             try

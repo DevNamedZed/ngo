@@ -17,6 +17,7 @@
 // -----------------------------------------------------------------------
 
 using System;
+using Ngo.Compiler.Archive;
 using System.Collections.Generic;
 using System.Reflection;
 
@@ -71,6 +72,7 @@ namespace Ngo.Compiler.Emit.Builder
         public void SetReturnType(Type type)
         {
             _returnTypeName = NgoWriter.GetTypeNameStatic(type);
+            _proxy.UpdateReturnType(type);
         }
 
         public void SetParameters(Type[] types)
@@ -78,6 +80,7 @@ namespace Ngo.Compiler.Emit.Builder
             _paramTypeNames.Clear();
             foreach (var t in types)
                 _paramTypeNames.Add(NgoWriter.GetTypeNameStatic(t));
+            _proxy.UpdateParameterTypes(types);
         }
 
         public CilWriter GetILWriter()

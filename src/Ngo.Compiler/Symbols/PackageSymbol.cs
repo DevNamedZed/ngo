@@ -86,6 +86,36 @@ namespace Ngo.Compiler.Symbols
         public void AddExport(Symbol symbol)
         {
             _exports ??= new Dictionary<string, Symbol>();
+            if (_exports.TryGetValue(symbol.Name, out var existing)
+                && existing is FunctionSymbol existingFunc
+                && symbol is FunctionSymbol newFunc
+                && existingFunc.Parameters.Count == newFunc.Parameters.Count)
+            {
+                bool paramsDiffer = false;
+                for (int i = 0; i < existingFunc.Parameters.Count; i++)
+                {
+                    if (existingFunc.Parameters[i].Type != newFunc.Parameters[i].Type)
+                    {
+                        paramsDiffer = true;
+                        break;
+                    }
+                }
+                if (paramsDiffer)
+                {
+                    var widenedParams = new ParameterSymbol[existingFunc.Parameters.Count];
+                    for (int i = 0; i < widenedParams.Length; i++)
+                    {
+                        widenedParams[i] = new ParameterSymbol(
+                            existingFunc.Parameters[i].Name,
+                            BuiltinTypes.EmptyInterface,
+                            i);
+                    }
+                    _exports[symbol.Name] = new FunctionSymbol(
+                        newFunc.Name, widenedParams, newFunc.ReturnTypes,
+                        newFunc.IsVariadic, newFunc.PackageName);
+                    return;
+                }
+            }
             _exports[symbol.Name] = symbol;
         }
 

@@ -26,8 +26,8 @@ namespace Ngo.Compiler.Emit.Builder
     {
         private readonly Type _declaringType;
         private readonly string _name;
-        private readonly Type[] _parameterTypes;
-        private readonly Type _returnType;
+        private Type[] _parameterTypes;
+        private Type _returnType;
 
         public NgoProxyMethodInfo(Type declaringType, string name)
             : this(declaringType, name, Type.EmptyTypes, typeof(void))
@@ -65,6 +65,16 @@ namespace Ngo.Compiler.Emit.Builder
         public override object Invoke(object? obj, BindingFlags invokeAttr, Binder? binder, object?[]? parameters, CultureInfo? culture)
             => throw new NotSupportedException();
         public override ICustomAttributeProvider ReturnTypeCustomAttributes => throw new NotSupportedException();
+
+        internal void UpdateParameterTypes(Type[] types)
+        {
+            _parameterTypes = types ?? Type.EmptyTypes;
+        }
+
+        internal void UpdateReturnType(Type type)
+        {
+            _returnType = type ?? typeof(void);
+        }
         public override bool IsDefined(Type attributeType, bool inherit) => false;
 
         public override bool IsGenericMethod => _genericArgs != null;

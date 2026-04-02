@@ -24,9 +24,10 @@ namespace Ngo.Runtime.Reflect
 {
     /// <summary>
     /// Go reflect.Type — wraps .NET System.Type.
+    /// Also implements internal/reflectlite.Type for interface dispatch compatibility.
     /// </summary>
     [GoType("interface", Name = "Type", Package = "reflect")]
-    public sealed class GoReflectType
+    public sealed class GoReflectType : Internal.Reflectlite.Package.IType
     {
         private readonly Type _clrType;
         private readonly string _goName;
@@ -374,6 +375,72 @@ namespace Ngo.Runtime.Reflect
                 return (new GoReflectStructField("", new GoReflectType(typeof(object)), "", 0, false), false);
             }
         }
+
+        [GoMethod]
+        public bool OverflowInt(long x)
+        {
+            var kind = DeriveKind(_clrType);
+            if (kind == GoReflectKinds.Int8)
+            {
+                return x < sbyte.MinValue || x > sbyte.MaxValue;
+            }
+            if (kind == GoReflectKinds.Int16)
+            {
+                return x < short.MinValue || x > short.MaxValue;
+            }
+            if (kind == GoReflectKinds.Int32)
+            {
+                return x < int.MinValue || x > int.MaxValue;
+            }
+            if (kind == GoReflectKinds.Int || kind == GoReflectKinds.Int64)
+            {
+                return false;
+            }
+            throw new GoPanicException("reflect: OverflowInt of non-signed-integer type " + _goName);
+        }
+
+        [GoMethod]
+        public bool OverflowUint(ulong x)
+        {
+            var kind = DeriveKind(_clrType);
+            if (kind == GoReflectKinds.Uint8)
+            {
+                return x > byte.MaxValue;
+            }
+            if (kind == GoReflectKinds.Uint16)
+            {
+                return x > ushort.MaxValue;
+            }
+            if (kind == GoReflectKinds.Uint32)
+            {
+                return x > uint.MaxValue;
+            }
+            if (kind == GoReflectKinds.Uint64 || kind == GoReflectKinds.Uintptr)
+            {
+                return false;
+            }
+            throw new GoPanicException("reflect: OverflowUint of non-unsigned-integer type " + _goName);
+        }
+
+        [GoMethod]
+        public bool OverflowFloat(double x)
+        {
+            var kind = DeriveKind(_clrType);
+            if (kind == GoReflectKinds.Float32)
+            {
+                return x < -float.MaxValue || x > float.MaxValue;
+            }
+            if (kind == GoReflectKinds.Float64)
+            {
+                return false;
+            }
+            throw new GoPanicException("reflect: OverflowFloat of non-float type " + _goName);
+        }
+
+        // Explicit interface implementations for internal/reflectlite.Type
+        object? Internal.Reflectlite.Package.IType.Elem() => Elem();
+        bool Internal.Reflectlite.Package.IType.Implements(object? u) => u is GoReflectType other && Implements(other);
+        bool Internal.Reflectlite.Package.IType.AssignableTo(object? u) => u is GoReflectType other && AssignableTo(other);
 
         internal Type ClrType => _clrType;
 

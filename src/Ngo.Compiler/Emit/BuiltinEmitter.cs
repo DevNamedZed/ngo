@@ -667,6 +667,12 @@ namespace Ngo.Compiler.Emit
             var arg = call.Arguments[0];
             var argType = arg.Type;
 
+            // Resolve type parameter constraints (S ~[]E → []E)
+            if (argType is TypeParameterSymbol tpLen && tpLen.Constraint.TypeElements.Count > 0)
+            {
+                argType = tpLen.Constraint.TypeElements[0].Type;
+            }
+
             // Unwrap named types to find underlying slice/map/array
             var resolvedArgType = argType;
             while (resolvedArgType != null && resolvedArgType.GetType() == typeof(TypeSymbol)
@@ -741,18 +747,27 @@ namespace Ngo.Compiler.Emit
             return false;
         }
 
+        private static TypeSymbol ResolveTypeParamConstraint(TypeSymbol type)
+        {
+            if (type is TypeParameterSymbol tp && tp.Constraint.TypeElements.Count > 0)
+            {
+                return tp.Constraint.TypeElements[0].Type;
+            }
+            return type;
+        }
+
         private bool EmitBuiltinAppend(CallExpression call)
         {
             var sliceArg = call.Arguments[0];
-            var resolved = sliceArg.Type.Resolved();
+            var resolved = ResolveTypeParamConstraint(sliceArg.Type.Resolved());
+            if (resolved is TypeParameterSymbol)
+            {
+                resolved = ResolveTypeParamConstraint(sliceArg.Type);
+            }
             TypeSymbol elemType;
             if (resolved is SliceTypeSymbol sliceType)
             {
                 elemType = sliceType.ElementType;
-            }
-            else if (resolved is TypeParameterSymbol || sliceArg.Type is TypeParameterSymbol)
-            {
-                elemType = BuiltinTypes.EmptyInterface;
             }
             else
             {
@@ -889,7 +904,11 @@ namespace Ngo.Compiler.Emit
 
         private bool EmitBuiltinCopy(CallExpression call)
         {
-            var resolvedCopy = call.Arguments[0].Type.Resolved();
+            var resolvedCopy = ResolveTypeParamConstraint(call.Arguments[0].Type.Resolved());
+            if (resolvedCopy is TypeParameterSymbol)
+            {
+                resolvedCopy = ResolveTypeParamConstraint(call.Arguments[0].Type);
+            }
             TypeSymbol copyElemType;
             if (resolvedCopy is SliceTypeSymbol copySlice)
             {
@@ -945,18 +964,27 @@ namespace Ngo.Compiler.Emit
 
         private bool EmitBuiltinNew(CallExpression call)
         {
-            if (call.Type is PointerTypeSymbol ptrType)
+            if (call.Type is PointerTypeSymbol ptrType && ptrType.ElementType != null)
             {
                 var elemClrType = _ctx.Mapper.Map(ptrType.ElementType);
+                if (elemClrType == null)
+                {
+                    throw new InvalidOperationException(
+                        $"Builtin new(): TypeMapper returned null for element type '{ptrType.ElementType.Name}'");
+                }
 
                 if (!elemClrType.IsValueType && !EmitContext.IsNonRuntimeType(elemClrType)
                     && !EmitContext.HasTypeBuilderArgs(elemClrType))
                 {
                     var ctor = elemClrType.GetConstructor(Type.EmptyTypes);
                     if (ctor != null)
+                    {
                         _ctx.IL.Emit(OpCodes.Newobj, ctor);
+                    }
                     else
+                    {
                         _ctx.IL.Emit(OpCodes.Ldnull);
+                    }
                 }
                 else
                 {
@@ -964,6 +992,13 @@ namespace Ngo.Compiler.Emit
                     var ctor = EmitContext.GetConstructorSafe(ptrClrType, Type.EmptyTypes);
                     _ctx.IL.Emit(OpCodes.Newobj, ctor);
                 }
+            }
+            else if (call.Arguments.Count > 0)
+            {
+                // new(T) where T is the type argument — get the type from the argument
+                var typeArg = call.Arguments[0];
+                throw new InvalidOperationException(
+                    $"Builtin new(): unsupported call type {call.Type?.GetType().Name ?? "null"} (name={call.Type?.Name})");
             }
             return true;
         }

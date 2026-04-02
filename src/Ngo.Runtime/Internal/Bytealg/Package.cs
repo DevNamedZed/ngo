@@ -128,7 +128,9 @@ namespace Ngo.Runtime.Internal.Bytealg
             {
                 bool match = true;
                 for (int j = 0; j < sep.Len; j++)
+                {
                     if (s[i + j] != sep[j]) { match = false; break; }
+                }
                 if (match) return i;
             }
             return -1;
@@ -140,18 +142,20 @@ namespace Ngo.Runtime.Internal.Bytealg
         {
             int count = 0;
             for (int i = 0; i < s.Length; i++)
+            {
                 if ((byte)s[i] == c) count++;
+            }
             return count;
         }
-
-        // Note: Go 1.22 CountString(s string, c byte) takes a byte, not string
 
         [GoFunc]
         [return: GoReturn("int")]
         public static long LastIndexByte(Slice<byte> s, byte c)
         {
             for (int i = s.Len - 1; i >= 0; i--)
+            {
                 if (s[i] == c) return i;
+            }
             return -1;
         }
 
@@ -160,7 +164,9 @@ namespace Ngo.Runtime.Internal.Bytealg
         public static long LastIndexByteString(string s, byte c)
         {
             for (int i = s.Length - 1; i >= 0; i--)
+            {
                 if ((byte)s[i] == c) return i;
+            }
             return -1;
         }
 

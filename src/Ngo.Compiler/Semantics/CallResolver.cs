@@ -667,7 +667,17 @@ namespace Ngo.Compiler.Semantics
             CallExpressionSyntax syntax,
             TextSpan span)
         {
+
             var arguments = BindArguments(syntax);
+
+            if (func.IsGeneric)
+            {
+                var typeArgs = TypeInferrer.InferTypeArguments(func, arguments);
+                if (typeArgs != null)
+                {
+                    return ResolveGenericCallWithInference(func, arguments, span);
+                }
+            }
 
             if (func.IsVariadic)
             {

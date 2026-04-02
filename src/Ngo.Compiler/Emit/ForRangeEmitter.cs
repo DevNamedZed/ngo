@@ -446,6 +446,8 @@ namespace Ngo.Compiler.Emit
 
             if (_ctx.IsDependencyEmit)
             {
+                _body.EmitExpression(forRange.Iterable);
+                _ctx.IL.Emit(OpCodes.Pop);
                 return;
             }
 

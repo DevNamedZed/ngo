@@ -25,6 +25,7 @@ using System.Reflection.Emit;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 using System.Reflection.PortableExecutable;
+using Ngo.Compiler.Archive;
 using Ngo.Compiler.Ast;
 using Ngo.Compiler.Emit.Builder;
 using Ngo.Compiler.Semantics;
@@ -303,31 +304,51 @@ namespace Ngo.Compiler.Emit
                 bool linked2 = false;
                 if (compilationContext.ProjectRoot != null)
                 {
-                    var cacheDir = NgoArchive.GetCacheDir(compilationContext.ProjectRoot);
-                    // Get source dir for versioned archive paths
-                    var sourceDir = compilationContext.GetSourceDir(importPath);
-                    var archivePath = NgoArchive.GetArchivePath(cacheDir, importPath, sourceDir);
-                    linked2 = ILSerializer.LinkFromArchive(archivePath, import.Package, ctx);
-                    if (!linked2)
-                    {
-                        // Try without version (for stdlib/local packages)
-                        archivePath = NgoArchive.GetArchivePath(cacheDir, importPath);
-                        linked2 = ILSerializer.LinkFromArchive(archivePath, import.Package, ctx);
-                    }
+                    linked2 = LinkPackageWithDeps(importPath, import.Package, ctx, compilationContext, linked);
                 }
 
                 if (!linked2)
                 {
-                    try
+                    EmitDependencyFromSource(importPath, import.Package, ctx, compilationContext);
+                }
+            }
+        }
+
+        private static bool LinkPackageWithDeps(string importPath, PackageSymbol pkg,
+            EmitContext ctx, Semantics.CompilationContext compilationContext, HashSet<string> linked)
+        {
+            // Recursively link dependencies first
+            foreach (var depImport in pkg.Imports)
+            {
+                if (linked.Contains(depImport)
+                    || RuntimePackageResolver.Instance.Resolve(depImport) != null
+                    || depImport == "C")
+                {
+                    continue;
+                }
+
+                linked.Add(depImport);
+                var depPkg = compilationContext.ResolvePackage(depImport);
+                if (depPkg != null)
+                {
+                    bool depLinked = LinkPackageWithDeps(depImport, depPkg, ctx, compilationContext, linked);
+                    if (!depLinked)
                     {
-                        EmitDependencyFromSource(importPath, import.Package, ctx, compilationContext);
-                    }
-                    catch (Exception ex)
-                    {
-                        compilationContext.Log.Warn($"ngo: dependency link failed for '{importPath}': {ex.GetType().Name}: {ex.Message}");
+                        EmitDependencyFromSource(depImport, depPkg, ctx, compilationContext);
                     }
                 }
             }
+
+            // Link this package from archive
+            var cacheDir = NgoArchive.GetCacheDir(compilationContext.ProjectRoot!);
+            var sourceDir = compilationContext.GetSourceDir(importPath);
+            var archivePath = NgoArchive.GetArchivePath(cacheDir, importPath, sourceDir);
+            if (ILSerializer.LinkFromArchive(archivePath, pkg, ctx))
+            {
+                return true;
+            }
+            archivePath = NgoArchive.GetArchivePath(cacheDir, importPath);
+            return ILSerializer.LinkFromArchive(archivePath, pkg, ctx);
         }
 
         /// <summary>
@@ -382,6 +403,12 @@ namespace Ngo.Compiler.Emit
                 EmitPackage(result.Root, ctx);
                 ctx.IsDependencyEmit = false;
 
+                // Register the package type in LinkedTypes so archive linking can find it
+                if (ctx.PackageType.AsType() is TypeBuilder pkgTb)
+                {
+                    ctx.LinkedTypes[pkgTb.Name] = pkgTb;
+                }
+
                 // Bridge: map original PackageSymbol's exports to the freshly emitted methods.
                 // The main package's AST references the ORIGINAL FunctionSymbol instances,
                 // but EmitPackage registered the NEW ones from re-analysis.
@@ -390,13 +417,25 @@ namespace Ngo.Compiler.Emit
                 {
                     if (export.Value is FunctionSymbol origFunc)
                     {
-                        // Find the corresponding emitted method by name
+                        var packageTypeName = ctx.PackageType?.AsType().Name;
                         foreach (var kvp in ctx.Methods)
                         {
                             if (kvp.Key.Name == origFunc.Name)
                             {
-                                ctx.CachedMethods[origFunc] = kvp.Value.AsMethodInfo();
-                                break;
+                                var declaringType = kvp.Value.AsMethodInfo().DeclaringType;
+                                if (declaringType != null && declaringType.Name == packageTypeName)
+                                {
+                                    ctx.CachedMethods[origFunc] = kvp.Value.AsMethodInfo();
+                                    // Also register in LinkedMethods so archive linking
+                                    // can resolve cross-package method tokens
+                                    if (kvp.Value.AsMethodInfo() is MethodBuilder methodBuilder)
+                                    {
+                                        var linkedKey = packageTypeName + "." + origFunc.Name;
+                                        ctx.LinkedMethods[linkedKey] = methodBuilder;
+                                        ctx.LinkedMethods[origFunc.Name] = methodBuilder;
+                                    }
+                                    break;
+                                }
                             }
                         }
                     }
@@ -455,8 +494,8 @@ namespace Ngo.Compiler.Emit
             }
             catch (Exception ex)
             {
-                compilationContext.Log.Warn($"ngo: dependency emit failed for '{importPath}': {ex.GetType().Name}: {ex.Message}");
-                compilationContext.Log.Debug(ex.StackTrace ?? "");
+                throw new InvalidOperationException(
+                    $"Failed to emit dependency '{importPath}' from source: {ex.Message}", ex);
             }
         }
 
@@ -625,18 +664,7 @@ namespace Ngo.Compiler.Emit
                 initIL.Emit(OpCodes.Ret);
             }
 
-            try
-            {
-                ctx.PackageType.CreateType();
-            }
-            catch (TypeLoadException) when (ctx.IsDependencyEmit)
-            {
-                // Dependency package type creation failed — methods have incomplete IL
-            }
-            catch (InvalidOperationException) when (ctx.IsDependencyEmit)
-            {
-                // Label/IL issues in dependency methods
-            }
+            ctx.PackageType.CreateType();
         }
 
         /// <summary>
