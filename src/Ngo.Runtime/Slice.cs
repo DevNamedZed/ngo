@@ -126,7 +126,11 @@ namespace Ngo.Runtime
             if (high == -1) high = Len; // sentinel: omitted high bound defaults to len
             if (low < 0 || high < low || high > Cap)
                 throw new GoPanicException($"runtime error: slice bounds out of range [{low}:{high}] with capacity {Cap}");
-            return new Slice<T>(_array!, _offset + low, high - low, Cap - low);
+            if (_array == null)
+            {
+                return default;
+            }
+            return new Slice<T>(_array, _offset + low, high - low, Cap - low);
         }
 
         /// <summary>3-index reslice: s[low:high:max]</summary>
@@ -134,7 +138,11 @@ namespace Ngo.Runtime
         {
             if (low < 0 || high < low || max < high || max > Cap)
                 throw new GoPanicException($"runtime error: slice bounds out of range [{low}:{high}:{max}] with capacity {Cap}");
-            return new Slice<T>(_array!, _offset + low, high - low, max - low);
+            if (_array == null)
+            {
+                return default;
+            }
+            return new Slice<T>(_array, _offset + low, high - low, max - low);
         }
 
         /// <summary>Append elements, growing the backing array if needed.</summary>

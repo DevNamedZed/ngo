@@ -25,11 +25,14 @@ namespace Ngo.Compiler.Emit.Builder
     internal sealed class LiveTypeBuilder : ITypeBuilder
     {
         private readonly TypeBuilder _tb;
+        private Type? _createdType;
 
         public LiveTypeBuilder(TypeBuilder tb) => _tb = tb;
 
         public string? FullName => _tb.FullName;
-        public Type AsType() => _tb;
+        public Type AsType() => _createdType ?? _tb;
+
+        public TypeBuilder Inner => _tb;
 
         public IFieldBuilder DefineField(string name, Type type, FieldAttributes attrs)
             => new LiveFieldBuilder(_tb.DefineField(name, type, attrs));
@@ -49,7 +52,12 @@ namespace Ngo.Compiler.Emit.Builder
         public void DefineMethodOverride(IMethodBuilder body, MethodInfo declaration)
             => _tb.DefineMethodOverride(((LiveMethodBuilder)body).Inner, declaration);
 
-        public Type CreateType() => _tb.CreateType()!;
+        public bool IsCreated => _tb.IsCreated();
+        public Type CreateType()
+        {
+            _createdType = _tb.CreateType()!;
+            return _createdType;
+        }
 
         public MethodInfo DefinePInvokeMethod(string name, string dllName, string entryPoint,
             MethodAttributes attrs, CallingConventions callingConvention,

@@ -211,8 +211,7 @@ namespace Ngo.Compiler.Emit
             // Link dependency IL from .ngo archives on disk
             if (compilationContext.ProjectRoot != null)
             {
-                var linked = new HashSet<string>();
-                LinkDependencies(result.Root, ctx, compilationContext, linked);
+                LinkDependencies(result.Root, ctx, compilationContext, ctx.LinkedPackages);
             }
 
             // Emit CGo P/Invoke stubs BEFORE package emission
@@ -224,6 +223,7 @@ namespace Ngo.Compiler.Emit
 
             // Emit the main package
             EmitPackage(result.Root, ctx);
+
 
             // Apply [UnmanagedCallersOnly] to //export functions
             if (compilationContext.CgoExports != null && compilationContext.CgoExports.Count > 0)
@@ -395,18 +395,19 @@ namespace Ngo.Compiler.Emit
                 }
 
                 // Recursively link this dependency's own dependencies first
-                var depLinked = new HashSet<string>();
-                LinkDependencies(result.Root, ctx, compilationContext, depLinked);
+                LinkDependencies(result.Root, ctx, compilationContext, ctx.LinkedPackages);
 
                 ctx.IsDependencyEmit = true;
+                ctx.CurrentPackagePath = importPath;
 
                 EmitPackage(result.Root, ctx);
                 ctx.IsDependencyEmit = false;
+                ctx.CurrentPackagePath = null;
 
                 // Register the package type in LinkedTypes so archive linking can find it
-                if (ctx.PackageType.AsType() is TypeBuilder pkgTb)
+                if (ctx.PackageType is Builder.LiveTypeBuilder pkgLiveTb)
                 {
-                    ctx.LinkedTypes[pkgTb.Name] = pkgTb;
+                    ctx.LinkedTypes[pkgLiveTb.Inner.Name] = pkgLiveTb.Inner;
                 }
 
                 // Bridge: map original PackageSymbol's exports to the freshly emitted methods.
@@ -475,17 +476,19 @@ namespace Ngo.Compiler.Emit
                         {
                             if (kvp.Key.Name == origStruct.Name)
                             {
+                                Type runtimeType;
                                 if (ctx.FinalizedTypes.Contains(kvp.Key))
                                 {
-                                    var runtimeType = kvp.Value.CreateType();
-                                    if (runtimeType != null)
-                                        ctx.Mapper.Register(origStruct, runtimeType);
+                                    runtimeType = kvp.Value.CreateType()!;
                                 }
                                 else
                                 {
-                                    ctx.Mapper.Register(origStruct, kvp.Value.CreateType()!);
+                                    runtimeType = kvp.Value.CreateType()!;
                                     ctx.FinalizedTypes.Add(kvp.Key);
                                 }
+                                ctx.Mapper.Register(origStruct, runtimeType);
+                                compilationContext.RegisterSourceCompiledType(
+                                    importPath, origStruct.Name, runtimeType);
                                 break;
                             }
                         }
@@ -561,6 +564,46 @@ namespace Ngo.Compiler.Emit
                     }
                 }
 
+                // Sort: create structs that are used as generic type arguments in other
+                // struct fields BEFORE the structs that reference them. Generic instantiations
+                // like Slice<TypeBuilder> need the TypeBuilder to be CreateType'd first.
+                var remainingTypeBuilders = new HashSet<Type>();
+                foreach (var kvp in remaining)
+                {
+                    remainingTypeBuilders.Add(kvp.Value.AsType());
+                }
+                remaining.Sort((a, b) =>
+                {
+                    bool aUsedByOther = false;
+                    bool bUsedByOther = false;
+                    foreach (var kvp in remaining)
+                    {
+                        if (kvp.Key is StructTypeSymbol structSym)
+                        {
+                            foreach (var field in structSym.Fields)
+                            {
+                                Type? depType = null;
+                                if (field.Type is SliceTypeSymbol slice)
+                                {
+                                    depType = ctx.Mapper.Map(slice.ElementType);
+                                }
+                                else if (field.Type is ArrayTypeSymbol arr)
+                                {
+                                    depType = ctx.Mapper.Map(arr.ElementType);
+                                }
+                                if (depType != null)
+                                {
+                                    if (depType == a.Value.AsType()) { aUsedByOther = true; }
+                                    if (depType == b.Value.AsType()) { bUsedByOther = true; }
+                                }
+                            }
+                        }
+                    }
+                    if (aUsedByOther && !bUsedByOther) { return -1; }
+                    if (bUsedByOther && !aUsedByOther) { return 1; }
+                    return 0;
+                });
+
                 int lastCount = remaining.Count + 1;
                 while (remaining.Count > 0 && remaining.Count < lastCount)
                 {
@@ -568,11 +611,29 @@ namespace Ngo.Compiler.Emit
                     var deferred = new List<KeyValuePair<TypeSymbol, Builder.ITypeBuilder>>();
                     foreach (var kvp in remaining)
                     {
+                        if (declEmitter.HasDeferredFields(kvp.Key))
+                        {
+                            deferred.Add(kvp);
+                            continue;
+                        }
                         try
                         {
                             var runtimeType = kvp.Value.CreateType()!;
                             ctx.Mapper.Register(kvp.Key, runtimeType);
                             ctx.FinalizedTypes.Add(kvp.Key);
+                            if (ctx.CurrentPackagePath != null && !string.IsNullOrEmpty(kvp.Key.Name))
+                            {
+                                ctx.Mapper.RegisterSourceCompiledType(
+                                    ctx.CurrentPackagePath, kvp.Key.Name, runtimeType);
+                            }
+                            if (ctx.IsDependencyEmit && kvp.Value is Builder.LiveTypeBuilder liveTb)
+                            {
+                                ctx.LinkedTypes[liveTb.Inner.Name] = liveTb.Inner;
+                                if (liveTb.Inner.FullName != null && liveTb.Inner.FullName != liveTb.Inner.Name)
+                                {
+                                    ctx.LinkedTypes[liveTb.Inner.FullName] = liveTb.Inner;
+                                }
+                            }
                         }
                         catch (TypeLoadException)
                         {
@@ -580,22 +641,130 @@ namespace Ngo.Compiler.Emit
                         }
                     }
                     remaining = deferred;
+
+                    FinalizeInlineArrayTypes(ctx);
                 }
 
                 // Final pass: create any remaining types (should work now that deps are created)
+                // Skip structs with deferred fields — they'll be created after deferred field population.
                 foreach (var kvp in remaining)
                 {
+                    if (declEmitter.HasDeferredFields(kvp.Key))
+                    {
+                        continue;
+                    }
                     try
                     {
                         var runtimeType = kvp.Value.CreateType()!;
                         ctx.Mapper.Register(kvp.Key, runtimeType);
                         ctx.FinalizedTypes.Add(kvp.Key);
+                        if (ctx.CurrentPackagePath != null && !string.IsNullOrEmpty(kvp.Key.Name))
+                        {
+                            ctx.Mapper.RegisterSourceCompiledType(
+                                ctx.CurrentPackagePath, kvp.Key.Name, runtimeType);
+                        }
+                        if (ctx.IsDependencyEmit && kvp.Value is Builder.LiveTypeBuilder liveTb2)
+                        {
+                            ctx.LinkedTypes[liveTb2.Inner.Name] = liveTb2.Inner;
+                        }
                     }
                     catch (TypeLoadException ex)
                     {
                         ctx.Log.Warn($"ngo: struct finalize failed '{kvp.Key.Name}': {ex.Message} (base={kvp.Value.AsType().BaseType?.Name})");
                     }
                 }
+            }
+
+            FinalizeInlineArrayTypes(ctx);
+
+            // Define deferred fields and CreateType in rounds.
+            // Each round: define fields for structs whose deps are now runtime types,
+            // then CreateType those structs, enabling the next round's deps.
+            {
+                int deferredPreviousCount = -1;
+                var deferredRemaining = new List<KeyValuePair<TypeSymbol, Builder.ITypeBuilder>>();
+                foreach (var kvp in ctx.StructTypes)
+                {
+                    if (!ctx.FinalizedTypes.Contains(kvp.Key))
+                    {
+                        deferredRemaining.Add(kvp);
+                    }
+                }
+
+                while (deferredRemaining.Count > 0 && deferredRemaining.Count != deferredPreviousCount)
+                {
+                    deferredPreviousCount = deferredRemaining.Count;
+                    declEmitter.PopulateDeferredFields();
+                    FinalizeInlineArrayTypes(ctx);
+
+                    var stillDeferred = new List<KeyValuePair<TypeSymbol, Builder.ITypeBuilder>>();
+                    foreach (var kvp in deferredRemaining)
+                    {
+                        if (declEmitter.HasDeferredFields(kvp.Key))
+                        {
+                            stillDeferred.Add(kvp);
+                            continue;
+                        }
+                        try
+                        {
+                            var runtimeType = kvp.Value.CreateType()!;
+                            ctx.Mapper.Register(kvp.Key, runtimeType);
+                            ctx.FinalizedTypes.Add(kvp.Key);
+                            if (ctx.CurrentPackagePath != null && !string.IsNullOrEmpty(kvp.Key.Name))
+                            {
+                                ctx.Mapper.RegisterSourceCompiledType(
+                                    ctx.CurrentPackagePath, kvp.Key.Name, runtimeType);
+                            }
+                            if (ctx.IsDependencyEmit && kvp.Value is Builder.LiveTypeBuilder deferredLiveTb)
+                            {
+                                ctx.LinkedTypes[deferredLiveTb.Inner.Name] = deferredLiveTb.Inner;
+                                if (deferredLiveTb.Inner.FullName != null && deferredLiveTb.Inner.FullName != deferredLiveTb.Inner.Name)
+                                {
+                                    ctx.LinkedTypes[deferredLiveTb.Inner.FullName] = deferredLiveTb.Inner;
+                                }
+                            }
+                        }
+                        catch (TypeLoadException)
+                        {
+                            stillDeferred.Add(kvp);
+                        }
+                    }
+                    deferredRemaining = stillDeferred;
+                }
+
+                // Final attempt for any remaining (skip structs still waiting on interface types)
+                declEmitter.PopulateDeferredFields();
+                foreach (var kvp in deferredRemaining)
+                {
+                    if (declEmitter.HasDeferredFields(kvp.Key))
+                    {
+                        continue;
+                    }
+                    try
+                    {
+                        var runtimeType = kvp.Value.CreateType()!;
+                        ctx.Mapper.Register(kvp.Key, runtimeType);
+                        ctx.FinalizedTypes.Add(kvp.Key);
+                        if (ctx.CurrentPackagePath != null && !string.IsNullOrEmpty(kvp.Key.Name))
+                        {
+                            ctx.Mapper.RegisterSourceCompiledType(
+                                ctx.CurrentPackagePath, kvp.Key.Name, runtimeType);
+                        }
+                        if (ctx.IsDependencyEmit && kvp.Value is Builder.LiveTypeBuilder deferredLiveTb)
+                        {
+                            ctx.LinkedTypes[deferredLiveTb.Inner.Name] = deferredLiveTb.Inner;
+                            if (deferredLiveTb.Inner.FullName != null && deferredLiveTb.Inner.FullName != deferredLiveTb.Inner.Name)
+                            {
+                                ctx.LinkedTypes[deferredLiveTb.Inner.FullName] = deferredLiveTb.Inner;
+                            }
+                        }
+                    }
+                    catch (TypeLoadException ex)
+                    {
+                        ctx.Log.Warn($"ngo: deferred struct finalize failed '{kvp.Key.Name}': {ex.Message}");
+                    }
+                }
+                FinalizeInlineArrayTypes(ctx);
             }
 
             // Finalize interface types and register the runtime types
@@ -609,6 +778,43 @@ namespace Ngo.Compiler.Emit
                 }
             }
 
+            // Final deferred field round — interfaces are now finalized, so fields
+            // referencing interface types (e.g., map[interfaceType]struct{}) can resolve.
+            declEmitter.PopulateDeferredFields();
+            {
+                var postIfaceRemaining = new List<KeyValuePair<TypeSymbol, Builder.ITypeBuilder>>();
+                foreach (var kvp in ctx.StructTypes)
+                {
+                    if (!ctx.FinalizedTypes.Contains(kvp.Key))
+                    {
+                        postIfaceRemaining.Add(kvp);
+                    }
+                }
+                foreach (var kvp in postIfaceRemaining)
+                {
+                    try
+                    {
+                        var runtimeType = kvp.Value.CreateType()!;
+                        ctx.Mapper.Register(kvp.Key, runtimeType);
+                        ctx.FinalizedTypes.Add(kvp.Key);
+                        if (ctx.CurrentPackagePath != null && !string.IsNullOrEmpty(kvp.Key.Name))
+                        {
+                            ctx.Mapper.RegisterSourceCompiledType(
+                                ctx.CurrentPackagePath, kvp.Key.Name, runtimeType);
+                        }
+                        if (ctx.IsDependencyEmit && kvp.Value is Builder.LiveTypeBuilder postLiveTb)
+                        {
+                            ctx.LinkedTypes[postLiveTb.Inner.Name] = postLiveTb.Inner;
+                        }
+                    }
+                    catch (TypeLoadException ex)
+                    {
+                        throw new InvalidOperationException(
+                            $"Post-interface struct finalize failed for '{kvp.Key.Name}': {ex.Message}", ex);
+                    }
+                }
+            }
+
             // Pass 2: Define all function and method signatures
             foreach (var func in root.Functions)
             {
@@ -618,6 +824,28 @@ namespace Ngo.Compiler.Emit
             foreach (var method in root.Methods)
             {
                 declEmitter.EmitMethod(method);
+            }
+
+            // Register all declared methods in LinkedMethods for cross-archive resolution
+            if (ctx.IsDependencyEmit)
+            {
+                var packageTypeName = ctx.PackageType?.AsType().Name;
+                foreach (var kvp in ctx.Methods)
+                {
+                    if (kvp.Value.AsMethodInfo() is MethodBuilder methodBuilder
+                        && methodBuilder.DeclaringType?.Name == packageTypeName)
+                    {
+                        var fullKey = packageTypeName + "." + methodBuilder.Name;
+                        if (!ctx.LinkedMethods.ContainsKey(fullKey))
+                        {
+                            ctx.LinkedMethods[fullKey] = methodBuilder;
+                        }
+                        if (!ctx.LinkedMethods.ContainsKey(methodBuilder.Name))
+                        {
+                            ctx.LinkedMethods[methodBuilder.Name] = methodBuilder;
+                        }
+                    }
+                }
             }
 
             // Define package-level variables
@@ -665,6 +893,27 @@ namespace Ngo.Compiler.Emit
             }
 
             ctx.PackageType.CreateType();
+        }
+
+        private static void FinalizeInlineArrayTypes(EmitContext ctx)
+        {
+            for (int index = ctx.PendingInlineArrayTypes.Count - 1; index >= 0; index--)
+            {
+                var (builder, length) = ctx.PendingInlineArrayTypes[index];
+                try
+                {
+                    var created = builder.CreateType()!;
+                    var elementField = created.GetField("_element0", BindingFlags.NonPublic | BindingFlags.Instance);
+                    if (elementField != null)
+                    {
+                        ctx.InlineArrayTypes[(elementField.FieldType, length)] = created;
+                    }
+                    ctx.PendingInlineArrayTypes.RemoveAt(index);
+                }
+                catch (TypeLoadException)
+                {
+                }
+            }
         }
 
         /// <summary>

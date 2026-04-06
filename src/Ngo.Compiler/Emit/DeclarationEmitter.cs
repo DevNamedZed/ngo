@@ -34,6 +34,8 @@ namespace Ngo.Compiler.Emit
     {
         private readonly EmitContext _ctx;
         private int _initCounter;
+        private readonly List<(StructTypeSymbol structType, Symbols.FieldSymbol field)> _deferredFields = new();
+        private readonly HashSet<StructTypeSymbol> _structsWithDeferredFields = new();
 
         public DeclarationEmitter(EmitContext ctx)
         {
@@ -138,21 +140,41 @@ namespace Ngo.Compiler.Emit
                 if (_ctx.StructFields.ContainsKey(field))
                     continue;
 
-                var fieldType = _ctx.Mapper.Map(field.Type);
-                var fieldVisibility = (_ctx.Options.IsLibrary && !_ctx.IsExported(field.Name))
-                    ? FieldAttributes.Assembly
-                    : FieldAttributes.Public;
-                var fb = typeBuilder.DefineField(field.Name, fieldType, fieldVisibility);
-                if (field.Tag != null)
+                Type fieldType;
+                if (field.Type is ArrayTypeSymbol arrayFieldType)
                 {
-                    var tagCtor = typeof(GoTagAttribute).GetConstructor(new[] { typeof(string) })!;
-                    fb.SetCustomAttribute(new CustomAttributeBuilder(tagCtor, new object[] { field.Tag }));
+                    var elemClrType = _ctx.Mapper.Map(arrayFieldType.ElementType);
+                    fieldType = _ctx.Mapper.GetOrCreateInlineArrayType(elemClrType, arrayFieldType.Length);
                 }
-                _ctx.StructFields[field] = fb;
+                else
+                {
+                    fieldType = _ctx.Mapper.Map(field.Type);
+                }
+
+                // Defer fields with TypeBuilder generic args from OTHER structs.
+                // MakeGenericType(TypeBuilder) != MakeGenericType(RuntimeType), so fields
+                // defined with cross-struct TypeBuilder args would be incompatible with method bodies.
+                // Self-referential fields (same TypeBuilder) are fine — consistent identity.
+                if (EmitContext.HasTypeBuilderArgs(fieldType)
+                    && !IsSelfReferentialField(fieldType, typeBuilder.AsType()))
+                {
+                    _deferredFields.Add((structType, field));
+                    _structsWithDeferredFields.Add(structType);
+                    continue;
+                }
+
+                DefineStructField(typeBuilder, field, fieldType);
             }
 
-            // If the struct has a String() string method, add a ToString() override
+            // If the struct has a String() string method, add a ToString() override.
+            // Skip for pointer receivers during dependency emit — the Ptr<T> constructor
+            // in the override would reference a TypeBuilder, causing InvalidProgramException
+            // because Ptr<TypeBuilder> != Ptr<RuntimeType> after CreateType.
             var stringMethod = structType.LookupMethod("String");
+            if (stringMethod != null && stringMethod.IsPointerReceiver && _ctx.IsDependencyEmit)
+            {
+                stringMethod = null;
+            }
             if (stringMethod != null && stringMethod.Parameters.Count == 0
                 && stringMethod.ReturnTypes.Count == 1
                 && stringMethod.ReturnTypes[0].TypeKind == TypeKind.String
@@ -202,6 +224,102 @@ namespace Ngo.Compiler.Emit
         {
             DefineStructType(structType);
             PopulateStructFields(structType);
+        }
+
+        public bool HasDeferredFields(TypeSymbol structType) =>
+            structType is StructTypeSymbol sts && _structsWithDeferredFields.Contains(sts);
+
+        private static bool IsSelfReferentialField(Type fieldType, Type structType)
+        {
+            if (fieldType is System.Reflection.Emit.TypeBuilder tb && tb == structType)
+            {
+                return true;
+            }
+            if (fieldType.IsGenericType && !fieldType.IsGenericTypeDefinition)
+            {
+                foreach (var arg in fieldType.GetGenericArguments())
+                {
+                    if (IsSelfReferentialField(arg, structType))
+                    {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        private void DefineStructField(Builder.ITypeBuilder typeBuilder, Symbols.FieldSymbol field, Type fieldType)
+        {
+            var fieldVisibility = (_ctx.Options.IsLibrary && !_ctx.IsExported(field.Name))
+                ? FieldAttributes.Assembly
+                : FieldAttributes.Public;
+            var fb = typeBuilder.DefineField(field.Name, fieldType, fieldVisibility);
+            if (field.Type is ArrayTypeSymbol goArrField && fb is Builder.NgoFieldBuilder ngoFb)
+            {
+                ngoFb.GoArrayLength = goArrField.Length;
+            }
+            if (field.Tag != null)
+            {
+                var tagCtor = typeof(GoTagAttribute).GetConstructor(new[] { typeof(string) })!;
+                fb.SetCustomAttribute(new CustomAttributeBuilder(tagCtor, new object[] { field.Tag }));
+            }
+            _ctx.StructFields[field] = fb;
+
+            if (_ctx.IsDependencyEmit && fb is Builder.LiveFieldBuilder liveFb)
+            {
+                var typeName = typeBuilder.AsType().Name;
+                _ctx.LinkedFields[typeName + "." + field.Name] = liveFb.Inner;
+            }
+        }
+
+        /// <summary>
+        /// Define fields that were deferred because their types contained TypeBuilder
+        /// generic args. Called after struct finalization so Map() returns runtime types.
+        /// </summary>
+        public void PopulateDeferredFields()
+        {
+            var stillDeferred = new List<(StructTypeSymbol, Symbols.FieldSymbol)>();
+
+            foreach (var (structType, field) in _deferredFields)
+            {
+                if (_ctx.StructFields.ContainsKey(field))
+                {
+                    continue;
+                }
+
+                if (!_ctx.StructTypes.TryGetValue(structType, out var typeBuilder))
+                {
+                    continue;
+                }
+
+                Type fieldType;
+                if (field.Type is ArrayTypeSymbol arrayFieldType)
+                {
+                    var elemClrType = _ctx.Mapper.Map(arrayFieldType.ElementType);
+                    fieldType = _ctx.Mapper.GetOrCreateInlineArrayType(elemClrType, arrayFieldType.Length);
+                }
+                else
+                {
+                    fieldType = _ctx.Mapper.Map(field.Type);
+                }
+
+                // If the mapped type STILL has TypeBuilder args, keep deferring
+                if (EmitContext.HasTypeBuilderArgs(fieldType))
+                {
+                    stillDeferred.Add((structType, field));
+                    continue;
+                }
+
+                DefineStructField(typeBuilder, field, fieldType);
+                _structsWithDeferredFields.Remove(structType);
+            }
+
+            _deferredFields.Clear();
+            _deferredFields.AddRange(stillDeferred);
+            foreach (var (st, _) in stillDeferred)
+            {
+                _structsWithDeferredFields.Add(st);
+            }
         }
 
         private void EmitInterfaceType(InterfaceTypeSymbol interfaceType)
@@ -648,7 +766,7 @@ namespace Ngo.Compiler.Emit
                         // Check if the interface CLR type has this method — if so, match THAT signature
                         if (interfaceClrType.IsInterface)
                         {
-                            var ifaceClrMethod = interfaceClrType.GetMethod(ifaceMethodName);
+                            var ifaceClrMethod = FindInterfaceMethod(interfaceClrType, ifaceMethodName);
                             if (ifaceClrMethod != null)
                             {
                                 var ifaceClrParams = ifaceClrMethod.GetParameters();
@@ -676,7 +794,7 @@ namespace Ngo.Compiler.Emit
 
                         try
                         {
-                            var ifaceClrMethod2 = interfaceClrType.GetMethod(ifaceMethodName);
+                            var ifaceClrMethod2 = FindInterfaceMethod(interfaceClrType, ifaceMethodName);
                             if (ifaceClrMethod2 != null)
                             {
                                 wrapperBuilder.DefineMethodOverride(wrapperMethod, ifaceClrMethod2);
@@ -699,7 +817,7 @@ namespace Ngo.Compiler.Emit
                     {
                         try
                         {
-                            stubIfaceClrMethod = interfaceClrType.GetMethod(ifaceMethodName);
+                            stubIfaceClrMethod = FindInterfaceMethod(interfaceClrType, ifaceMethodName);
                         }
                         catch (NotSupportedException)
                         {
@@ -746,7 +864,7 @@ namespace Ngo.Compiler.Emit
 
                     try
                     {
-                        var ifaceClrMethod = interfaceClrType.GetMethod(ifaceMethodName);
+                        var ifaceClrMethod = FindInterfaceMethod(interfaceClrType, ifaceMethodName);
                         if (ifaceClrMethod != null)
                         {
                             wrapperBuilder.DefineMethodOverride(stubMethod, ifaceClrMethod);
@@ -769,7 +887,7 @@ namespace Ngo.Compiler.Emit
                 {
                     try
                     {
-                        interfaceClrMethod = interfaceClrType.GetMethod(ifaceMethodName);
+                        interfaceClrMethod = FindInterfaceMethod(interfaceClrType, ifaceMethodName);
                     }
                     catch (NotSupportedException)
                     {
@@ -829,7 +947,7 @@ namespace Ngo.Compiler.Emit
                 // Explicit interface override so the binding is serialized in archives
                 try
                 {
-                    var interfaceMethod = interfaceClrType.GetMethod(ifaceMethodName);
+                    var interfaceMethod = FindInterfaceMethod(interfaceClrType, ifaceMethodName);
                     if (interfaceMethod != null)
                     {
                         wrapperBuilder.DefineMethodOverride(methodBuilder, interfaceMethod);
@@ -911,6 +1029,22 @@ namespace Ngo.Compiler.Emit
             _ctx.WrapperTypes[key] = new WrapperTypeInfo(wrapperType, ctor);
 
             return wrapperType;
+        }
+
+        private static MethodInfo? FindInterfaceMethod(Type interfaceType, string methodName)
+        {
+            try
+            {
+                var method = interfaceType.GetMethod(methodName);
+                if (method != null) return method;
+                foreach (var parent in interfaceType.GetInterfaces())
+                {
+                    method = parent.GetMethod(methodName);
+                    if (method != null) return method;
+                }
+            }
+            catch (NotSupportedException) { }
+            return null;
         }
 
         private void EmitInheritedInterfaceStub(ITypeBuilder wrapperBuilder, Type interfaceClrType,

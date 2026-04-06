@@ -30,6 +30,7 @@ namespace Ngo.Compiler.Emit.Builder
         IConstructorBuilder DefineConstructor(MethodAttributes attrs, CallingConventions callingConvention, Type[] paramTypes);
         Type[] DefineGenericParameters(string[] names);
         void DefineMethodOverride(IMethodBuilder body, MethodInfo declaration);
+        bool IsCreated { get; }
         Type CreateType();
 
         /// <summary>

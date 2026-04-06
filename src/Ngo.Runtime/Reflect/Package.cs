@@ -299,17 +299,12 @@ namespace Ngo.Runtime.Reflect
             }
 
             var sliceType = slice.GetType();
-            // Look for indexer and Len property
-            var lenProp = sliceType.GetProperty("Len");
-            var indexer = sliceType.GetProperty("Item");
-            if (lenProp != null && indexer != null)
+            var swapMethod = sliceType.GetMethod("Swap");
+            if (swapMethod != null)
             {
                 return (i, j) =>
                 {
-                    var vi = indexer.GetValue(slice, new object[] { (int)i });
-                    var vj = indexer.GetValue(slice, new object[] { (int)j });
-                    indexer.SetValue(slice, vi, new object[] { (int)j });
-                    indexer.SetValue(slice, vj, new object[] { (int)i });
+                    swapMethod.Invoke(slice, new object[] { (int)i, (int)j });
                 };
             }
 

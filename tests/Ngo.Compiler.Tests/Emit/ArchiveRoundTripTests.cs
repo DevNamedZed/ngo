@@ -950,6 +950,7 @@ var IntSize = 32 << (^uint(0) >> 63)");
                 var fieldName = reader.ReadString();
                 reader.ReadInt32(); // attrs
                 var fieldTypeName = reader.ReadString();
+                reader.ReadInt32(); // goArrayLength
                 if (typeName == "Logger" || typeName == "log.Logger")
                 {
                     if (fieldName == "prefix") loggerPrefixType = fieldTypeName;

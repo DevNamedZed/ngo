@@ -90,7 +90,8 @@ namespace Ngo.Compiler.Archive
         // =====================================================================
 
         internal static Type ResolveType(string typeName, Dictionary<string, TypeBuilder>? typeBuilders = null,
-            Dictionary<string, Type>? genericParams = null)
+            Dictionary<string, Type>? genericParams = null,
+            IReadOnlyDictionary<(Type, int), Type>? inlineArrayTypes = null)
         {
             if (typeName == "$$null" || typeName == "$$error" || typeName == "?")
             {
@@ -100,6 +101,20 @@ namespace Ngo.Compiler.Archive
             if (genericParams != null && genericParams.TryGetValue(typeName, out var gp))
             {
                 return gp;
+            }
+
+            if (typeName.Contains("GoArray_"))
+            {
+                if (inlineArrayTypes != null)
+                {
+                    foreach (var kvp in inlineArrayTypes)
+                    {
+                        if (kvp.Value.Name == typeName || kvp.Value.FullName == typeName)
+                        {
+                            return kvp.Value;
+                        }
+                    }
+                }
             }
 
             if (typeBuilders != null && typeBuilders.TryGetValue(typeName, out var tb))

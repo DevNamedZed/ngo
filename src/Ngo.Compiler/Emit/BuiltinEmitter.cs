@@ -673,6 +673,12 @@ namespace Ngo.Compiler.Emit
                 argType = tpLen.Constraint.TypeElements[0].Type;
             }
 
+            // Unwrap pointers: len(*[N]T) == N
+            if (argType is PointerTypeSymbol ptrLen && ptrLen.ElementType != null)
+            {
+                argType = ptrLen.ElementType;
+            }
+
             // Unwrap named types to find underlying slice/map/array
             var resolvedArgType = argType;
             while (resolvedArgType != null && resolvedArgType.GetType() == typeof(TypeSymbol)
@@ -711,9 +717,27 @@ namespace Ngo.Compiler.Emit
 
             if (resolvedArgType is ArrayTypeSymbol || argType.TypeKind == TypeKind.Array)
             {
-                _body.EmitExpression(arg);
-                _ctx.IL.Emit(OpCodes.Ldlen);
-                _ctx.IL.Emit(OpCodes.Conv_I8);
+                var arrLenType = resolvedArgType as ArrayTypeSymbol
+                    ?? argType.Resolved() as ArrayTypeSymbol;
+                bool isInlineField = false;
+                if (arrLenType != null && arg is Ast.SelectorExpression lenSel
+                    && lenSel.Field?.Type is ArrayTypeSymbol
+                    && _ctx.StructFields.TryGetValue(lenSel.Field, out var lenFb)
+                    && !lenFb.AsFieldInfo().FieldType.IsArray)
+                {
+                    isInlineField = true;
+                }
+                if (isInlineField)
+                {
+                    _ctx.IL.Emit(OpCodes.Ldc_I4, arrLenType!.Length);
+                    _ctx.IL.Emit(OpCodes.Conv_I8);
+                }
+                else
+                {
+                    _body.EmitExpression(arg);
+                    _ctx.IL.Emit(OpCodes.Ldlen);
+                    _ctx.IL.Emit(OpCodes.Conv_I8);
+                }
                 return true;
             }
 
@@ -723,10 +747,25 @@ namespace Ngo.Compiler.Emit
         private bool EmitBuiltinCap(CallExpression call)
         {
             var arg = call.Arguments[0];
+            var argType = arg.Type;
 
-            if (arg.Type is SliceTypeSymbol)
+            // Resolve type parameter constraints (S ~[]E → []E)
+            if (argType is TypeParameterSymbol tpCap && tpCap.Constraint.TypeElements.Count > 0)
             {
-                var sliceClrType = _ctx.Mapper.Map(arg.Type);
+                argType = tpCap.Constraint.TypeElements[0].Type;
+            }
+
+            // Unwrap named types to find underlying slice
+            var resolvedArgType = argType;
+            while (resolvedArgType != null && resolvedArgType.GetType() == typeof(TypeSymbol)
+                   && resolvedArgType.UnderlyingType != null)
+            {
+                resolvedArgType = resolvedArgType.UnderlyingType;
+            }
+
+            if (resolvedArgType is SliceTypeSymbol || argType.TypeKind == TypeKind.Slice)
+            {
+                var sliceClrType = _ctx.Mapper.Map(resolvedArgType is SliceTypeSymbol ? resolvedArgType : argType);
                 _body.EmitExpressionAddress(arg, sliceClrType);
                 var capGetter = EmitContext.GetPropertyGetterSafe(sliceClrType, "Cap");
                 _ctx.IL.Emit(OpCodes.Call, capGetter);
@@ -734,10 +773,10 @@ namespace Ngo.Compiler.Emit
                 return true;
             }
 
-            if (arg.Type is ChannelTypeSymbol)
+            if (argType is ChannelTypeSymbol)
             {
                 _body.EmitExpression(arg);
-                var chanClrType = _ctx.Mapper.Map(arg.Type);
+                var chanClrType = _ctx.Mapper.Map(argType);
                 var capGetter = EmitContext.GetPropertyGetterSafe(chanClrType, "Capacity");
                 _ctx.IL.Emit(OpCodes.Call, capGetter);
                 _ctx.IL.Emit(OpCodes.Conv_I8);
@@ -792,6 +831,12 @@ namespace Ngo.Compiler.Emit
             {
                 _body.EmitExpression(sliceArg);
                 _body.EmitExpression(call.Arguments[1]);
+                var secondArgType = call.Arguments[1].Type;
+                if (secondArgType.TypeKind == TypeKind.String || secondArgType.TypeKind == TypeKind.UntypedString)
+                {
+                    var toBytesMethod = typeof(GoString).GetMethod("ToBytes", new[] { typeof(string) })!;
+                    _ctx.IL.Emit(OpCodes.Call, toBytesMethod);
+                }
                 var appendSliceMethod = EmitContext.GetMethodSafe(appendSliceType, "Append", new[] { sliceClrType, sliceClrType });
                 _ctx.IL.Emit(OpCodes.Call, appendSliceMethod);
                 return true;
@@ -832,6 +877,12 @@ namespace Ngo.Compiler.Emit
         private bool EmitBuiltinMake(CallExpression call)
         {
             var returnType = call.Function.ReturnType;
+
+            // Resolve type parameter constraints (S ~[]E → []E)
+            if (returnType is TypeParameterSymbol tpMake && tpMake.Constraint.TypeElements.Count > 0)
+            {
+                returnType = tpMake.Constraint.TypeElements[0].Type;
+            }
 
             returnType = returnType.Resolved();
 
@@ -928,6 +979,108 @@ namespace Ngo.Compiler.Emit
             bool isStringSource = secondArgType.TypeKind == TypeKind.String
                 || secondArgType.TypeKind == TypeKind.UntypedString;
 
+            // Check if destination is a slice of an InlineArray struct field
+            bool isInlineArrayDest = false;
+            SelectorExpression? inlineSel = null;
+            ArrayTypeSymbol? inlineArrType = null;
+            Builder.IFieldBuilder? inlineFb = null;
+            if (call.Arguments[0] is SliceExpression destSlice
+                && destSlice.Operand is SelectorExpression sel
+                && sel.Field?.Type is ArrayTypeSymbol arrT)
+            {
+                if (_ctx.StructFields.TryGetValue(sel.Field, out var fb) && !fb.AsFieldInfo().FieldType.IsArray)
+                {
+                    isInlineArrayDest = true;
+                    inlineSel = sel;
+                    inlineArrType = arrT;
+                    inlineFb = fb;
+                }
+                else
+                {
+                    // Name-based fallback
+                    foreach (var kvp in _ctx.StructFields)
+                    {
+                        if (kvp.Key.Name == sel.Field.Name && kvp.Key.Type is ArrayTypeSymbol
+                            && !kvp.Value.AsFieldInfo().FieldType.IsArray)
+                        {
+                            isInlineArrayDest = true;
+                            inlineSel = sel;
+                            inlineArrType = arrT;
+                            inlineFb = kvp.Value;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (isInlineArrayDest && isStringSource && copyElemType == BuiltinTypes.Byte)
+            {
+                // copy(inlineArray[:], string) → convert string to bytes, write to InlineArray via Span
+                _body.EmitInlineArrayFieldAddress(inlineSel!);
+                _ctx.IL.Emit(OpCodes.Ldc_I4, inlineArrType!.Length);
+                var bufferType = inlineFb!.AsFieldInfo().FieldType;
+                var spanMethod = typeof(BuiltIn).GetMethod("InlineArrayAsSpan")!
+                    .MakeGenericMethod(bufferType, typeof(byte));
+                _ctx.IL.Emit(OpCodes.Call, spanMethod);
+
+                // Convert string to byte[] then copy to span
+                _body.EmitExpression(call.Arguments[1]);
+                var toBytesMethod = typeof(GoString).GetMethod("ToBytes", new[] { typeof(string) })!;
+                _ctx.IL.Emit(OpCodes.Call, toBytesMethod);
+
+                // Span<byte>.CopyFrom(Slice<byte>) — use Slice.AsSpan + CopyTo
+                // Simpler: use BuiltIn.Copy(Slice<byte>, string) on a span-backed slice
+                // Actually simplest: convert span to Slice, call Copy
+                // Let's just convert the InlineArray span to a Slice and use the existing copy
+                var spanLocal = _ctx.IL.DeclareLocal(typeof(Span<byte>));
+                var srcLocal = _ctx.IL.DeclareLocal(typeof(Slice<byte>));
+                _ctx.IL.Emit(OpCodes.Stloc, srcLocal);
+                _ctx.IL.Emit(OpCodes.Stloc, spanLocal);
+
+                // Create Slice from span's underlying memory — but we need a T[]
+                // The span IS backed by the InlineArray. We can't create a Slice from it directly.
+                // Instead: iterate and use InlineArraySet
+                _ctx.IL.Emit(OpCodes.Ldloca, srcLocal);
+                var srcLenProp = typeof(Slice<byte>).GetProperty("Len")!.GetGetMethod()!;
+                _ctx.IL.Emit(OpCodes.Call, srcLenProp);
+                var lenLocal = _ctx.IL.DeclareLocal(typeof(int));
+                _ctx.IL.Emit(OpCodes.Stloc, lenLocal);
+
+                // for (int i = 0; i < len; i++) { InlineArraySet(ref buf, i, src[i]); }
+                var loopStart = _ctx.IL.DefineLabel();
+                var loopEnd = _ctx.IL.DefineLabel();
+                var iLocal = _ctx.IL.DeclareLocal(typeof(int));
+                _ctx.IL.Emit(OpCodes.Ldc_I4_0);
+                _ctx.IL.Emit(OpCodes.Stloc, iLocal);
+                _ctx.IL.MarkLabel(loopStart);
+                _ctx.IL.Emit(OpCodes.Ldloc, iLocal);
+                _ctx.IL.Emit(OpCodes.Ldloc, lenLocal);
+                _ctx.IL.Emit(OpCodes.Bge, loopEnd);
+
+                // InlineArraySet(ref buf, i, src[i])
+                _body.EmitInlineArrayFieldAddress(inlineSel!);
+                _ctx.IL.Emit(OpCodes.Ldloc, iLocal);
+                _ctx.IL.Emit(OpCodes.Ldloca, srcLocal);
+                _ctx.IL.Emit(OpCodes.Ldloc, iLocal);
+                var indexer = typeof(Slice<byte>).GetProperty("Item")!.GetGetMethod()!;
+                _ctx.IL.Emit(OpCodes.Call, indexer);
+                _ctx.IL.Emit(OpCodes.Ldobj, typeof(byte));
+                var setMethod = typeof(BuiltIn).GetMethod("InlineArraySet")!
+                    .MakeGenericMethod(bufferType, typeof(byte));
+                _ctx.IL.Emit(OpCodes.Call, setMethod);
+
+                _ctx.IL.Emit(OpCodes.Ldloc, iLocal);
+                _ctx.IL.Emit(OpCodes.Ldc_I4_1);
+                _ctx.IL.Emit(OpCodes.Add);
+                _ctx.IL.Emit(OpCodes.Stloc, iLocal);
+                _ctx.IL.Emit(OpCodes.Br, loopStart);
+                _ctx.IL.MarkLabel(loopEnd);
+
+                _ctx.IL.Emit(OpCodes.Ldloc, lenLocal);
+                _ctx.IL.Emit(OpCodes.Conv_I8);
+                return true;
+            }
+
             if (isStringSource && copyElemType == BuiltinTypes.Byte)
             {
                 _body.EmitExpression(call.Arguments[0]);
@@ -953,6 +1106,11 @@ namespace Ngo.Compiler.Emit
             return true;
         }
 
+        private void EmitInlineArrayWriteBack(CallExpression call, TypeSymbol elemType)
+        {
+            // Not used — write-back handled at call site
+        }
+
         private bool EmitBuiltinClose(CallExpression call)
         {
             _body.EmitExpression(call.Arguments[0]);
@@ -967,10 +1125,28 @@ namespace Ngo.Compiler.Emit
             if (call.Type is PointerTypeSymbol ptrType && ptrType.ElementType != null)
             {
                 var elemClrType = _ctx.Mapper.Map(ptrType.ElementType);
+                // Ensure we use runtime type, not TypeBuilder, for Ptr<T> creation
+                if (elemClrType is System.Reflection.Emit.TypeBuilder tb && tb.IsCreated())
+                {
+                    elemClrType = tb.CreateType()!;
+                }
                 if (elemClrType == null)
                 {
-                    throw new InvalidOperationException(
-                        $"Builtin new(): TypeMapper returned null for element type '{ptrType.ElementType.Name}'");
+                    // Name-based fallback for source-compiled dependency types
+                    // whose symbols differ from the registered instances
+                    foreach (var kvp in _ctx.StructTypes)
+                    {
+                        if (kvp.Key.Name == ptrType.ElementType.Name)
+                        {
+                            elemClrType = kvp.Value.AsType();
+                            break;
+                        }
+                    }
+                    if (elemClrType == null)
+                    {
+                        throw new InvalidOperationException(
+                            $"Builtin new(): TypeMapper returned null for element type '{ptrType.ElementType.Name}'");
+                    }
                 }
 
                 if (!elemClrType.IsValueType && !EmitContext.IsNonRuntimeType(elemClrType)
@@ -1095,10 +1271,18 @@ namespace Ngo.Compiler.Emit
         private bool EmitClear(CallExpression call)
         {
             var arg = call.Arguments[0];
-            if (arg.Type is MapTypeSymbol)
+            var argType = arg.Type;
+
+            // Resolve type parameter constraints (S ~[]E → []E)
+            if (argType is TypeParameterSymbol tpClear && tpClear.Constraint.TypeElements.Count > 0)
+            {
+                argType = tpClear.Constraint.TypeElements[0].Type;
+            }
+
+            if (argType is MapTypeSymbol)
             {
                 _body.EmitExpression(arg);
-                var mapClrType = _ctx.Mapper.Map(arg.Type);
+                var mapClrType = _ctx.Mapper.Map(argType);
                 var clearMethod = EmitContext.GetMethodSafe(mapClrType, "Clear");
                 if (clearMethod != null)
                 {
@@ -1107,7 +1291,7 @@ namespace Ngo.Compiler.Emit
                 return true;
             }
 
-            if (arg.Type is SliceTypeSymbol sliceType)
+            if (argType is SliceTypeSymbol sliceType)
             {
                 var elemClrType = _ctx.Mapper.Map(sliceType.ElementType);
                 var sliceClrType = _ctx.Mapper.Map(sliceType);

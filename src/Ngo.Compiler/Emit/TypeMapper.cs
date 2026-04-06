@@ -35,6 +35,7 @@ namespace Ngo.Compiler.Emit
         private readonly HashSet<TypeSymbol> _inProgress = new();
         private EmitContext? _emitContext;
         private readonly List<Builder.ITypeBuilder> _pendingTypeCreations = new();
+        private System.Reflection.Emit.ModuleBuilder? _ngoInlineArrayModule;
 
         public TypeMapper(CompilationContext compilationContext)
         {
@@ -44,6 +45,11 @@ namespace Ngo.Compiler.Emit
         internal void SetEmitContext(EmitContext ctx)
         {
             _emitContext = ctx;
+        }
+
+        internal void RegisterSourceCompiledType(string importPath, string typeName, Type clrType)
+        {
+            _compilationContext.RegisterSourceCompiledType(importPath, typeName, clrType);
         }
 
         internal void CreatePendingTypes()
@@ -57,7 +63,37 @@ namespace Ngo.Compiler.Emit
 
         public void Register(TypeSymbol symbol, Type type)
         {
-            _typeCache[symbol] = type;
+            if (type != null)
+            {
+                _typeCache[symbol] = type;
+            }
+        }
+
+        private static bool ContainsTypeBuilder(Type type)
+        {
+            if (type is System.Reflection.Emit.TypeBuilder)
+            {
+                return true;
+            }
+            if (type.IsGenericType && !type.IsGenericTypeDefinition)
+            {
+                foreach (var arg in type.GetGenericArguments())
+                {
+                    if (ContainsTypeBuilder(arg))
+                    {
+                        return true;
+                    }
+                }
+            }
+            if (type.IsArray || type.IsByRef || type.IsPointer)
+            {
+                var elementType = type.GetElementType();
+                if (elementType != null)
+                {
+                    return ContainsTypeBuilder(elementType);
+                }
+            }
+            return false;
         }
 
         private static bool ContainsGenericParameter(Type type)
@@ -100,6 +136,14 @@ namespace Ngo.Compiler.Emit
 
             if (_typeCache.TryGetValue(symbol, out var cached))
             {
+                // Ensure we never return a TypeBuilder that has been CreateType'd.
+                // After CreateType, the TypeBuilder and RuntimeType are different identities
+                // which causes MakeGenericType mismatches.
+                if (cached is System.Reflection.Emit.TypeBuilder cachedTb && cachedTb.IsCreated())
+                {
+                    cached = cachedTb.CreateType()!;
+                    _typeCache[symbol] = cached;
+                }
                 return cached;
             }
 
@@ -118,7 +162,13 @@ namespace Ngo.Compiler.Emit
                     throw new InvalidOperationException(
                         $"TypeMapper: failed to map type '{symbol.Name}' (kind={symbol.TypeKind})");
                 }
-                if (!ContainsGenericParameter(result))
+                // Convert baked TypeBuilder to runtime type to avoid
+                // MakeGenericType identity mismatches
+                if (result is System.Reflection.Emit.TypeBuilder resultTb && resultTb.IsCreated())
+                {
+                    result = resultTb.CreateType()!;
+                }
+                if (!ContainsGenericParameter(result) && !ContainsTypeBuilder(result))
                 {
                     _typeCache[symbol] = result;
                 }
@@ -271,13 +321,46 @@ namespace Ngo.Compiler.Emit
                         return typeof(long);
                     }
 
-                    // Resolve via [GoType] annotations on runtime types
+                    // Resolve via [GoType] annotations or source-compiled types
                     if (symbol.PackagePath != null)
                     {
                         var resolved = _compilationContext.ResolveClrType(symbol.PackagePath, symbol.Name);
                         if (resolved != null)
                         {
                             return resolved;
+                        }
+                    }
+
+                    // Name-based fallback: during dependency emission, type symbols from
+                    // re-analysis may differ from those registered in ctx.StructTypes.
+                    // Search by name to find the already-finalized CLR type.
+                    if (_emitContext != null && symbol is StructTypeSymbol)
+                    {
+                        Type? bestMatch = null;
+                        foreach (var kvp in _typeCache)
+                        {
+                            if (kvp.Key is StructTypeSymbol cached
+                                && cached.Name == symbol.Name
+                                && kvp.Value != null
+                                && !(kvp.Value is System.Reflection.Emit.TypeBuilder))
+                            {
+                                if (cached.PackagePath == symbol.PackagePath)
+                                {
+                                    bestMatch = kvp.Value;
+                                    break;
+                                }
+                                // Allow matching when the unresolved symbol has no PackagePath
+                                // but is in the current package's dependency scope
+                                if (symbol.PackagePath == null && cached.PackagePath != null && bestMatch == null)
+                                {
+                                    bestMatch = kvp.Value;
+                                }
+                            }
+                        }
+                        if (bestMatch != null)
+                        {
+                            _typeCache[symbol] = bestMatch;
+                            return bestMatch;
                         }
                     }
 
@@ -543,8 +626,8 @@ namespace Ngo.Compiler.Emit
                         "Generic type parameters must be registered before use.");
 
                 case TypeKind.Error:
-                    throw new InvalidOperationException(
-                        $"Unresolved type '{symbol.Name}' (TypeKind.Error) — semantic analysis should have caught this.");
+                    // Go's 'error' interface — map to object (same as error interface)
+                    return typeof(object);
 
                 default:
                     throw new InvalidOperationException(
@@ -671,6 +754,80 @@ namespace Ngo.Compiler.Emit
                 17 => typeof(Func<,,,,,,,,,,,,,,,,>).MakeGenericType(allTypes),
                 _ => throw new NotSupportedException($"Func with {paramCount} params not supported"),
             };
+        }
+        internal Type GetOrCreateInlineArrayType(Type elementType, int length)
+        {
+            if (length <= 0)
+            {
+                return elementType.MakeArrayType();
+            }
+
+            var key = (elementType, length);
+            var cache = _emitContext?.InlineArrayTypes;
+            if (cache != null && cache.TryGetValue(key, out var existing))
+            {
+                return existing;
+            }
+
+            System.Reflection.Emit.ModuleBuilder moduleBuilder;
+            if (_emitContext?.Module is Builder.LiveModuleBuilder liveMod)
+            {
+                moduleBuilder = liveMod.Inner;
+            }
+            else
+            {
+                // NgoWriter path: create a throwaway module for InlineArray types
+                if (_ngoInlineArrayModule == null)
+                {
+                    var asmName = new System.Reflection.AssemblyName("NgoInlineArrays_" + System.Guid.NewGuid().ToString("N")[..8]);
+                    var asm = System.Reflection.Emit.AssemblyBuilder.DefineDynamicAssembly(
+                        asmName, System.Reflection.Emit.AssemblyBuilderAccess.RunAndCollect);
+                    _ngoInlineArrayModule = asm.DefineDynamicModule("NgoInlineArrays");
+                }
+                moduleBuilder = _ngoInlineArrayModule;
+            }
+
+            var typeName = $"GoArray_{elementType.FullName?.Replace('.', '_') ?? elementType.Name}_{length}";
+
+            // Check if already defined in this module (can happen with multiple TypeMapper instances)
+            var existingType = moduleBuilder.GetType(typeName);
+            if (existingType != null)
+            {
+                if (cache != null) cache[key] = existingType;
+                return existingType;
+            }
+
+            var typeBuilder = moduleBuilder.DefineType(typeName,
+                System.Reflection.TypeAttributes.Public
+                | System.Reflection.TypeAttributes.SequentialLayout
+                | System.Reflection.TypeAttributes.Sealed,
+                typeof(System.ValueType));
+
+            var attrCtor = typeof(System.Runtime.CompilerServices.InlineArrayAttribute)
+                .GetConstructor(new[] { typeof(int) })!;
+            typeBuilder.SetCustomAttribute(
+                new System.Reflection.Emit.CustomAttributeBuilder(attrCtor, new object[] { length }));
+
+            typeBuilder.DefineField("_element0", elementType,
+                System.Reflection.FieldAttributes.Private);
+
+            // When elementType is a TypeBuilder (not yet created), defer CreateType.
+            // The CLR needs the element type's layout to compute InlineArray size.
+            // Don't add to InlineArrayTypes cache — the TypeBuilder key's hash code
+            // will change after CreateType, breaking dictionary lookups.
+            // Track in PendingInlineArrayTypes for later finalization.
+            if (elementType is System.Reflection.Emit.TypeBuilder)
+            {
+                _emitContext?.PendingInlineArrayTypes.Add((typeBuilder, length));
+                return typeBuilder;
+            }
+
+            var created = typeBuilder.CreateType()!;
+            if (cache != null)
+            {
+                cache[key] = created;
+            }
+            return created;
         }
     }
 }

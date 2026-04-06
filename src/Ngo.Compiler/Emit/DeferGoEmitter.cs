@@ -71,7 +71,6 @@ namespace Ngo.Compiler.Emit
             _ctx.IL.BeginExceptionBlock();
             _body.EmitBlock(body);
 
-            // catch (GoPanicException) — enables recover() in deferred functions
             _ctx.IL.BeginCatchBlock(typeof(GoPanicException));
             var panicExLocal = _ctx.IL.DeclareLocal(typeof(GoPanicException));
             _ctx.IL.Emit(OpCodes.Stloc, panicExLocal);
@@ -87,7 +86,6 @@ namespace Ngo.Compiler.Emit
             _ctx.IL.Emit(OpCodes.Rethrow);
             _ctx.IL.MarkLabel(recoveredLabel);
 
-            // catch (DivideByZeroException) — wrap as GoPanicException for recover()
             _ctx.IL.BeginCatchBlock(typeof(DivideByZeroException));
             _ctx.IL.Emit(OpCodes.Pop); // discard the DivideByZeroException
             _ctx.IL.Emit(OpCodes.Ldstr, "runtime error: integer divide by zero");

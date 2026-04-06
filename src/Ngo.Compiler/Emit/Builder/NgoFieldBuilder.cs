@@ -42,6 +42,7 @@ namespace Ngo.Compiler.Emit.Builder
         public string FieldName => _name;
         public FieldAttributes FieldAttributes => _attrs;
         public Type FieldType => _fieldType;
+        public int GoArrayLength { get; set; }
 
         public void SetCustomAttribute(CustomAttributeBuilder attr) { }
         public FieldInfo AsFieldInfo() => _proxy;

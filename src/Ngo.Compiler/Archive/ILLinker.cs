@@ -46,10 +46,11 @@ namespace Ngo.Compiler.Archive
         private readonly HashSet<string> _currentArchiveTypes;
 
         private readonly List<(string fullTypeName, TypeBuilder typeBuilder,
-            List<(string name, FieldAttributes attributes, string typeName)> fields,
+            List<(string name, FieldAttributes attributes, string typeName, int goArrayLength)> fields,
             List<SerializedMethodInfo> methods, InterfaceMethodMapping[] interfaceMappings)> _typeRawData;
 
         private readonly List<string> _deferredClassTypes;
+        private readonly HashSet<string> _sourceCompiledTypes;
 
         private readonly Assembly _runtimeAssembly;
 
@@ -72,9 +73,10 @@ namespace Ngo.Compiler.Archive
             _typeInfos = new List<DeserializedTypeInfo>();
             _currentArchiveTypes = new HashSet<string>();
             _typeRawData = new List<(string, TypeBuilder,
-                List<(string, FieldAttributes, string)>,
+                List<(string, FieldAttributes, string, int)>,
                 List<SerializedMethodInfo>, InterfaceMethodMapping[])>();
             _deferredClassTypes = new List<string>();
+            _sourceCompiledTypes = new HashSet<string>();
             _runtimeAssembly = typeof(Ngo.Runtime.Slice<>).Assembly;
             _currentMethodGenericParameters = Type.EmptyTypes;
             _currentTypeGenericParameters = Type.EmptyTypes;
@@ -124,6 +126,16 @@ namespace Ngo.Compiler.Archive
 
                 if (string.IsNullOrEmpty(fullTypeName))
                 {
+                    SkipTypeData(metaReader);
+                    continue;
+                }
+
+                // Check if this type was already compiled from source.
+                // Skip DefineType to avoid creating a conflicting partial type.
+                if (_emitContext.LinkedTypes.TryGetValue(fullTypeName, out var existingLinkedType))
+                {
+                    _typeBuilders[fullTypeName] = existingLinkedType;
+                    _sourceCompiledTypes.Add(fullTypeName);
                     SkipTypeData(metaReader);
                     continue;
                 }
@@ -197,10 +209,14 @@ namespace Ngo.Compiler.Archive
                 }
 
                 int fieldCount = metaReader.ReadInt32();
-                var fields = new List<(string name, FieldAttributes attributes, string typeName)>(fieldCount);
+                var fields = new List<(string name, FieldAttributes attributes, string typeName, int goArrayLength)>(fieldCount);
                 for (int fieldIndex = 0; fieldIndex < fieldCount; fieldIndex++)
                 {
-                    fields.Add((metaReader.ReadString(), (FieldAttributes)metaReader.ReadInt32(), metaReader.ReadString()));
+                    var fName = metaReader.ReadString();
+                    var fAttr = (FieldAttributes)metaReader.ReadInt32();
+                    var fType = metaReader.ReadString();
+                    var fArrayLen = metaReader.ReadInt32();
+                    fields.Add((fName, fAttr, fType, fArrayLen));
                 }
 
                 int methodCount = metaReader.ReadInt32();
@@ -248,9 +264,33 @@ namespace Ngo.Compiler.Archive
             foreach (var (fullTypeName, typeBuilder, fields, methods, interfaceMappings) in _typeRawData)
             {
                 int blankFieldIndex = 0;
-                foreach (var (fieldName, fieldAttributes, fieldTypeName) in fields)
+                foreach (var (fieldName, fieldAttributes, fieldTypeName, goArrayLength) in fields)
                 {
-                    Type fieldType = ILSerializer.ResolveType(fieldTypeName, _typeBuilders, _genericParamTypes);
+                    Type fieldType;
+
+                    if (goArrayLength > 0 && fieldTypeName.Contains("GoArray_"))
+                    {
+                        var arrayTypeName = fieldTypeName.EndsWith("[]")
+                            ? fieldTypeName.Substring(0, fieldTypeName.Length - 2)
+                            : fieldTypeName;
+                        var elemTypeName = arrayTypeName.Replace("GoArray_", "").Replace($"_{goArrayLength}", "").Replace('_', '.');
+                        var elemType = ILSerializer.ResolveType(elemTypeName, _typeBuilders);
+                        fieldType = _emitContext.Mapper.GetOrCreateInlineArrayType(elemType, goArrayLength);
+                    }
+                    else
+                    {
+                        fieldType = ILSerializer.ResolveType(fieldTypeName, _typeBuilders, _genericParamTypes, _emitContext.InlineArrayTypes);
+
+                        if (fieldType.IsArray && goArrayLength > 0)
+                        {
+                            var elemType = fieldType.GetElementType()!;
+                            var inlineType = _emitContext.Mapper.GetOrCreateInlineArrayType(elemType, goArrayLength);
+                            if (!inlineType.IsArray)
+                            {
+                                fieldType = inlineType;
+                            }
+                        }
+                    }
 
                     var actualFieldName = fieldName;
                     if (fieldName == "_")
@@ -319,7 +359,7 @@ namespace Ngo.Compiler.Archive
                         Type returnType;
                         try
                         {
-                            returnType = ILSerializer.ResolveType(methodInfo.ReturnTypeName, _typeBuilders, _genericParamTypes);
+                            returnType = ILSerializer.ResolveType(methodInfo.ReturnTypeName, _typeBuilders, _genericParamTypes, _emitContext.InlineArrayTypes);
                         }
                         catch (InvalidOperationException ex)
                         {
@@ -332,7 +372,7 @@ namespace Ngo.Compiler.Archive
                         {
                             try
                             {
-                                paramTypes[paramIndex] = ILSerializer.ResolveType(methodInfo.ParamTypeNames[paramIndex], _typeBuilders, _genericParamTypes);
+                                paramTypes[paramIndex] = ILSerializer.ResolveType(methodInfo.ParamTypeNames[paramIndex], _typeBuilders, _genericParamTypes, _emitContext.InlineArrayTypes);
                             }
                             catch (InvalidOperationException ex)
                             {
@@ -409,7 +449,7 @@ namespace Ngo.Compiler.Archive
                     continue;
                 }
                 var dependencies = new HashSet<string>();
-                foreach (var (_, _, fieldTypeName) in fields)
+                foreach (var (_, _, fieldTypeName, _) in fields)
                 {
                     if (valueTypesToCreate.ContainsKey(fieldTypeName))
                     {
@@ -475,10 +515,33 @@ namespace Ngo.Compiler.Archive
                 {
                     var runtimeType = typeBuilder.CreateType()!;
                     RegisterLinkedType(runtimeType, typeBuilder);
+                    FinalizeInlineArrayTypes();
                 }
                 catch (TypeLoadException)
                 {
                     _deferredClassTypes.Add(fullName);
+                }
+            }
+        }
+
+        private void FinalizeInlineArrayTypes()
+        {
+            for (int index = _emitContext.PendingInlineArrayTypes.Count - 1; index >= 0; index--)
+            {
+                var (builder, length) = _emitContext.PendingInlineArrayTypes[index];
+                try
+                {
+                    var created = builder.CreateType()!;
+                    var elementField = created.GetField("_element0",
+                        System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                    if (elementField != null)
+                    {
+                        _emitContext.InlineArrayTypes[(elementField.FieldType, length)] = created;
+                    }
+                    _emitContext.PendingInlineArrayTypes.RemoveAt(index);
+                }
+                catch (TypeLoadException)
+                {
                 }
             }
         }
@@ -711,7 +774,7 @@ namespace Ngo.Compiler.Archive
                     {
                         continue;
                     }
-                    foreach (var (_, _, fieldTypeName) in fields)
+                    foreach (var (_, _, fieldTypeName, _) in fields)
                     {
                         if (_deferredClassTypes.Contains(fieldTypeName) && fieldTypeName != fullName)
                         {
@@ -801,9 +864,10 @@ namespace Ngo.Compiler.Archive
             int fieldCount = metaReader.ReadInt32();
             for (int fieldIndex = 0; fieldIndex < fieldCount; fieldIndex++)
             {
-                metaReader.ReadString();
-                metaReader.ReadInt32();
-                metaReader.ReadString();
+                metaReader.ReadString();  // fieldName
+                metaReader.ReadInt32();   // fieldAttributes
+                metaReader.ReadString();  // fieldTypeName
+                metaReader.ReadInt32();   // goArrayLength
             }
             int methodCount = metaReader.ReadInt32();
             for (int methodIndex = 0; methodIndex < methodCount; methodIndex++)
@@ -857,6 +921,8 @@ namespace Ngo.Compiler.Archive
         // IL replay
         // =====================================================================
 
+        private const byte TwoByteOpcodePrefix = 0xFE;
+
         private void ReplayIL(MethodBuilder methodBuilder, byte[] il, string[] localTypeNames,
             List<ILTokenEntry> tokenEntries, List<ExceptionHandlerData> exceptionHandlers,
             Dictionary<string, Type>? genericParams = null)
@@ -865,7 +931,7 @@ namespace Ngo.Compiler.Archive
 
             foreach (var localTypeName in localTypeNames)
             {
-                var localType = ILSerializer.ResolveType(localTypeName, _typeBuilders, genericParams);
+                var localType = ILSerializer.ResolveType(localTypeName, _typeBuilders, genericParams, _emitContext.InlineArrayTypes);
                 ilGenerator.DeclareLocal(localType);
             }
 
@@ -878,194 +944,232 @@ namespace Ngo.Compiler.Archive
             var labels = new Dictionary<int, Label>();
             PreScanBranchTargets(il, labels, ilGenerator);
 
-            var exceptionEvents = new Dictionary<int, List<ExceptionEventInfo>>();
+            var exceptionEvents = BuildExceptionEventMap(exceptionHandlers, il, genericParams);
             var skipOffsets = new HashSet<int>();
 
             int position = 0;
             while (position < il.Length)
             {
-                if (exceptionEvents.TryGetValue(position, out var events))
-                {
-                    foreach (var exceptionEvent in events)
-                    {
-                        switch (exceptionEvent.EventKind)
-                        {
-                            case ExceptionEventKind.EndException:
-                                ilGenerator.EndExceptionBlock();
-                                break;
-                            case ExceptionEventKind.BeginTry:
-                                ilGenerator.BeginExceptionBlock();
-                                break;
-                            case ExceptionEventKind.BeginCatch:
-                                ilGenerator.BeginCatchBlock(exceptionEvent.CatchType!);
-                                break;
-                        }
-                    }
-                }
-
                 if (labels.TryGetValue(position, out var targetLabel))
                 {
                     ilGenerator.MarkLabel(targetLabel);
                 }
 
+                FireExceptionEvents(ilGenerator, exceptionEvents, position);
+
                 if (skipOffsets.Contains(position))
                 {
-                    byte skipOpcode = il[position];
-                    position += 1 + ILSerializer.GetOperandSize(skipOpcode);
+                    position += CalculateInstructionSize(il, position);
                     continue;
                 }
 
-                byte opcode = il[position++];
-
-                if (opcode == 0xFE && position < il.Length)
+                byte firstByte = il[position++];
+                OpCode opCode;
+                if (firstByte == TwoByteOpcodePrefix && position < il.Length)
                 {
                     byte secondByte = il[position++];
-                    ReplayTwoByteOpcode(secondByte, il, ref position, ilGenerator, tokenMap, labels, genericParams);
-                    continue;
+                    opCode = ILSerializer.GetTwoByteOpCode(secondByte);
+                }
+                else
+                {
+                    opCode = ILSerializer.GetOpCode(firstByte);
                 }
 
-                if (ILSerializer.HasInlineToken(opcode) && position + 4 <= il.Length)
+                switch (opCode.OperandType)
                 {
-                    int tokenOffset = position;
-                    position += 4;
-
-                    if (opcode == OpCodes.Ldstr.Value)
+                    case OperandType.InlineNone:
                     {
-                        if (tokenMap.TryGetValue(tokenOffset, out var stringToken) && stringToken.Kind == ILTokenKind.String)
+                        ilGenerator.Emit(opCode);
+                        break;
+                    }
+                    case OperandType.ShortInlineBrTarget:
+                    {
+                        int branchOffset = (sbyte)il[position++];
+                        int branchTarget = position + branchOffset;
+                        ilGenerator.Emit(opCode, GetOrCreateLabel(labels, branchTarget, ilGenerator));
+                        break;
+                    }
+                    case OperandType.InlineBrTarget:
+                    {
+                        int branchOffset = BitConverter.ToInt32(il, position);
+                        position += 4;
+                        int branchTarget = position + branchOffset;
+                        ilGenerator.Emit(opCode, GetOrCreateLabel(labels, branchTarget, ilGenerator));
+                        break;
+                    }
+                    case OperandType.ShortInlineI:
+                    {
+                        if (opCode == OpCodes.Ldc_I4_S)
                         {
-                            ilGenerator.Emit(OpCodes.Ldstr, stringToken.StringValue!);
+                            ilGenerator.Emit(OpCodes.Ldc_I4_S, (sbyte)il[position++]);
                         }
                         else
                         {
-                            ilGenerator.Emit(OpCodes.Ldnull);
+                            ilGenerator.Emit(opCode, il[position++]);
                         }
-                        continue;
+                        break;
                     }
-
-                    var resolvedOpCode = ILSerializer.GetOpCode(opcode);
-                    if (tokenMap.TryGetValue(tokenOffset, out var token))
+                    case OperandType.InlineI:
                     {
-                        EmitTokenOpcode(ilGenerator, resolvedOpCode, token, genericParams);
-                    }
-                    continue;
-                }
-
-                if (ILSerializer.IsShortBranch(opcode))
-                {
-                    var offset = (sbyte)il[position++];
-                    var target = position + offset;
-                    var branchLabel = GetOrCreateLabel(labels, target, ilGenerator);
-                    ilGenerator.Emit(ILSerializer.GetOpCode(opcode), branchLabel);
-                    continue;
-                }
-
-                if (ILSerializer.IsLongBranch(opcode))
-                {
-                    var offset = BitConverter.ToInt32(il, position);
-                    position += 4;
-                    var target = position + offset;
-                    var branchLabel = GetOrCreateLabel(labels, target, ilGenerator);
-                    ilGenerator.Emit(ILSerializer.GetOpCode(opcode), branchLabel);
-                    continue;
-                }
-
-                if (opcode == OpCodes.Switch.Value)
-                {
-                    int count = BitConverter.ToInt32(il, position);
-                    position += 4;
-                    int baseOffset = position + count * 4;
-                    var switchLabels = new Label[count];
-                    for (int switchIndex = 0; switchIndex < count; switchIndex++)
-                    {
-                        int target = baseOffset + BitConverter.ToInt32(il, position);
+                        ilGenerator.Emit(opCode, BitConverter.ToInt32(il, position));
                         position += 4;
-                        switchLabels[switchIndex] = GetOrCreateLabel(labels, target, ilGenerator);
+                        break;
                     }
-                    ilGenerator.Emit(OpCodes.Switch, switchLabels);
-                    continue;
-                }
-
-                if (opcode == OpCodes.Ldarg_S.Value || opcode == OpCodes.Ldarga_S.Value || opcode == OpCodes.Starg_S.Value
-                    || opcode == OpCodes.Ldloc_S.Value || opcode == OpCodes.Ldloca_S.Value || opcode == OpCodes.Stloc_S.Value)
-                {
-                    ilGenerator.Emit(ILSerializer.GetOpCode(opcode), il[position++]);
-                    continue;
-                }
-
-                if (opcode == OpCodes.Ldc_I4_S.Value)
-                {
-                    ilGenerator.Emit(OpCodes.Ldc_I4_S, (sbyte)il[position++]);
-                    continue;
-                }
-
-                if (opcode == OpCodes.Ldc_I4.Value)
-                {
-                    ilGenerator.Emit(OpCodes.Ldc_I4, BitConverter.ToInt32(il, position));
-                    position += 4;
-                    continue;
-                }
-
-                if (opcode == OpCodes.Ldc_I8.Value)
-                {
-                    ilGenerator.Emit(OpCodes.Ldc_I8, BitConverter.ToInt64(il, position));
-                    position += 8;
-                    continue;
-                }
-
-                if (opcode == OpCodes.Ldc_R4.Value)
-                {
-                    ilGenerator.Emit(OpCodes.Ldc_R4, BitConverter.ToSingle(il, position));
-                    position += 4;
-                    continue;
-                }
-
-                if (opcode == OpCodes.Ldc_R8.Value)
-                {
-                    ilGenerator.Emit(OpCodes.Ldc_R8, BitConverter.ToDouble(il, position));
-                    position += 8;
-                    continue;
-                }
-
-                if (opcode == OpCodes.Leave_S.Value)
-                {
-                    var offset = (sbyte)il[position++];
-                    var target = position + offset;
-                    var branchLabel = GetOrCreateLabel(labels, target, ilGenerator);
-                    ilGenerator.Emit(OpCodes.Leave_S, branchLabel);
-                    continue;
-                }
-
-                if (opcode == OpCodes.Leave.Value)
-                {
-                    var offset = BitConverter.ToInt32(il, position);
-                    position += 4;
-                    var target = position + offset;
-                    var branchLabel = GetOrCreateLabel(labels, target, ilGenerator);
-                    ilGenerator.Emit(OpCodes.Leave, branchLabel);
-                    continue;
-                }
-
-                ilGenerator.Emit(ILSerializer.GetOpCode(opcode));
-            }
-
-            if (exceptionEvents.TryGetValue(position, out var endEvents))
-            {
-                foreach (var exceptionEvent in endEvents)
-                {
-                    switch (exceptionEvent.EventKind)
+                    case OperandType.InlineI8:
                     {
-                        case ExceptionEventKind.EndException:
-                            ilGenerator.EndExceptionBlock();
-                            break;
-                        case ExceptionEventKind.BeginTry:
-                            ilGenerator.BeginExceptionBlock();
-                            break;
-                        case ExceptionEventKind.BeginCatch:
-                            ilGenerator.BeginCatchBlock(exceptionEvent.CatchType!);
-                            break;
+                        ilGenerator.Emit(opCode, BitConverter.ToInt64(il, position));
+                        position += 8;
+                        break;
+                    }
+                    case OperandType.ShortInlineR:
+                    {
+                        ilGenerator.Emit(opCode, BitConverter.ToSingle(il, position));
+                        position += 4;
+                        break;
+                    }
+                    case OperandType.InlineR:
+                    {
+                        ilGenerator.Emit(opCode, BitConverter.ToDouble(il, position));
+                        position += 8;
+                        break;
+                    }
+                    case OperandType.ShortInlineVar:
+                    {
+                        ilGenerator.Emit(opCode, il[position++]);
+                        break;
+                    }
+                    case OperandType.InlineVar:
+                    {
+                        ilGenerator.Emit(opCode, BitConverter.ToInt16(il, position));
+                        position += 2;
+                        break;
+                    }
+                    case OperandType.InlineMethod:
+                    case OperandType.InlineField:
+                    case OperandType.InlineType:
+                    case OperandType.InlineString:
+                    case OperandType.InlineTok:
+                    case OperandType.InlineSig:
+                    {
+                        int tokenOffset = position;
+                        position += 4;
+                        if (tokenMap.TryGetValue(tokenOffset, out var token))
+                        {
+                            EmitTokenOpcode(ilGenerator, opCode, token, genericParams);
+                        }
+                        break;
+                    }
+                    case OperandType.InlineSwitch:
+                    {
+                        int caseCount = BitConverter.ToInt32(il, position);
+                        position += 4;
+                        int switchBaseOffset = position + caseCount * 4;
+                        var switchLabels = new Label[caseCount];
+                        for (int caseIndex = 0; caseIndex < caseCount; caseIndex++)
+                        {
+                            int caseTarget = switchBaseOffset + BitConverter.ToInt32(il, position);
+                            position += 4;
+                            switchLabels[caseIndex] = GetOrCreateLabel(labels, caseTarget, ilGenerator);
+                        }
+                        ilGenerator.Emit(OpCodes.Switch, switchLabels);
+                        break;
+                    }
+                    default:
+                    {
+                        throw new InvalidOperationException(
+                            $"ILLinker: unsupported operand type {opCode.OperandType} for opcode {opCode.Name}");
                     }
                 }
             }
+
+            FireExceptionEvents(ilGenerator, exceptionEvents, position);
+        }
+
+        private void FireExceptionEvents(ILGenerator ilGenerator,
+            Dictionary<int, List<ExceptionEventInfo>> exceptionEvents, int offset)
+        {
+            if (!exceptionEvents.TryGetValue(offset, out var events))
+            {
+                return;
+            }
+
+            // EndException must fire before BeginTry/BeginCatch at the same offset
+            events.Sort((a, b) => GetEventPriority(a.EventKind).CompareTo(GetEventPriority(b.EventKind)));
+
+            foreach (var exceptionEvent in events)
+            {
+                switch (exceptionEvent.EventKind)
+                {
+                    case ExceptionEventKind.EndException:
+                    {
+                        ilGenerator.EndExceptionBlock();
+                        break;
+                    }
+                    case ExceptionEventKind.BeginTry:
+                    {
+                        ilGenerator.BeginExceptionBlock();
+                        break;
+                    }
+                    case ExceptionEventKind.BeginCatch:
+                    {
+                        ilGenerator.BeginCatchBlock(exceptionEvent.CatchType!);
+                        break;
+                    }
+                }
+            }
+        }
+
+        private static int GetEventPriority(ExceptionEventKind kind)
+        {
+            return kind switch
+            {
+                ExceptionEventKind.EndException => 0,
+                ExceptionEventKind.BeginTry => 1,
+                ExceptionEventKind.BeginCatch => 2,
+                _ => 3,
+            };
+        }
+
+
+        private static int CalculateInstructionSize(byte[] il, int offset)
+        {
+            byte firstByte = il[offset];
+            if (firstByte == TwoByteOpcodePrefix && offset + 1 < il.Length)
+            {
+                byte secondByte = il[offset + 1];
+                var opCode = ILSerializer.GetTwoByteOpCode(secondByte);
+                return 2 + GetOperandSizeFromType(opCode.OperandType, il, offset + 2);
+            }
+            else
+            {
+                var opCode = ILSerializer.GetOpCode(firstByte);
+                return 1 + GetOperandSizeFromType(opCode.OperandType, il, offset + 1);
+            }
+        }
+
+        private static int GetOperandSizeFromType(OperandType operandType, byte[] il, int operandStart)
+        {
+            return operandType switch
+            {
+                OperandType.InlineNone => 0,
+                OperandType.ShortInlineBrTarget => 1,
+                OperandType.ShortInlineI => 1,
+                OperandType.ShortInlineVar => 1,
+                OperandType.InlineVar => 2,
+                OperandType.InlineBrTarget => 4,
+                OperandType.InlineI => 4,
+                OperandType.InlineMethod => 4,
+                OperandType.InlineField => 4,
+                OperandType.InlineType => 4,
+                OperandType.InlineString => 4,
+                OperandType.InlineTok => 4,
+                OperandType.InlineSig => 4,
+                OperandType.ShortInlineR => 4,
+                OperandType.InlineI8 => 8,
+                OperandType.InlineR => 8,
+                OperandType.InlineSwitch => 4 + BitConverter.ToInt32(il, operandStart) * 4,
+                _ => 0
+            };
         }
 
         private enum ExceptionEventKind
@@ -1116,7 +1220,7 @@ namespace Ngo.Compiler.Archive
                     Type? catchType = null;
                     if (handler.Kind == ExceptionRegionKind.Catch && !string.IsNullOrEmpty(handler.CatchTypeName))
                     {
-                        catchType = ILSerializer.ResolveType(handler.CatchTypeName, _typeBuilders, genericParams);
+                        catchType = ILSerializer.ResolveType(handler.CatchTypeName, _typeBuilders, genericParams, _emitContext.InlineArrayTypes);
                     }
 
                     AddExceptionEvent(events, handler.HandlerOffset, new ExceptionEventInfo
@@ -1205,61 +1309,6 @@ namespace Ngo.Compiler.Archive
             return -1;
         }
 
-        private void ReplayTwoByteOpcode(byte secondByte, byte[] il, ref int position, ILGenerator ilGenerator,
-            Dictionary<int, ILTokenEntry> tokenMap,
-            Dictionary<int, Label> labels,
-            Dictionary<string, Type>? genericParams = null)
-        {
-            switch (secondByte)
-            {
-                case 0x15:
-                case 0x16:
-                case 0x1C:
-                {
-                    var resolvedOpCode = secondByte == 0x15 ? OpCodes.Initobj : secondByte == 0x16 ? OpCodes.Constrained : OpCodes.Sizeof;
-                    if (position + 4 <= il.Length && tokenMap.TryGetValue(position, out var token))
-                    {
-                        var type = ResolveTokenAsType(token, genericParams);
-                        ilGenerator.Emit(resolvedOpCode, type);
-                    }
-                    position += 4;
-                    break;
-                }
-                case 0x06:
-                case 0x07:
-                {
-                    var resolvedOpCode = secondByte == 0x06 ? OpCodes.Ldftn : OpCodes.Ldvirtftn;
-                    if (position + 4 <= il.Length && tokenMap.TryGetValue(position, out var token))
-                    {
-                        var method = ResolveTokenAsMethod(token, genericParams);
-                        if (method is MethodInfo methodInfo)
-                        {
-                            ilGenerator.Emit(resolvedOpCode, methodInfo);
-                        }
-                    }
-                    position += 4;
-                    break;
-                }
-                case 0x09: case 0x0A: case 0x0B:
-                case 0x0C: case 0x0D: case 0x0E:
-                {
-                    ilGenerator.Emit(ILSerializer.GetTwoByteOpCode(secondByte), BitConverter.ToInt16(il, position));
-                    position += 2;
-                    break;
-                }
-                case 0x12:
-                {
-                    ilGenerator.Emit(OpCodes.Unaligned, il[position++]);
-                    break;
-                }
-                default:
-                {
-                    ilGenerator.Emit(ILSerializer.GetTwoByteOpCode(secondByte));
-                    break;
-                }
-            }
-        }
-
         private void EmitTokenOpcode(ILGenerator ilGenerator, OpCode opCode, ILTokenEntry token,
             Dictionary<string, Type>? genericParams = null)
         {
@@ -1276,8 +1325,11 @@ namespace Ngo.Compiler.Archive
                     var method = ResolveMethodToken(token.MethodToken!);
                     if (method == null)
                     {
+                        var methodDeclName = token.MethodToken!.DeclaringType != null
+                            ? GetTypeNameFromToken(token.MethodToken.DeclaringType)
+                            : "?";
                         throw new InvalidOperationException(
-                            $"ILLinker: unresolved method token '{token.MethodToken!.DeclaringType}::{token.MethodToken.MethodName}'");
+                            $"ILLinker: unresolved method token '{methodDeclName}::{token.MethodToken.MethodName}' (kind={token.MethodToken.Kind})");
                     }
                     if (method is ConstructorInfo constructor)
                     {
@@ -1294,8 +1346,11 @@ namespace Ngo.Compiler.Archive
                     var field = ResolveFieldToken(token.FieldToken!);
                     if (field == null)
                     {
+                        var fieldDeclName = token.FieldToken!.DeclaringType != null
+                            ? GetTypeNameFromToken(token.FieldToken.DeclaringType)
+                            : "?";
                         throw new InvalidOperationException(
-                            $"ILLinker: unresolved field token '{token.FieldToken!.DeclaringType}::{token.FieldToken.FieldName}'");
+                            $"ILLinker: unresolved field token '{fieldDeclName}::{token.FieldToken.FieldName}' (kind={token.FieldToken.Kind})");
                     }
                     ilGenerator.Emit(opCode, field);
                     break;
@@ -1306,26 +1361,6 @@ namespace Ngo.Compiler.Archive
                     break;
                 }
             }
-        }
-
-        private Type ResolveTokenAsType(ILTokenEntry token, Dictionary<string, Type>? genericParams)
-        {
-            if (token.Kind == ILTokenKind.Type)
-            {
-                return ResolveTypeToken(token.TypeToken!);
-            }
-            throw new InvalidOperationException(
-                $"ILLinker: expected type token but got {token.Kind}");
-        }
-
-        private MethodBase? ResolveTokenAsMethod(ILTokenEntry token, Dictionary<string, Type>? genericParams)
-        {
-            if (token.Kind == ILTokenKind.Method)
-            {
-                return ResolveMethodToken(token.MethodToken!);
-            }
-            throw new InvalidOperationException(
-                $"ILLinker: expected method token but got {token.Kind}");
         }
 
         // =====================================================================
@@ -1340,6 +1375,17 @@ namespace Ngo.Compiler.Archive
                 {
                     if (_typeBuilders.TryGetValue(token.TypeName, out var typeBuilder))
                     {
+                        // Source-compiled types were skipped during archive linking.
+                        // Use the runtime type from the module so the CLR can load them.
+                        if (_sourceCompiledTypes.Contains(token.TypeName)
+                            && _emitContext.Module is Emit.Builder.LiveModuleBuilder liveMod)
+                        {
+                            var runtimeType = liveMod.Inner.GetType(token.TypeName);
+                            if (runtimeType != null)
+                            {
+                                return runtimeType;
+                            }
+                        }
                         return typeBuilder;
                     }
                     throw new InvalidOperationException(
@@ -1497,6 +1543,18 @@ namespace Ngo.Compiler.Archive
                 }
             }
 
+            // Try InlineArray types from the mapper's cache
+            if (typeName.Contains("GoArray_"))
+            {
+                foreach (var kvp in _emitContext.InlineArrayTypes)
+                {
+                    if (kvp.Value.Name == typeName || kvp.Value.FullName == typeName)
+                    {
+                        return kvp.Value;
+                    }
+                }
+            }
+
             throw new InvalidOperationException(
                 $"ILLinker: PackageTypeRef '{packageImportPath}::{typeName}' could not be resolved");
         }
@@ -1542,6 +1600,10 @@ namespace Ngo.Compiler.Archive
                 case MethodTokenKind.MethodSpec:
                 {
                     var genericDefinition = ResolveMethodToken(token.GenericDefinition!);
+                    if (genericDefinition == null)
+                    {
+                        genericDefinition = FindGenericMethodDefinition(token.GenericDefinition!);
+                    }
                     if (genericDefinition == null)
                     {
                         throw new InvalidOperationException(
@@ -1606,6 +1668,59 @@ namespace Ngo.Compiler.Archive
                     if (keyTypeName == declaringTypeName || keyTypeName.EndsWith("." + declaringTypeName))
                     {
                         return builder;
+                    }
+                }
+            }
+
+            // Fallback: source-compiled type — resolve via runtime type from the module
+            if (_sourceCompiledTypes.Contains(declaringTypeName)
+                && _emitContext.Module is Emit.Builder.LiveModuleBuilder resolverMod)
+            {
+                var runtimeType = resolverMod.Inner.GetType(declaringTypeName);
+                if (runtimeType != null)
+                {
+                    if (methodName == ".ctor")
+                    {
+                        var ctor = runtimeType.GetConstructor(
+                            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
+                            null, Type.EmptyTypes, null);
+                        if (ctor != null)
+                        {
+                            return ctor;
+                        }
+                    }
+                    var method = runtimeType.GetMethod(methodName,
+                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance);
+                    if (method != null)
+                    {
+                        return method;
+                    }
+                }
+            }
+
+            // Fallback: source-compiled methods stored in LinkedMethods
+            foreach (var (key, builder) in _emitContext.LinkedMethods)
+            {
+                if (key == methodName || key.EndsWith("." + methodName))
+                {
+                    if (builder.DeclaringType?.Name == declaringTypeName
+                        || (builder.DeclaringType?.Name != null && declaringTypeName.EndsWith("." + builder.DeclaringType.Name)))
+                    {
+                        return builder;
+                    }
+                }
+            }
+
+            // Fallback: search CachedMethods for source-compiled dependency methods
+            foreach (var (symbol, methodInfo) in _emitContext.CachedMethods)
+            {
+                if (symbol.Name == methodName)
+                {
+                    var declName = methodInfo.DeclaringType?.Name;
+                    if (declName == declaringTypeName
+                        || (declName != null && declaringTypeName.EndsWith("." + declName)))
+                    {
+                        return methodInfo;
                     }
                 }
             }
@@ -1780,6 +1895,28 @@ namespace Ngo.Compiler.Archive
             return null;
         }
 
+        private MethodBase? FindGenericMethodDefinition(MethodToken token)
+        {
+            if (token.DeclaringType == null)
+            {
+                return null;
+            }
+            var declaringType = ResolveTypeToken(token.DeclaringType);
+            if (declaringType == null)
+            {
+                return null;
+            }
+            foreach (var method in declaringType.GetMethods(
+                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance))
+            {
+                if (method.Name == token.MethodName && method.IsGenericMethodDefinition)
+                {
+                    return method;
+                }
+            }
+            return null;
+        }
+
         private MethodBase? FindMethodOnRuntimeType(Type declaringType, MethodToken token)
         {
             var resolvedParamTypes = ResolveMethodTokenParameterTypes(token);
@@ -1798,6 +1935,29 @@ namespace Ngo.Compiler.Archive
                 if (MatchesParameterTypes(method, resolvedParamTypes))
                 {
                     return method;
+                }
+            }
+
+            if (declaringType.IsInterface)
+            {
+                foreach (var parentInterface in declaringType.GetInterfaces())
+                {
+                    foreach (var method in parentInterface.GetMethods(
+                        BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance))
+                    {
+                        if (method.Name != token.MethodName)
+                        {
+                            continue;
+                        }
+                        if (method.IsGenericMethodDefinition)
+                        {
+                            continue;
+                        }
+                        if (MatchesParameterTypes(method, resolvedParamTypes))
+                        {
+                            return method;
+                        }
+                    }
                 }
             }
 
@@ -1823,7 +1983,10 @@ namespace Ngo.Compiler.Archive
             }
             for (int index = 0; index < methodParameters.Length; index++)
             {
-                if (methodParameters[index].ParameterType != resolvedParamTypes[index])
+                var candidateType = methodParameters[index].ParameterType;
+                var expectedType = resolvedParamTypes[index];
+                if (candidateType != expectedType
+                    && NgoWriter.GetTypeNameStatic(candidateType) != NgoWriter.GetTypeNameStatic(expectedType))
                 {
                     return false;
                 }
@@ -1878,6 +2041,22 @@ namespace Ngo.Compiler.Archive
                 }
             }
 
+            // Fallback: the type was compiled from source. Find the field
+            // via the StructFields dictionary which tracks live-emitted fields.
+            foreach (var kvp in _emitContext.StructFields)
+            {
+                if (kvp.Key.Name == fieldName)
+                {
+                    var fieldInfo = kvp.Value.AsFieldInfo();
+                    var declaringName = fieldInfo.DeclaringType?.Name;
+                    if (declaringName == declaringTypeName
+                        || (declaringName != null && declaringTypeName.EndsWith("." + declaringName)))
+                    {
+                        return fieldInfo;
+                    }
+                }
+            }
+
             return null;
         }
 
@@ -1928,62 +2107,91 @@ namespace Ngo.Compiler.Archive
             int position = 0;
             while (position < il.Length)
             {
-                byte opcode = il[position++];
-
-                if (opcode == 0xFE && position < il.Length)
+                byte firstByte = il[position++];
+                OpCode opCode;
+                if (firstByte == TwoByteOpcodePrefix && position < il.Length)
                 {
                     byte secondByte = il[position++];
-                    position += ILSerializer.GetTwoByteOperandSize(secondByte);
-                    continue;
+                    opCode = ILSerializer.GetTwoByteOpCode(secondByte);
+                }
+                else
+                {
+                    opCode = ILSerializer.GetOpCode(firstByte);
                 }
 
-                if (ILSerializer.HasInlineToken(opcode))
+                switch (opCode.OperandType)
                 {
-                    position += 4;
-                    continue;
-                }
-
-                if (ILSerializer.IsShortBranch(opcode))
-                {
-                    var offset = (sbyte)il[position++];
-                    var target = position + offset;
-                    if (!labels.ContainsKey(target))
+                    case OperandType.ShortInlineBrTarget:
                     {
-                        labels[target] = ilGenerator.DefineLabel();
-                    }
-                    continue;
-                }
-
-                if (ILSerializer.IsLongBranch(opcode))
-                {
-                    var offset = BitConverter.ToInt32(il, position);
-                    position += 4;
-                    var target = position + offset;
-                    if (!labels.ContainsKey(target))
-                    {
-                        labels[target] = ilGenerator.DefineLabel();
-                    }
-                    continue;
-                }
-
-                if (opcode == OpCodes.Switch.Value)
-                {
-                    int count = BitConverter.ToInt32(il, position);
-                    position += 4;
-                    int baseOffset = position + count * 4;
-                    for (int switchIndex = 0; switchIndex < count; switchIndex++)
-                    {
-                        int target = baseOffset + BitConverter.ToInt32(il, position);
-                        position += 4;
-                        if (!labels.ContainsKey(target))
+                        int branchOffset = (sbyte)il[position++];
+                        int branchTarget = position + branchOffset;
+                        if (!labels.ContainsKey(branchTarget))
                         {
-                            labels[target] = ilGenerator.DefineLabel();
+                            labels[branchTarget] = ilGenerator.DefineLabel();
                         }
+                        break;
                     }
-                    continue;
+                    case OperandType.InlineBrTarget:
+                    {
+                        int branchOffset = BitConverter.ToInt32(il, position);
+                        position += 4;
+                        int branchTarget = position + branchOffset;
+                        if (!labels.ContainsKey(branchTarget))
+                        {
+                            labels[branchTarget] = ilGenerator.DefineLabel();
+                        }
+                        break;
+                    }
+                    case OperandType.InlineSwitch:
+                    {
+                        int caseCount = BitConverter.ToInt32(il, position);
+                        position += 4;
+                        int switchBaseOffset = position + caseCount * 4;
+                        for (int caseIndex = 0; caseIndex < caseCount; caseIndex++)
+                        {
+                            int caseTarget = switchBaseOffset + BitConverter.ToInt32(il, position);
+                            position += 4;
+                            if (!labels.ContainsKey(caseTarget))
+                            {
+                                labels[caseTarget] = ilGenerator.DefineLabel();
+                            }
+                        }
+                        break;
+                    }
+                    case OperandType.InlineNone:
+                    {
+                        break;
+                    }
+                    case OperandType.ShortInlineVar:
+                    case OperandType.ShortInlineI:
+                    {
+                        position += 1;
+                        break;
+                    }
+                    case OperandType.InlineVar:
+                    {
+                        position += 2;
+                        break;
+                    }
+                    case OperandType.InlineI:
+                    case OperandType.InlineMethod:
+                    case OperandType.InlineField:
+                    case OperandType.InlineType:
+                    case OperandType.InlineString:
+                    case OperandType.InlineTok:
+                    case OperandType.InlineSig:
+                    case OperandType.ShortInlineR:
+                    {
+                        position += 4;
+                        break;
+                    }
+                    case OperandType.InlineI8:
+                    case OperandType.InlineR:
+                    {
+                        position += 8;
+                        break;
+                    }
                 }
-
-                position += ILSerializer.GetOperandSize(opcode);
             }
         }
 

@@ -82,6 +82,7 @@ namespace Ngo.Compiler.Emit.Builder
 
         private Type[]? _genericArgs;
         private bool _isGenericDef;
+        private NgoProxyMethodInfo? _genericDefinition;
 
         internal void SetIsGenericDefinition()
         {
@@ -90,9 +91,24 @@ namespace Ngo.Compiler.Emit.Builder
 
         public override MethodInfo MakeGenericMethod(params Type[] typeArguments)
         {
+            var definition = _isGenericDef ? this : _genericDefinition ?? this;
             var instantiated = new NgoProxyMethodInfo(_declaringType, _name, _parameterTypes, _returnType);
             instantiated._genericArgs = typeArguments;
+            instantiated._genericDefinition = definition;
             return instantiated;
+        }
+
+        public override MethodInfo GetGenericMethodDefinition()
+        {
+            if (_isGenericDef)
+            {
+                return this;
+            }
+            if (_genericDefinition != null)
+            {
+                return _genericDefinition;
+            }
+            return base.GetGenericMethodDefinition();
         }
 
         public override Type[] GetGenericArguments()

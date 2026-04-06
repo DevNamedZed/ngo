@@ -3758,6 +3758,275 @@ func main() {
     }
 
     [TestMethod]
+    public void Regexp_syntax_parse_only()
+    {
+        var output = Run(@"
+package main
+import ""regexp/syntax""
+func main() {
+    re, err := syntax.Parse(""[0-9]+"", syntax.Perl)
+    if err != nil {
+        println(""error"")
+        return
+    }
+    println(""ok"", re.Op)
+}
+");
+        Assert.IsTrue(output.Contains("ok"), $"Got: {output}");
+    }
+
+    [TestMethod]
+    public void Regexp_compile_struct_literal()
+    {
+        var output = Run(@"
+package main
+import (
+    ""regexp/syntax""
+)
+func main() {
+    re, _ := syntax.Parse(""abc"", syntax.Perl)
+    prog, _ := syntax.Compile(re)
+    println(prog.NumCap)
+    // Try creating a struct that mimics regexp.Regexp
+    type SimpleRegexp struct {
+        expr string
+        prog *syntax.Prog
+    }
+    r := &SimpleRegexp{expr: ""abc"", prog: prog}
+    println(r.expr)
+}
+");
+        Assert.IsTrue(output.Contains("abc"), $"Got: {output}");
+    }
+
+    [TestMethod]
+    public void Regexp_prog_methods()
+    {
+        var output = Run(@"
+package main
+import ""regexp/syntax""
+func main() {
+    re, _ := syntax.Parse(""abc"", syntax.Perl)
+    prog, _ := syntax.Compile(re)
+    prefix, complete := prog.Prefix()
+    println(prefix, complete)
+    cond := prog.StartCond()
+    println(cond)
+}
+");
+        Assert.IsTrue(output.Length > 0, $"Got empty output");
+    }
+
+    [TestMethod]
+    public void Regexp_compile_substeps()
+    {
+        // Test the individual steps of regexp.compile to find which one fails
+        var output = Run(@"
+package main
+import (
+    ""regexp/syntax""
+)
+func main() {
+    re, _ := syntax.Parse(""[0-9]+"", syntax.Perl)
+    maxCap := re.MaxCap()
+    println(""maxCap:"", maxCap)
+    capNames := re.CapNames()
+    println(""capNames:"", len(capNames))
+    re = re.Simplify()
+    println(""simplified"")
+    prog, _ := syntax.Compile(re)
+    println(""compiled, NumCap:"", prog.NumCap)
+    matchcap := prog.NumCap
+    if matchcap < 2 { matchcap = 2 }
+    println(""matchcap:"", matchcap)
+    cond := prog.StartCond()
+    println(""cond:"", cond)
+    prefix, complete := prog.Prefix()
+    println(""prefix:"", prefix, complete)
+}
+");
+        Assert.IsTrue(output.Contains("compiled"), $"Got: {output}");
+    }
+
+    [TestMethod]
+    public void Regexp_compile_with_struct()
+    {
+        // Replicate what regexp.compile does
+        var output = Run(@"
+package main
+import (
+    ""regexp/syntax""
+    ""regexp""
+)
+func main() {
+    // Just try to call Compile — the real compile function
+    re, err := regexp.Compile(""abc"")
+    if err != nil {
+        println(""err:"", err.Error())
+    } else {
+        println(""ok:"", re.String())
+    }
+}
+");
+        Assert.IsTrue(output.Contains("ok"), $"Got: {output}");
+    }
+
+    [TestMethod]
+    public void Multi_return_to_struct_fields()
+    {
+        var output = Run(@"
+package main
+
+type Pair struct {
+    A string
+    B bool
+}
+
+func getPair() (string, bool) {
+    return ""hello"", true
+}
+
+func main() {
+    p := &Pair{}
+    p.A, p.B = getPair()
+    println(p.A, p.B)
+}
+");
+        Assert.IsTrue(output.Contains("hello true"), $"Got: {output}");
+    }
+
+    [TestMethod]
+    public void Regexp_compile_minimal_repro()
+    {
+        // Minimal reproduction: struct with many fields + method calls from dependency
+        var output = Run(@"
+package main
+import (
+    ""regexp/syntax""
+    ""unicode/utf8""
+)
+type TestRegexp struct {
+    expr        string
+    prog        *syntax.Prog
+    numSubexp   int
+    subexpNames []string
+    prefix      string
+    prefixBytes []byte
+    prefixRune  rune
+    prefixEnd   uint32
+    matchcap    int
+    cond        syntax.EmptyOp
+    minInputLen int
+    longest     bool
+}
+func main() {
+    re, _ := syntax.Parse(""abc"", syntax.Perl)
+    prog, _ := syntax.Compile(re)
+    matchcap := prog.NumCap
+    if matchcap < 2 { matchcap = 2 }
+    r := &TestRegexp{
+        expr:      ""abc"",
+        prog:      prog,
+        numSubexp: re.MaxCap(),
+        cond:      prog.StartCond(),
+        longest:   false,
+        matchcap:  matchcap,
+    }
+    r.prefix, _ = prog.Prefix()
+    if r.prefix != """" {
+        r.prefixBytes = []byte(r.prefix)
+        r.prefixRune, _ = utf8.DecodeRuneInString(r.prefix)
+    }
+    println(""ok"", r.expr)
+}
+");
+        Assert.IsTrue(output.Contains("ok"), $"Got: {output}");
+    }
+
+    [TestMethod]
+    public void Package_level_array_index()
+    {
+        var output = Run(@"
+package main
+var sizes = [5]int{128, 512, 2048, 16384, 0}
+func main() {
+    i := 0
+    for sizes[i] != 0 {
+        println(sizes[i])
+        i++
+    }
+    println(""done"")
+}
+");
+        Assert.IsTrue(output.Contains("128"), $"Got: {output}");
+    }
+
+    [TestMethod]
+    public void Regexp_compileOnePass_call()
+    {
+        // Test calling an internal regexp function that uses named returns
+        var output = Run(@"
+package main
+import (
+    ""regexp/syntax""
+    ""regexp""
+)
+func main() {
+    re, _ := syntax.Parse(""abc"", syntax.Perl)
+    prog, _ := syntax.Compile(re)
+    _ = prog
+    // regexp.Compile internally calls compileOnePass — test that path
+    r, _ := regexp.Compile(""abc"")
+    println(r != nil)
+}
+");
+        Assert.IsTrue(output.Length > 0, $"Got empty output");
+    }
+
+    [TestMethod]
+    public void Regexp_compile_call()
+    {
+        var output = Run(@"
+package main
+import ""regexp""
+func main() {
+    re, err := regexp.Compile(""[0-9]+"")
+    if err != nil {
+        println(""error:"", err.Error())
+    } else {
+        println(""compiled ok"")
+    }
+    println(""calling MatchString"")
+    println(re.MatchString(""abc123""))
+}
+");
+        Assert.IsTrue(output.Contains("true"), $"Got: {output}");
+    }
+
+    [TestMethod]
+    public void Regexp_syntax_compile_only()
+    {
+        var output = Run(@"
+package main
+import ""regexp/syntax""
+func main() {
+    re, err := syntax.Parse(""abc"", syntax.Perl)
+    if err != nil {
+        println(""parse error"")
+        return
+    }
+    prog, err := syntax.Compile(re)
+    if err != nil {
+        println(""compile error"")
+        return
+    }
+    println(""ok"", prog.NumCap)
+}
+");
+        Assert.IsTrue(output.Contains("ok"), $"Got: {output}");
+    }
+
+    [TestMethod]
     public void Regexp_find_string()
     {
         var output = Run(@"

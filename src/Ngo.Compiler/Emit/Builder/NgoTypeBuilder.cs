@@ -95,6 +95,7 @@ namespace Ngo.Compiler.Emit.Builder
 
         public Type AsType() => _proxyType;
 
+        public bool IsCreated => true;
         public Type CreateType() => _proxyType;
 
         private int _blankFieldIndex;

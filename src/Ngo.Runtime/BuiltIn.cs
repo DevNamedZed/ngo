@@ -17,6 +17,8 @@
 // -----------------------------------------------------------------------
 
 using System;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Text;
 
 namespace Ngo.Runtime
@@ -138,6 +140,37 @@ namespace Ngo.Runtime
             if (field != null)
                 return field.GetValue(value);
             return value;
+        }
+
+        public static ref TElement InlineArrayElementRef<TBuffer, TElement>(ref TBuffer buffer, int index)
+            where TBuffer : struct
+        {
+            return ref System.Runtime.CompilerServices.Unsafe.Add(
+                ref System.Runtime.CompilerServices.Unsafe.As<TBuffer, TElement>(ref buffer), index);
+        }
+
+        public static void InlineArrayCopyFrom<TBuffer, TElement>(ref TBuffer buffer, TElement[] source, int count)
+            where TBuffer : struct
+        {
+            ref var first = ref System.Runtime.CompilerServices.Unsafe.As<TBuffer, TElement>(ref buffer);
+            for (int i = 0; i < count; i++)
+            {
+                System.Runtime.CompilerServices.Unsafe.Add(ref first, i) = source[i];
+            }
+        }
+
+        public static void InlineArraySet<TBuffer, TElement>(ref TBuffer buffer, int index, TElement value)
+            where TBuffer : struct
+        {
+            System.Runtime.CompilerServices.Unsafe.Add(
+                ref System.Runtime.CompilerServices.Unsafe.As<TBuffer, TElement>(ref buffer), index) = value;
+        }
+
+        public static Span<TElement> InlineArrayAsSpan<TBuffer, TElement>(ref TBuffer buffer, int length)
+            where TBuffer : struct
+        {
+            return MemoryMarshal.CreateSpan(
+                ref System.Runtime.CompilerServices.Unsafe.As<TBuffer, TElement>(ref buffer), length);
         }
     }
 }

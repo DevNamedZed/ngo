@@ -250,8 +250,14 @@ namespace Ngo.Compiler.Archive
         {
             if (_tryStartOffsets.Count > 0)
             {
-                _currentTryStart = _tryStartOffsets.Peek();
-                _currentTryLength = (int)_code.Position - _currentTryStart;
+                int tryStart = _tryStartOffsets.Peek();
+                bool isFirstHandler = _currentTryStart != tryStart
+                    || !_exceptionClauses.Any(c => c.TryOffset == tryStart);
+                if (isFirstHandler)
+                {
+                    _currentTryStart = tryStart;
+                    _currentTryLength = (int)_code.Position - _currentTryStart;
+                }
             }
             _currentHandlerStart = (int)_code.Position;
 
@@ -424,7 +430,22 @@ namespace Ngo.Compiler.Archive
                 }
                 catch (NotSupportedException)
                 {
-                    // TypeBuilderInstantiation may not support these
+                    // TypeBuilderInstantiation doesn't support GetGenericTypeDefinition.
+                    // Parse the FullName to extract the generic definition and arguments.
+                    var instName = type.FullName ?? type.Name;
+                    var instBacktick = instName.IndexOf('`');
+                    if (instBacktick > 0)
+                    {
+                        var bracketStart = instName.IndexOf('[', instBacktick);
+                        if (bracketStart > 0)
+                        {
+                            var defName = instName.Substring(0, bracketStart);
+                            var defToken = TypeToken.CreatePackageTypeRef(GetPackageImportPath(type), defName);
+                            var argsStr = instName.Substring(bracketStart);
+                            var argTokens = ParseGenericArgumentsFromName(argsStr);
+                            return TypeToken.CreateGenericInst(defToken, argTokens);
+                        }
+                    }
                     return TypeToken.CreatePackageTypeRef(type.Namespace ?? "", type.Name);
                 }
                 var argumentTokens = genericArguments.Select(BuildTypeToken).ToArray();
@@ -534,7 +555,7 @@ namespace Ngo.Compiler.Archive
                 throw new InvalidOperationException("NgoWriter: attempted to serialize a null method reference");
             }
 
-            if (method.IsGenericMethod && !method.IsGenericMethodDefinition && !(method is NgoProxyMethodInfo))
+            if (method.IsGenericMethod && !method.IsGenericMethodDefinition)
             {
                 var genericDefinition = method.GetGenericMethodDefinition();
                 var typeArguments = method.GetGenericArguments();
@@ -729,7 +750,28 @@ namespace Ngo.Compiler.Archive
                 return GetTypeName(genericDefinition) + "[" + argumentNames + "]";
             }
 
-            return type.FullName ?? type.Name;
+            var result = type.FullName ?? type.Name;
+            // .NET TypeBuilder.FullName escapes special characters with backslash
+            // (e.g., backtick: \`, brackets: \[\], plus: \+). Strip all escapes
+            // since the archive format doesn't use .NET type name escaping.
+            if (result.IndexOf('\\') >= 0)
+            {
+                var cleaned = new System.Text.StringBuilder(result.Length);
+                for (int charIndex = 0; charIndex < result.Length; charIndex++)
+                {
+                    if (result[charIndex] == '\\' && charIndex + 1 < result.Length)
+                    {
+                        charIndex++;
+                        cleaned.Append(result[charIndex]);
+                    }
+                    else
+                    {
+                        cleaned.Append(result[charIndex]);
+                    }
+                }
+                result = cleaned.ToString();
+            }
+            return result;
         }
 
         // ----- Private helpers -----

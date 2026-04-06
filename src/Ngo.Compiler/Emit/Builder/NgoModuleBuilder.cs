@@ -141,6 +141,7 @@ namespace Ngo.Compiler.Emit.Builder
                     writer.Write(field.FieldName);
                     writer.Write((int)field.FieldAttributes);
                     writer.Write(NgoWriter.GetTypeNameStatic(field.FieldType));
+                    writer.Write(field.GoArrayLength);
                 }
 
                 // Methods

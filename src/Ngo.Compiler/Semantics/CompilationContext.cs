@@ -26,6 +26,7 @@ namespace Ngo.Compiler.Semantics
     {
         private readonly IPackageResolver[] _resolvers;
         private readonly Dictionary<string, PackageSymbol> _resolved = new();
+        private readonly Dictionary<(string packagePath, string typeName), Type> _sourceCompiledTypes = new();
 
         // Well-known package aliases: old import paths that map to stdlib packages
         private static readonly Dictionary<string, string> PackageAliases = new()
@@ -89,6 +90,11 @@ namespace Ngo.Compiler.Semantics
 
         public Type? ResolveClrType(string importPath, string typeName)
         {
+            if (_sourceCompiledTypes.TryGetValue((importPath, typeName), out var sourceType))
+            {
+                return sourceType;
+            }
+
             foreach (var resolver in _resolvers)
             {
                 var type = resolver.ResolveClrType(importPath, typeName);
@@ -96,6 +102,11 @@ namespace Ngo.Compiler.Semantics
                     return type;
             }
             return null;
+        }
+
+        public void RegisterSourceCompiledType(string importPath, string typeName, Type clrType)
+        {
+            _sourceCompiledTypes[(importPath, typeName)] = clrType;
         }
 
         /// <summary>

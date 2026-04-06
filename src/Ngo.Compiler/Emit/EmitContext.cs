@@ -48,6 +48,17 @@ namespace Ngo.Compiler.Emit
 
         // Track types that have been finalized (CreateType called) across packages
         public HashSet<TypeSymbol> FinalizedTypes { get; } = new();
+
+        // Track packages already compiled from source to avoid re-analysis
+        public HashSet<string> LinkedPackages { get; } = new();
+
+        // InlineArray types shared across all TypeMapper instances in this compilation
+        public Dictionary<(Type elementType, int length), Type> InlineArrayTypes { get; } = new();
+
+        // InlineArray TypeBuilders whose element type was a TypeBuilder at creation time.
+        // These must be CreateType'd after their element types are finalized.
+        public List<(TypeBuilder Builder, int Length)> PendingInlineArrayTypes { get; } = new();
+
         public DeclarationEmitter? DeclEmitter { get; set; }
 
         // Per-method state (reset for each method body)
@@ -475,6 +486,8 @@ namespace Ngo.Compiler.Emit
             Locals.Clear();
             Parameters.Clear();
             NamedLabels.Clear();
+            GotoLabels.Clear();
+            LoopLabels.Clear();
             CapturedSymbols.Clear();
             DeferStack = null;
             DeferReturnLocal = null;
