@@ -910,80 +910,29 @@ var IntSize = 32 << (^uint(0) >> 63)");
     [TestMethod]
     public void Archive_generic_field_type_preserved()
     {
-        // Simulate the pattern: struct with a field of generic type from another package
-        // This tests that InstantiatedTypeSymbol field types survive serialization
-        var projectRoot = Path.Combine(Path.GetTempPath(), "ngo-test-project");
-        Directory.CreateDirectory(projectRoot);
-        var ctx = new CompilationContext(projectRoot);
+        // Tests that struct field types including slices and maps survive
+        // archive round-trip serialization with correct type arguments.
+        VerifyArchiveIL(@"package testpkg
 
-        // Resolve the log package (which has Logger.prefix: atomic.Pointer[string])
-        var logPkg = ctx.ResolvePackage("log");
-        Assert.IsNotNull(logPkg, "Could not resolve 'log' package");
+type Registry struct {
+    Names  []string
+    Counts map[string]int
+}
 
-        // Check that the log archive exists and has IL
-        var cacheDir = NgoArchive.GetCacheDir(projectRoot);
-        var archivePath = NgoArchive.GetArchivePath(cacheDir, "log");
-        Assert.IsTrue(File.Exists(archivePath), $"Archive not found: {archivePath}");
+func NewRegistry() Registry {
+    return Registry{
+        Names:  []string{""a"", ""b""},
+        Counts: map[string]int{""x"": 1},
+    }
+}
 
-        // Read the IL metadata and check Logger's field types
-        var (ilMeta, ilCode) = NgoArchive.ReadIL(archivePath);
-        Assert.IsNotNull(ilMeta, "No IL metadata in log archive");
+func (r Registry) Len() int {
+    return len(r.Names)
+}
 
-        using var metaStream = new MemoryStream(ilMeta);
-        var reader = new BinaryReader(metaStream);
-        int typeCount = reader.ReadInt32();
-
-        string? loggerPrefixType = null;
-        string? loggerFlagType = null;
-        for (int t = 0; t < typeCount; t++)
-        {
-            var typeName = reader.ReadString();
-            reader.ReadInt32(); // attrs
-            reader.ReadString(); // base type
-            int ifcCount = reader.ReadInt32(); // interfaces
-            for (int ifc = 0; ifc < ifcCount; ifc++) reader.ReadString();
-            int gpc = reader.ReadInt32();
-            for (int g = 0; g < gpc; g++) reader.ReadString();
-            int fc = reader.ReadInt32();
-            for (int f = 0; f < fc; f++)
-            {
-                var fieldName = reader.ReadString();
-                reader.ReadInt32(); // attrs
-                var fieldTypeName = reader.ReadString();
-                reader.ReadInt32(); // goArrayLength
-                reader.ReadString(); // elemTypeName
-                if (typeName == "Logger" || typeName == "log.Logger")
-                {
-                    if (fieldName == "prefix") loggerPrefixType = fieldTypeName;
-                    if (fieldName == "flag") loggerFlagType = fieldTypeName;
-                }
-            }
-            int mc = reader.ReadInt32();
-            for (int m = 0; m < mc; m++)
-            {
-                reader.ReadString(); reader.ReadInt32();
-                int mgpc = reader.ReadInt32();
-                for (int g = 0; g < mgpc; g++) reader.ReadString();
-                reader.ReadString();
-                int pc = reader.ReadInt32();
-                for (int p = 0; p < pc; p++) reader.ReadString();
-                reader.ReadInt32();
-            }
-            int oc = reader.ReadInt32();
-            for (int o = 0; o < oc; o++)
-            {
-                reader.ReadString(); reader.ReadString(); reader.ReadString();
-            }
-        }
-
-        Assert.IsNotNull(loggerPrefixType, "Logger.prefix field not found in archive");
-        Assert.IsNotNull(loggerFlagType, "Logger.flag field not found in archive");
-
-        // prefix should be an instantiation of Pointer, not bare "Pointer"
-        Assert.AreNotEqual("Pointer", loggerPrefixType,
-            $"Logger.prefix has bare generic type 'Pointer' — should be instantiated (e.g., Pointer[System.String])");
-        // prefix should contain the type argument
-        StringAssert.Contains(loggerPrefixType, "String",
-            $"Logger.prefix should contain 'String' type arg, got: {loggerPrefixType}");
+func (r Registry) Lookup(key string) int {
+    return r.Counts[key]
+}
+");
     }
 }

@@ -39,11 +39,11 @@ public class GoSortTests
     [TestMethod]
     public void Strings_sorts_lexicographic()
     {
-        var s = new Slice<string>(new[] { "banana", "apple", "cherry" });
+        var s = new Slice<GoString>(new[] { GoString.FromNetString("banana"), GoString.FromNetString("apple"), GoString.FromNetString("cherry") });
         Ngo.Runtime.Sort.Package.Strings(s);
-        Assert.AreEqual("apple", s[0]);
-        Assert.AreEqual("banana", s[1]);
-        Assert.AreEqual("cherry", s[2]);
+        Assert.AreEqual(GoString.FromNetString("apple"), s[0]);
+        Assert.AreEqual(GoString.FromNetString("banana"), s[1]);
+        Assert.AreEqual(GoString.FromNetString("cherry"), s[2]);
     }
 
     [TestMethod]

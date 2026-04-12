@@ -641,6 +641,11 @@ namespace Ngo.Compiler.Emit
                         _ctx.IL.Emit(OpCodes.Initobj, targetClrType);
                         _ctx.IL.Emit(OpCodes.Ldloc, tempLocal);
                     }
+                    else if (_currentReturnTypes[i].TypeKind == TypeKind.Map)
+                    {
+                        var nilMethod = targetClrType.GetMethod("Nil")!;
+                        _ctx.IL.Emit(OpCodes.Call, nilMethod);
+                    }
                     else
                     {
                         _ctx.IL.Emit(OpCodes.Ldnull);
@@ -834,9 +839,15 @@ namespace Ngo.Compiler.Emit
                     _ctx.IL.Emit(OpCodes.Ldloca, local);
                     _ctx.IL.Emit(OpCodes.Initobj, sliceClrType);
                 }
-                else if (decl.Symbol.Type is MapTypeSymbol)
+                else if (decl.Symbol.Type is MapTypeSymbol mapDecl)
                 {
-                    // Go maps are nil by default — leave as null (Map<K,V> is a reference type)
+                    // Go nil maps return zero values on read, panic on write.
+                    // Must initialize with Map<K,V>.Nil() — not .NET null — so instance
+                    // method calls (indexer, Len, etc.) don't NullReferenceException.
+                    var mapClrType = _ctx.Mapper.Map(mapDecl);
+                    var nilMethod = mapClrType.GetMethod("Nil")!;
+                    _ctx.IL.Emit(OpCodes.Call, nilMethod);
+                    _ctx.IL.Emit(OpCodes.Stloc, local);
                 }
                 else if (decl.Symbol.Type.TypeKind == TypeKind.Struct && !clrType.IsValueType)
                 {
@@ -2137,10 +2148,11 @@ namespace Ngo.Compiler.Emit
                 return;
             }
 
-            // Slice nil comparison: Slice<T> is a value type, can't use Ceq with null.
-            // Use Slice<T>.IsNil property instead.
+            // Slice/Map nil comparison: use the IsNil property.
+            // Slice<T> is a value type so Ceq with null never works;
+            // Map<K,V>.Nil() is an object instance so reference equality with null is wrong.
             if ((bin.Operator == BinaryOperator.Equal || bin.Operator == BinaryOperator.NotEqual)
-                && bin.Left.Type.TypeKind == TypeKind.Slice
+                && (bin.Left.Type.TypeKind == TypeKind.Slice || bin.Left.Type.TypeKind == TypeKind.Map)
                 && bin.Right.Type.TypeKind == TypeKind.UntypedNil)
             {
                 EmitSliceOrMapNilCheck(bin);
@@ -2148,7 +2160,7 @@ namespace Ngo.Compiler.Emit
             }
             if ((bin.Operator == BinaryOperator.Equal || bin.Operator == BinaryOperator.NotEqual)
                 && bin.Left.Type.TypeKind == TypeKind.UntypedNil
-                && bin.Right.Type.TypeKind == TypeKind.Slice)
+                && (bin.Right.Type.TypeKind == TypeKind.Slice || bin.Right.Type.TypeKind == TypeKind.Map))
             {
                 var swapped = new BinaryExpression(bin.Right, bin.Operator, bin.Left, bin.Type, bin.Span);
                 EmitSliceOrMapNilCheck(swapped);
@@ -2303,10 +2315,9 @@ namespace Ngo.Compiler.Emit
 
         private void EmitSliceOrMapNilCheck(BinaryExpression bin)
         {
-            // For Slice<T>.IsNil: load the value type address and call the property.
-            // The CLR type might be a TypeBuilder during archive creation, so resolve
-            // the IsNil getter from the concrete Slice<> type definition.
             var clrType = _ctx.Mapper.Map(bin.Left.Type);
+            bool isMapType = bin.Left.Type.TypeKind == TypeKind.Map;
+
             MethodInfo? isNilGetter = null;
             try
             {
@@ -2319,7 +2330,6 @@ namespace Ngo.Compiler.Emit
 
             if (isNilGetter == null && clrType.IsGenericType)
             {
-                // Resolve from the generic definition (works for TypeBuilder-based types)
                 var genericDef = clrType.GetGenericTypeDefinition();
                 var baseProp = genericDef.GetProperty("IsNil");
                 if (baseProp != null)
@@ -2330,14 +2340,23 @@ namespace Ngo.Compiler.Emit
 
             if (isNilGetter == null)
             {
-                // Last resort: get from the runtime Slice<> type directly
-                var sliceGenericDef = typeof(Slice<>);
-                var baseGetter = sliceGenericDef.GetProperty("IsNil")!.GetGetMethod()!;
+                var runtimeGenericDef = isMapType ? typeof(Map<,>) : typeof(Slice<>);
+                var baseGetter = runtimeGenericDef.GetProperty("IsNil")!.GetGetMethod()!;
                 isNilGetter = TypeBuilder.GetMethod(clrType, baseGetter);
             }
 
-            EmitExpressionAddress(bin.Left, clrType);
-            _ctx.IL.Emit(OpCodes.Call, isNilGetter);
+            if (isMapType)
+            {
+                // Map<K,V> is a reference type — load the reference and callvirt
+                EmitExpression(bin.Left);
+                _ctx.IL.Emit(OpCodes.Callvirt, isNilGetter);
+            }
+            else
+            {
+                // Slice<T> is a value type — load address and call
+                EmitExpressionAddress(bin.Left, clrType);
+                _ctx.IL.Emit(OpCodes.Call, isNilGetter);
+            }
 
             if (bin.Operator == BinaryOperator.NotEqual)
             {
@@ -2878,6 +2897,12 @@ namespace Ngo.Compiler.Emit
                     _ctx.IL.Emit(OpCodes.Ldloca, tempLocal);
                     _ctx.IL.Emit(OpCodes.Initobj, targetClrType);
                     _ctx.IL.Emit(OpCodes.Ldloc, tempLocal);
+                    return;
+                }
+                if (targetType.TypeKind == TypeKind.Map)
+                {
+                    var nilMethod = targetClrType.GetMethod("Nil")!;
+                    _ctx.IL.Emit(OpCodes.Call, nilMethod);
                     return;
                 }
             }
@@ -4406,13 +4431,19 @@ namespace Ngo.Compiler.Emit
                 var arg = call.Arguments[i];
                 if (arg.Type.TypeKind == TypeKind.UntypedNil && i < call.Method.Parameters.Count)
                 {
-                    var paramClrType = _ctx.Mapper.Map(call.Method.Parameters[i].Type);
+                    var paramType = call.Method.Parameters[i].Type;
+                    var paramClrType = _ctx.Mapper.Map(paramType);
                     if (paramClrType.IsValueType)
                     {
                         var tempLocal = _ctx.IL.DeclareLocal(paramClrType);
                         _ctx.IL.Emit(OpCodes.Ldloca, tempLocal);
                         _ctx.IL.Emit(OpCodes.Initobj, paramClrType);
                         _ctx.IL.Emit(OpCodes.Ldloc, tempLocal);
+                    }
+                    else if (paramType.TypeKind == TypeKind.Map)
+                    {
+                        var nilMethod = paramClrType.GetMethod("Nil")!;
+                        _ctx.IL.Emit(OpCodes.Call, nilMethod);
                     }
                     else
                     {
@@ -4459,13 +4490,19 @@ namespace Ngo.Compiler.Emit
                 // Nil literal for value type parameters needs initobj instead of ldnull
                 if (arg.Type.TypeKind == TypeKind.UntypedNil && i < call.Function.Parameters.Count)
                 {
-                    var paramClrType = _ctx.Mapper.Map(call.Function.Parameters[i].Type);
+                    var paramType = call.Function.Parameters[i].Type;
+                    var paramClrType = _ctx.Mapper.Map(paramType);
                     if (paramClrType.IsValueType)
                     {
                         var tempLocal = _ctx.IL.DeclareLocal(paramClrType);
                         _ctx.IL.Emit(OpCodes.Ldloca, tempLocal);
                         _ctx.IL.Emit(OpCodes.Initobj, paramClrType);
                         _ctx.IL.Emit(OpCodes.Ldloc, tempLocal);
+                    }
+                    else if (paramType.TypeKind == TypeKind.Map)
+                    {
+                        var nilMethod = paramClrType.GetMethod("Nil")!;
+                        _ctx.IL.Emit(OpCodes.Call, nilMethod);
                     }
                     else
                     {
