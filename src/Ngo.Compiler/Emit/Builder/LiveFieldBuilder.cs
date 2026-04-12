@@ -16,8 +16,10 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
+using System;
 using System.Reflection;
 using System.Reflection.Emit;
+using Ngo.Compiler.Emit.Refs;
 
 namespace Ngo.Compiler.Emit.Builder
 {
@@ -28,7 +30,17 @@ namespace Ngo.Compiler.Emit.Builder
         public LiveFieldBuilder(FieldBuilder fb) => _fb = fb;
 
         public FieldBuilder Inner => _fb;
-        public FieldInfo AsFieldInfo() => _fb;
+        public string Name => _fb.Name;
+        public Type FieldType => _fb.FieldType;
+        public Type? DeclaringType => _fb.DeclaringType;
+
+        public FieldRef AsFieldRef()
+        {
+            var declaringType = _fb.DeclaringType
+                ?? throw new InvalidOperationException(
+                    "LiveFieldBuilder.AsFieldRef: underlying FieldBuilder has no declaring type");
+            return FieldRef.FromBuilder(this, TypeRef.FromRuntime(declaringType));
+        }
 
         public void SetCustomAttribute(CustomAttributeBuilder attr) => _fb.SetCustomAttribute(attr);
     }

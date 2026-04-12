@@ -75,7 +75,7 @@ namespace Ngo.Compiler.Emit
             {
                 return true;
             }
-            if (type is Builder.NgoProxyType proxy && proxy.IsGenericParam)
+            if (type is Builder.NgoGenericParameterType)
             {
                 return true;
             }
@@ -372,7 +372,7 @@ namespace Ngo.Compiler.Emit
                                         foreach (var existingEntry in _emitContext.StructFields)
                                         {
                                             if (existingEntry.Key.Name == field.Name
-                                                && existingEntry.Value.AsFieldInfo().DeclaringType == cached)
+                                                && existingEntry.Value.DeclaringType == cached)
                                             {
                                                 _emitContext.StructFields[field] = existingEntry.Value;
                                                 break;
@@ -398,7 +398,7 @@ namespace Ngo.Compiler.Emit
                                         foreach (var existingEntry in _emitContext.StructFields)
                                         {
                                             if (existingEntry.Key.Name == field.Name
-                                                && existingEntry.Value.AsFieldInfo().DeclaringType?.FullName == qualifiedName2)
+                                                && existingEntry.Value.DeclaringType?.FullName == qualifiedName2)
                                             {
                                                 _emitContext.StructFields[field] = existingEntry.Value;
                                                 break;

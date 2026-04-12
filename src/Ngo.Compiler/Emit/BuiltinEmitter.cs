@@ -782,7 +782,7 @@ namespace Ngo.Compiler.Emit
                 if (arrLenType != null && arg is Ast.SelectorExpression lenSel
                     && lenSel.Field?.Type is ArrayTypeSymbol
                     && _ctx.StructFields.TryGetValue(lenSel.Field, out var lenFb)
-                    && !lenFb.AsFieldInfo().FieldType.IsArray)
+                    && !lenFb.FieldType.IsArray)
                 {
                     isInlineField = true;
                 }
@@ -1047,7 +1047,7 @@ namespace Ngo.Compiler.Emit
                 && destSlice.Operand is SelectorExpression sel
                 && sel.Field?.Type is ArrayTypeSymbol arrT)
             {
-                if (_ctx.StructFields.TryGetValue(sel.Field, out var fb) && !fb.AsFieldInfo().FieldType.IsArray)
+                if (_ctx.StructFields.TryGetValue(sel.Field, out var fb) && !fb.FieldType.IsArray)
                 {
                     isInlineArrayDest = true;
                     inlineSel = sel;
@@ -1060,7 +1060,7 @@ namespace Ngo.Compiler.Emit
                     foreach (var kvp in _ctx.StructFields)
                     {
                         if (kvp.Key.Name == sel.Field.Name && kvp.Key.Type is ArrayTypeSymbol
-                            && !kvp.Value.AsFieldInfo().FieldType.IsArray)
+                            && !kvp.Value.FieldType.IsArray)
                         {
                             isInlineArrayDest = true;
                             inlineSel = sel;
@@ -1077,7 +1077,7 @@ namespace Ngo.Compiler.Emit
                 // copy(inlineArray[:], string) → convert string to bytes, write to InlineArray via Span
                 _body.EmitInlineArrayFieldAddress(inlineSel!);
                 _ctx.IL.Emit(OpCodes.Ldc_I4, inlineArrType!.Length);
-                var bufferType = inlineFb!.AsFieldInfo().FieldType;
+                var bufferType = inlineFb!.FieldType;
                 var spanMethod = typeof(BuiltIn).GetMethod("InlineArrayAsSpan")!
                     .MakeGenericMethod(bufferType, typeof(byte));
                 _ctx.IL.Emit(OpCodes.Call, spanMethod);

@@ -19,6 +19,7 @@
 using System;
 using System.Reflection;
 using System.Reflection.Emit;
+using Ngo.Compiler.Emit.Refs;
 
 namespace Ngo.Compiler.Emit.Builder
 {
@@ -59,6 +60,171 @@ namespace Ngo.Compiler.Emit.Builder
         public override void Emit(OpCode op, Label label) => _il.Emit(op, label);
         public override void Emit(OpCode op, Label[] labels) => _il.Emit(op, labels);
         public override void Emit(OpCode op, LocalBuilder local) => _il.Emit(op, local);
+
+        public override void Emit(OpCode op, TypeRef typeRef)
+        {
+            _il.Emit(op, ResolveTypeRef(typeRef));
+        }
+
+        public override void Emit(OpCode op, MethodRef methodRef)
+        {
+            _il.Emit(op, ResolveMethodForEmit(ResolveMethodRef(methodRef)));
+        }
+
+        public override void Emit(OpCode op, CtorRef ctorRef)
+        {
+            _il.Emit(op, ResolveConstructorForEmit(ResolveCtorRef(ctorRef)));
+        }
+
+        public override void Emit(OpCode op, FieldRef fieldRef)
+        {
+            _il.Emit(op, ResolveFieldForEmit(ResolveFieldRef(fieldRef)));
+        }
+
+        private static Type ResolveTypeRef(TypeRef typeRef)
+        {
+            if (typeRef == null)
+            {
+                throw new ArgumentNullException(nameof(typeRef));
+            }
+            switch (typeRef.Kind)
+            {
+                case TypeRefKind.Runtime:
+                {
+                    return typeRef.RuntimeType!;
+                }
+                case TypeRefKind.Builder:
+                {
+                    return typeRef.Builder!.AsType();
+                }
+                case TypeRefKind.Array:
+                {
+                    return ResolveTypeRef(typeRef.ElementType!).MakeArrayType();
+                }
+                case TypeRefKind.Pointer:
+                {
+                    return ResolveTypeRef(typeRef.ElementType!).MakePointerType();
+                }
+                case TypeRefKind.ByRef:
+                {
+                    return ResolveTypeRef(typeRef.ElementType!).MakeByRefType();
+                }
+                case TypeRefKind.GenericInstantiation:
+                {
+                    var definition = ResolveTypeRef(typeRef.GenericDefinition!);
+                    var argumentCount = typeRef.GenericArguments.Length;
+                    var arguments = new Type[argumentCount];
+                    for (int index = 0; index < argumentCount; index++)
+                    {
+                        arguments[index] = ResolveTypeRef(typeRef.GenericArguments[index]);
+                    }
+                    return definition.MakeGenericType(arguments);
+                }
+                default:
+                {
+                    throw new NotSupportedException(
+                        $"ILGeneratorWriter cannot resolve TypeRef kind '{typeRef.Kind}' in the live emit path");
+                }
+            }
+        }
+
+        private static MethodInfo ResolveMethodRef(MethodRef methodRef)
+        {
+            if (methodRef == null)
+            {
+                throw new ArgumentNullException(nameof(methodRef));
+            }
+            switch (methodRef.Kind)
+            {
+                case MethodRefKind.Runtime:
+                {
+                    return methodRef.RuntimeMethod!;
+                }
+                case MethodRefKind.Defined:
+                {
+                    if (methodRef.Builder is LiveMethodBuilder liveBuilder)
+                    {
+                        return liveBuilder.Inner;
+                    }
+                    throw new NotSupportedException(
+                        "ILGeneratorWriter cannot resolve MethodRef: builder is not a LiveMethodBuilder");
+                }
+                case MethodRefKind.GenericInstantiation:
+                {
+                    var definition = ResolveMethodRef(methodRef.GenericDefinition!);
+                    var argumentCount = methodRef.GenericTypeArguments.Length;
+                    var arguments = new Type[argumentCount];
+                    for (int index = 0; index < argumentCount; index++)
+                    {
+                        arguments[index] = ResolveTypeRef(methodRef.GenericTypeArguments[index]);
+                    }
+                    return definition.MakeGenericMethod(arguments);
+                }
+                default:
+                {
+                    throw new NotSupportedException(
+                        $"ILGeneratorWriter cannot resolve MethodRef kind '{methodRef.Kind}' in the live emit path");
+                }
+            }
+        }
+
+        private static ConstructorInfo ResolveCtorRef(CtorRef ctorRef)
+        {
+            if (ctorRef == null)
+            {
+                throw new ArgumentNullException(nameof(ctorRef));
+            }
+            switch (ctorRef.Kind)
+            {
+                case CtorRefKind.Runtime:
+                {
+                    return ctorRef.RuntimeConstructor!;
+                }
+                case CtorRefKind.Defined:
+                {
+                    if (ctorRef.Builder is LiveConstructorBuilder liveBuilder)
+                    {
+                        return liveBuilder.Inner;
+                    }
+                    throw new NotSupportedException(
+                        "ILGeneratorWriter cannot resolve CtorRef: builder is not a LiveConstructorBuilder");
+                }
+                default:
+                {
+                    throw new NotSupportedException(
+                        $"ILGeneratorWriter cannot resolve CtorRef kind '{ctorRef.Kind}' in the live emit path");
+                }
+            }
+        }
+
+        private static FieldInfo ResolveFieldRef(FieldRef fieldRef)
+        {
+            if (fieldRef == null)
+            {
+                throw new ArgumentNullException(nameof(fieldRef));
+            }
+            switch (fieldRef.Kind)
+            {
+                case FieldRefKind.Runtime:
+                {
+                    return fieldRef.RuntimeField!;
+                }
+                case FieldRefKind.Defined:
+                {
+                    if (fieldRef.Builder is LiveFieldBuilder liveBuilder)
+                    {
+                        return liveBuilder.Inner;
+                    }
+                    throw new NotSupportedException(
+                        "ILGeneratorWriter cannot resolve FieldRef: builder is not a LiveFieldBuilder");
+                }
+                default:
+                {
+                    throw new NotSupportedException(
+                        $"ILGeneratorWriter cannot resolve FieldRef kind '{fieldRef.Kind}' in the live emit path");
+                }
+            }
+        }
 
         public override LocalBuilder DeclareLocal(Type type) => _il.DeclareLocal(type);
         public override Label DefineLabel() => _il.DefineLabel();

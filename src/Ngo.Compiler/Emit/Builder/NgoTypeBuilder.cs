@@ -29,7 +29,7 @@ namespace Ngo.Compiler.Emit.Builder
         private readonly string _fullName;
         private readonly TypeAttributes _attrs;
         private readonly string _baseTypeName;
-        private readonly NgoProxyType _proxyType;
+        private readonly NgoBuilderType _builderType;
         private readonly List<NgoFieldBuilder> _fields = new();
         private readonly List<NgoMethodBuilder> _methods = new();
         private readonly List<NgoMethodOverride> _overrides = new();
@@ -80,7 +80,7 @@ namespace Ngo.Compiler.Emit.Builder
             }
 
             bool isValueType = !isStatic && !isInterface && baseType == typeof(ValueType);
-            _proxyType = new NgoProxyType(fullName, isValueType);
+            _builderType = new NgoBuilderType(fullName, isValueType);
         }
 
         public string? FullName => _fullName;
@@ -93,10 +93,10 @@ namespace Ngo.Compiler.Emit.Builder
         public NgoConstructorBuilder? Constructor => _constructor;
         public IReadOnlyList<string> GenericParamNames => _genericParamNames;
 
-        public Type AsType() => _proxyType;
+        public Type AsType() => _builderType;
 
         public bool IsCreated => true;
-        public Type CreateType() => _proxyType;
+        public Type CreateType() => _builderType;
 
         private int _blankFieldIndex;
 
@@ -107,25 +107,22 @@ namespace Ngo.Compiler.Emit.Builder
             {
                 actualName = $"_pad{_blankFieldIndex++}";
             }
-            var fb = new NgoFieldBuilder(_proxyType, actualName, type, attrs);
+            var fb = new NgoFieldBuilder(_builderType, actualName, type, attrs, declaringTypeBuilder: this);
             _fields.Add(fb);
-            _proxyType.AddField(actualName, type);
             return fb;
         }
 
         public IMethodBuilder DefineMethod(string name, MethodAttributes attrs, Type returnType, Type[] paramTypes)
         {
-            var mb = new NgoMethodBuilder(_proxyType, name, attrs, returnType, paramTypes, declaringTypeBuilder: this);
+            var mb = new NgoMethodBuilder(_builderType, name, attrs, returnType, paramTypes, declaringTypeBuilder: this);
             _methods.Add(mb);
-            _proxyType.AddMethod(name, returnType, paramTypes);
             return mb;
         }
 
         public IMethodBuilder DefineMethod(string name, MethodAttributes attrs)
         {
-            var mb = new NgoMethodBuilder(_proxyType, name, attrs, null, null, declaringTypeBuilder: this);
+            var mb = new NgoMethodBuilder(_builderType, name, attrs, null, null, declaringTypeBuilder: this);
             _methods.Add(mb);
-            _proxyType.AddMethod(name, null!, null!);
             return mb;
         }
 
@@ -138,11 +135,11 @@ namespace Ngo.Compiler.Emit.Builder
         public Type[] DefineGenericParameters(string[] names)
         {
             _genericParamNames = names;
-            _proxyType.SetGenericParamCount(names.Length);
+            _builderType.SetGenericParamCount(names.Length);
             var result = new Type[names.Length];
             for (int i = 0; i < names.Length; i++)
             {
-                result[i] = new NgoProxyType(names[i], i, isMethodGenericParam: false);
+                result[i] = new NgoGenericParameterType(names[i], i, isMethodGenericParam: false);
             }
             _genericParamTypes = result;
             return result;
@@ -164,9 +161,8 @@ namespace Ngo.Compiler.Emit.Builder
             System.Runtime.InteropServices.CallingConvention nativeCallConv,
             System.Runtime.InteropServices.CharSet charset)
         {
-            // NgoTypeBuilder is for archive serialization — P/Invoke is not serialized
-            // Return a proxy MethodInfo
-            return new NgoProxyMethodInfo(_proxyType, name);
+            throw new NotSupportedException(
+                "NgoTypeBuilder.DefinePInvokeMethod is not valid: P/Invoke stubs are only emitted on live modules.");
         }
     }
 }

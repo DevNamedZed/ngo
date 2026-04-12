@@ -46,7 +46,7 @@ class Program
             case "version":
             case "--version":
             case "-v":
-                Console.WriteLine("ngo v0.3.0 (.NET 9.0, MSIL backend)");
+                Console.WriteLine($"ngo v0.3.0 (.NET {Environment.Version.Major}.{Environment.Version.Minor}, MSIL backend)");
                 return 0;
 
             case "help":
@@ -409,17 +409,22 @@ class Program
             }
         }
 
-        // Generate .runtimeconfig.json
+        // Generate .runtimeconfig.json targeting the current runtime version
         var runtimeConfigPath = Path.ChangeExtension(outputPath, ".runtimeconfig.json");
-        var runtimeConfig = @"{
-  ""runtimeOptions"": {
-    ""tfm"": ""net9.0"",
-    ""framework"": {
-      ""name"": ""Microsoft.NETCore.App"",
-      ""version"": ""9.0.0""
-    }
-  }
-}";
+        var runtimeVersion = Environment.Version;
+        var tfm = $"net{runtimeVersion.Major}.{runtimeVersion.Minor}";
+        var frameworkVersion = $"{runtimeVersion.Major}.{runtimeVersion.Minor}.0";
+        var runtimeConfig = $$"""
+        {
+          "runtimeOptions": {
+            "tfm": "{{tfm}}",
+            "framework": {
+              "name": "Microsoft.NETCore.App",
+              "version": "{{frameworkVersion}}"
+            }
+          }
+        }
+        """;
         File.WriteAllText(runtimeConfigPath, runtimeConfig);
 
         Console.WriteLine($"ngo: wrote {outputPath}");

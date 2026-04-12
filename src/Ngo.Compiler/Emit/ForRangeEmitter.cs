@@ -558,7 +558,7 @@ namespace Ngo.Compiler.Emit
 
             // Create the delegate: new Func<K,V,bool>(null, &yieldMethod)
             _ctx.IL.Emit(OpCodes.Ldnull);
-            _ctx.IL.Emit(OpCodes.Ldftn, yieldMethod.AsMethodInfo());
+            _ctx.IL.Emit(OpCodes.Ldftn, yieldMethod.AsMethodRef());
             var delegateCtor = _ctx.Definitions.GetConstructor(delegateType, new[] { typeof(object), typeof(System.IntPtr) });
             _ctx.IL.Emit(OpCodes.Newobj, delegateCtor);
 

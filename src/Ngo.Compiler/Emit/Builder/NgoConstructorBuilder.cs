@@ -20,6 +20,7 @@ using System;
 using Ngo.Compiler.Archive;
 using System.Collections.Generic;
 using System.Reflection;
+using Ngo.Compiler.Emit.Refs;
 
 namespace Ngo.Compiler.Emit.Builder
 {
@@ -28,6 +29,7 @@ namespace Ngo.Compiler.Emit.Builder
         private readonly MethodAttributes _attrs;
         private readonly CallingConventions _callingConvention;
         private readonly List<string> _paramTypeNames;
+        private readonly Type[] _paramTypes;
         private readonly NgoTypeBuilder? _declaringTypeBuilder;
         private NgoWriter? _writer;
 
@@ -37,13 +39,11 @@ namespace Ngo.Compiler.Emit.Builder
             _attrs = attrs;
             _callingConvention = callingConvention;
             _declaringTypeBuilder = declaringTypeBuilder;
+            _paramTypes = paramTypes ?? Type.EmptyTypes;
             _paramTypeNames = new List<string>();
-            if (paramTypes != null)
+            foreach (var pt in _paramTypes)
             {
-                foreach (var pt in paramTypes)
-                {
-                    _paramTypeNames.Add(NgoWriter.GetTypeNameStatic(pt));
-                }
+                _paramTypeNames.Add(NgoWriter.GetTypeNameStatic(pt));
             }
         }
 
@@ -52,6 +52,8 @@ namespace Ngo.Compiler.Emit.Builder
         public CallingConventions CallingConvention => _callingConvention;
 
         public IReadOnlyList<string> ParamTypeNames => _paramTypeNames;
+
+        public Type[] ParameterTypes => _paramTypes;
 
         public NgoWriter? Writer => _writer;
 
@@ -64,6 +66,16 @@ namespace Ngo.Compiler.Emit.Builder
                 _writer = new NgoWriter(context);
             }
             return _writer;
+        }
+
+        public CtorRef AsCtorRef()
+        {
+            if (_declaringTypeBuilder == null)
+            {
+                throw new InvalidOperationException(
+                    "NgoConstructorBuilder.AsCtorRef: constructor was created without a declaring NgoTypeBuilder");
+            }
+            return CtorRef.FromBuilder(this, TypeRef.FromBuilder(_declaringTypeBuilder));
         }
     }
 }

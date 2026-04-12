@@ -24,6 +24,7 @@ using System.Reflection;
 using System.Reflection.Emit;
 using Ngo.Compiler.Emit;
 using Ngo.Compiler.Emit.Builder;
+using Ngo.Compiler.Emit.Refs;
 using Ngo.Runtime;
 using Ngo.Runtime.Discovery;
 
@@ -193,6 +194,130 @@ namespace Ngo.Compiler.Archive
             WriteInt32(0);
         }
 
+        public override void Emit(OpCode op, TypeRef typeRef)
+        {
+            TrackStack(op);
+            WriteOpCode(op);
+            var offset = (int)_code.Position;
+            _tokens.Add(ILTokenEntry.CreateType(offset, BuildTypeTokenFromRef(typeRef)));
+            WriteInt32(0);
+        }
+
+        public override void Emit(OpCode op, MethodRef methodRef)
+        {
+            if (methodRef == null)
+            {
+                throw new InvalidOperationException("NgoWriter: attempted to emit a null method reference");
+            }
+
+            // Unwrap generic instantiations to reach the underlying signature (generic
+            // definitions are the root of every MethodSpec).
+            var signatureSource = methodRef;
+            while (signatureSource.Kind == MethodRefKind.GenericInstantiation)
+            {
+                signatureSource = signatureSource.GenericDefinition!;
+            }
+
+            bool returnIsVoid;
+            int parameterCount;
+            bool isStatic;
+            switch (signatureSource.Kind)
+            {
+                case MethodRefKind.Runtime:
+                {
+                    var runtimeMethod = signatureSource.RuntimeMethod!;
+                    returnIsVoid = runtimeMethod.ReturnType == typeof(void);
+                    parameterCount = runtimeMethod.GetParameters().Length;
+                    isStatic = (runtimeMethod.Attributes & MethodAttributes.Static) != 0;
+                    break;
+                }
+                case MethodRefKind.Defined:
+                {
+                    var builder = signatureSource.Builder!;
+                    returnIsVoid = builder.ReturnType == typeof(void);
+                    parameterCount = builder.ParameterTypes.Length;
+                    isStatic = (builder.Attributes & MethodAttributes.Static) != 0;
+                    break;
+                }
+                case MethodRefKind.MemberRef:
+                {
+                    var memberReturnType = signatureSource.MemberReturnType!;
+                    returnIsVoid = memberReturnType.Kind == TypeRefKind.Runtime
+                        && memberReturnType.RuntimeType == typeof(void);
+                    parameterCount = signatureSource.MemberParameterTypes.Length;
+                    isStatic = signatureSource.MemberIsStatic;
+                    break;
+                }
+                default:
+                {
+                    throw new InvalidOperationException(
+                        $"NgoWriter: unexpected MethodRef kind after unwrapping generic instantiations: {signatureSource.Kind}");
+                }
+            }
+
+            int push = returnIsVoid ? 0 : 1;
+            int pop = parameterCount;
+            if (!isStatic)
+            {
+                pop += 1;
+            }
+            TrackStack(op, extraPush: push, extraPop: pop);
+            WriteOpCode(op);
+            var offset = (int)_code.Position;
+            _tokens.Add(ILTokenEntry.CreateMethod(offset, BuildMethodTokenFromRef(methodRef)));
+            WriteInt32(0);
+        }
+
+        public override void Emit(OpCode op, CtorRef ctorRef)
+        {
+            if (ctorRef == null)
+            {
+                throw new InvalidOperationException("NgoWriter: attempted to emit a null constructor reference");
+            }
+
+            int parameterCount;
+            switch (ctorRef.Kind)
+            {
+                case CtorRefKind.Runtime:
+                {
+                    parameterCount = ctorRef.RuntimeConstructor!.GetParameters().Length;
+                    break;
+                }
+                case CtorRefKind.Defined:
+                {
+                    parameterCount = ctorRef.Builder!.ParameterTypes.Length;
+                    break;
+                }
+                default:
+                {
+                    throw new InvalidOperationException($"NgoWriter: unexpected CtorRef kind: {ctorRef.Kind}");
+                }
+            }
+
+            // newobj pushes the new object and pops only the arguments; call/callvirt on
+            // a .ctor pops 'this' plus the arguments and pushes nothing.
+            int push = op == OpCodes.Newobj ? 1 : 0;
+            int pop = parameterCount + (op == OpCodes.Newobj ? 0 : 1);
+            TrackStack(op, extraPush: push, extraPop: pop);
+            WriteOpCode(op);
+            var offset = (int)_code.Position;
+            _tokens.Add(ILTokenEntry.CreateMethod(offset, BuildConstructorTokenFromRef(ctorRef)));
+            WriteInt32(0);
+        }
+
+        public override void Emit(OpCode op, FieldRef fieldRef)
+        {
+            if (fieldRef == null)
+            {
+                throw new InvalidOperationException("NgoWriter: attempted to emit a null field reference");
+            }
+            TrackStack(op);
+            WriteOpCode(op);
+            var offset = (int)_code.Position;
+            _tokens.Add(ILTokenEntry.CreateField(offset, BuildFieldTokenFromRef(fieldRef)));
+            WriteInt32(0);
+        }
+
         public override void Emit(OpCode op, Label label)
         {
             TrackStack(op);
@@ -255,7 +380,7 @@ namespace Ngo.Compiler.Archive
             }
             catch (ArgumentException)
             {
-                // Some proxy / delegating types cannot be declared directly on the scratch ILGenerator.
+                // NgoBuilderType / NgoGenericParameterType cannot be declared directly on the scratch ILGenerator.
                 // Keep the serialized local type name intact, but use object for the temporary builder slot.
                 return _localFactory.DeclareLocal(typeof(object));
             }
@@ -503,13 +628,13 @@ namespace Ngo.Compiler.Archive
                 return scopedGenericToken;
             }
 
-            if (type is NgoProxyType proxyType)
+            if (type is NgoGenericParameterType)
             {
-                if (proxyType.IsGenericParam)
-                {
-                    throw CreateMissingGenericParameterException(type);
-                }
+                throw CreateMissingGenericParameterException(type);
+            }
 
+            if (type is NgoBuilderType)
+            {
                 if (type.IsArray)
                 {
                     return TypeToken.CreateArray(BuildTypeToken(GetRequiredElementType(type), inProgress));
@@ -595,7 +720,7 @@ namespace Ngo.Compiler.Archive
             }
 
             // Last-resort check for constructed generic types that bypassed the IsGenericType check
-            // (e.g., TypeBuilderInstantiation or types with NgoProxyType arguments where
+            // (e.g., TypeBuilderInstantiation or types with NgoBuilderType arguments where
             // reflection doesn't report IsGenericType correctly)
             var typeName = type.FullName ?? type.Name;
             var backtickIndex = typeName.IndexOf('`');
@@ -615,7 +740,8 @@ namespace Ngo.Compiler.Archive
                 }
                 catch (NotSupportedException)
                 {
-                    // Constructed generic with proxy type args — parse the name to extract parts.
+                    // Constructed generic whose arguments are NgoBuilderType / NgoGenericParameterType —
+                    // GetGenericArguments refuses to enumerate, so parse the name instead.
                     // Format: "Namespace.Type`N[[ArgFullName, Assembly], ...]"
                     var defName = typeName.Substring(0, typeName.IndexOf('[', backtickIndex));
                     var defToken = TypeToken.CreatePackageTypeRef(GetPackageImportPath(type), defName);
@@ -690,6 +816,190 @@ namespace Ngo.Compiler.Archive
 
         private static readonly Assembly RuntimeAssembly = typeof(Ngo.Runtime.Slice<>).Assembly;
 
+        private TypeToken BuildTypeTokenFromRef(TypeRef typeRef)
+        {
+            if (typeRef == null)
+            {
+                throw new InvalidOperationException("NgoWriter: attempted to serialize a null type reference");
+            }
+            switch (typeRef.Kind)
+            {
+                case TypeRefKind.Runtime:
+                {
+                    return BuildTypeToken(typeRef.RuntimeType!);
+                }
+                case TypeRefKind.Defined:
+                {
+                    return TypeToken.CreateTypeDef(typeRef.DefinedFullName!);
+                }
+                case TypeRefKind.Builder:
+                {
+                    return TypeToken.CreateTypeDef(typeRef.Builder!.FullName!);
+                }
+                case TypeRefKind.Array:
+                {
+                    return TypeToken.CreateArray(BuildTypeTokenFromRef(typeRef.ElementType!));
+                }
+                case TypeRefKind.Pointer:
+                {
+                    return TypeToken.CreatePointer(BuildTypeTokenFromRef(typeRef.ElementType!));
+                }
+                case TypeRefKind.ByRef:
+                {
+                    return TypeToken.CreateByRef(BuildTypeTokenFromRef(typeRef.ElementType!));
+                }
+                case TypeRefKind.GenericInstantiation:
+                {
+                    var definitionToken = BuildTypeTokenFromRef(typeRef.GenericDefinition!);
+                    var argumentTokens = new TypeToken[typeRef.GenericArguments.Length];
+                    for (int index = 0; index < typeRef.GenericArguments.Length; index++)
+                    {
+                        argumentTokens[index] = BuildTypeTokenFromRef(typeRef.GenericArguments[index]);
+                    }
+                    return TypeToken.CreateGenericInst(definitionToken, argumentTokens);
+                }
+                case TypeRefKind.GenericTypeParameter:
+                {
+                    return TypeToken.CreateGenericTypeParam(typeRef.GenericParameterIndex);
+                }
+                case TypeRefKind.GenericMethodParameter:
+                {
+                    return TypeToken.CreateGenericMethodParam(typeRef.GenericParameterIndex);
+                }
+                case TypeRefKind.ExternalPackage:
+                {
+                    return TypeToken.CreatePackageTypeRef(typeRef.PackagePath!, typeRef.ExternalTypeName!);
+                }
+                default:
+                {
+                    throw new InvalidOperationException(
+                        $"NgoWriter: cannot build TypeToken for TypeRef kind '{typeRef.Kind}'");
+                }
+            }
+        }
+
+        private MethodToken BuildMethodTokenFromRef(MethodRef methodRef)
+        {
+            if (methodRef == null)
+            {
+                throw new InvalidOperationException("NgoWriter: attempted to serialize a null method reference");
+            }
+            switch (methodRef.Kind)
+            {
+                case MethodRefKind.Runtime:
+                {
+                    return BuildMethodToken(methodRef.RuntimeMethod!);
+                }
+                case MethodRefKind.Defined:
+                {
+                    var builder = methodRef.Builder!;
+                    var declaringTypeToken = BuildTypeTokenFromRef(methodRef.DeclaringType!);
+                    var parameterTypes = builder.ParameterTypes;
+                    var parameterTokens = new TypeToken[parameterTypes.Length];
+                    for (int index = 0; index < parameterTypes.Length; index++)
+                    {
+                        parameterTokens[index] = BuildTypeToken(parameterTypes[index]);
+                    }
+                    var returnTypeToken = BuildTypeToken(builder.ReturnType);
+                    // A Defined MethodRef always points at a method declared in this archive,
+                    // so the token must be a MethodDef (never a MemberRef).
+                    return MethodToken.CreateMethodDef(
+                        declaringTypeToken, builder.Name, parameterTokens, returnTypeToken);
+                }
+                case MethodRefKind.GenericInstantiation:
+                {
+                    var genericDefinitionToken = BuildMethodTokenFromRef(methodRef.GenericDefinition!);
+                    var typeArgumentTokens = new TypeToken[methodRef.GenericTypeArguments.Length];
+                    for (int index = 0; index < methodRef.GenericTypeArguments.Length; index++)
+                    {
+                        typeArgumentTokens[index] = BuildTypeTokenFromRef(methodRef.GenericTypeArguments[index]);
+                    }
+                    return MethodToken.CreateMethodSpec(genericDefinitionToken, typeArgumentTokens);
+                }
+                case MethodRefKind.MemberRef:
+                {
+                    var declaringTypeToken = BuildTypeTokenFromRef(methodRef.DeclaringType!);
+                    var parameterTokens = new TypeToken[methodRef.MemberParameterTypes.Length];
+                    for (int index = 0; index < methodRef.MemberParameterTypes.Length; index++)
+                    {
+                        parameterTokens[index] = BuildTypeTokenFromRef(methodRef.MemberParameterTypes[index]);
+                    }
+                    var returnTypeToken = BuildTypeTokenFromRef(methodRef.MemberReturnType!);
+                    return MethodToken.CreateMemberRef(
+                        declaringTypeToken, methodRef.MemberName!, parameterTokens, returnTypeToken);
+                }
+                default:
+                {
+                    throw new InvalidOperationException(
+                        $"NgoWriter: cannot build method token for MethodRef kind '{methodRef.Kind}'");
+                }
+            }
+        }
+
+        private MethodToken BuildConstructorTokenFromRef(CtorRef ctorRef)
+        {
+            if (ctorRef == null)
+            {
+                throw new InvalidOperationException("NgoWriter: attempted to serialize a null constructor reference");
+            }
+            switch (ctorRef.Kind)
+            {
+                case CtorRefKind.Runtime:
+                {
+                    return BuildConstructorToken(ctorRef.RuntimeConstructor!);
+                }
+                case CtorRefKind.Defined:
+                {
+                    var builder = ctorRef.Builder!;
+                    var declaringTypeToken = BuildTypeTokenFromRef(ctorRef.DeclaringType!);
+                    var parameterTypes = builder.ParameterTypes;
+                    var parameterTokens = new TypeToken[parameterTypes.Length];
+                    for (int index = 0; index < parameterTypes.Length; index++)
+                    {
+                        parameterTokens[index] = BuildTypeToken(parameterTypes[index]);
+                    }
+                    var returnTypeToken = TypeToken.CreatePrimitive(PrimitiveTypeKind.Void);
+                    return MethodToken.CreateMethodDef(
+                        declaringTypeToken, ".ctor", parameterTokens, returnTypeToken);
+                }
+                default:
+                {
+                    throw new InvalidOperationException(
+                        $"NgoWriter: cannot build constructor token for CtorRef kind '{ctorRef.Kind}'");
+                }
+            }
+        }
+
+        private FieldToken BuildFieldTokenFromRef(FieldRef fieldRef)
+        {
+            if (fieldRef == null)
+            {
+                throw new InvalidOperationException("NgoWriter: attempted to serialize a null field reference");
+            }
+            switch (fieldRef.Kind)
+            {
+                case FieldRefKind.Runtime:
+                {
+                    return BuildFieldToken(fieldRef.RuntimeField!);
+                }
+                case FieldRefKind.Defined:
+                {
+                    var declaringTypeToken = BuildTypeTokenFromRef(fieldRef.DeclaringType!);
+                    return FieldToken.CreateFieldDef(declaringTypeToken, fieldRef.Builder!.Name);
+                }
+                case FieldRefKind.MemberRef:
+                {
+                    var declaringTypeToken = BuildTypeTokenFromRef(fieldRef.DeclaringType!);
+                    return FieldToken.CreateMemberRef(declaringTypeToken, fieldRef.MemberName!);
+                }
+                default:
+                {
+                    throw new InvalidOperationException(
+                        $"NgoWriter: cannot build field token for FieldRef kind '{fieldRef.Kind}'");
+                }
+            }
+        }
+
         private MethodToken BuildMethodToken(MethodInfo method)
         {
             if (method == null)
@@ -710,7 +1020,7 @@ namespace Ngo.Compiler.Archive
             var parameterTokens = BuildParameterTypeTokens(method.GetParameters(), declaringType);
             var returnTypeToken = BuildTypeToken(method.ReturnType);
 
-            if (declaringType is NgoProxyType)
+            if (declaringType is NgoBuilderType)
             {
                 return MethodToken.CreateMethodDef(BuildTypeToken(declaringType), method.Name, parameterTokens, returnTypeToken);
             }
@@ -729,7 +1039,7 @@ namespace Ngo.Compiler.Archive
             var parameterTokens = BuildParameterTypeTokens(constructor.GetParameters(), declaringType);
             var returnTypeToken = TypeToken.CreatePrimitive(PrimitiveTypeKind.Void);
 
-            if (declaringType is NgoProxyType)
+            if (declaringType is NgoBuilderType)
             {
                 return MethodToken.CreateMethodDef(BuildTypeToken(declaringType), ".ctor", parameterTokens, returnTypeToken);
             }
@@ -741,7 +1051,7 @@ namespace Ngo.Compiler.Archive
         {
             var declaringType = field.DeclaringType!;
 
-            if (declaringType is NgoProxyType)
+            if (declaringType is NgoBuilderType)
             {
                 return FieldToken.CreateFieldDef(BuildTypeToken(declaringType), field.Name);
             }

@@ -203,7 +203,7 @@ namespace Ngo.Compiler.Emit
                     il.Emit(OpCodes.Ldarg_0);
                     il.Emit(OpCodes.Ldobj, structClrType);
                 }
-                il.Emit(OpCodes.Call, staticStringMethod.AsMethodInfo());
+                il.Emit(OpCodes.Call, staticStringMethod.AsMethodRef());
                 // Go String() returns GoString; convert to .NET string for ToString()
                 var tempGoStr = il.DeclareLocal(typeof(GoString));
                 il.Emit(OpCodes.Stloc, tempGoStr);
@@ -588,7 +588,7 @@ namespace Ngo.Compiler.Emit
             ctorIL.Emit(OpCodes.Call, typeof(object).GetConstructor(Type.EmptyTypes)!);
             ctorIL.Emit(OpCodes.Ldarg_0);
             ctorIL.Emit(OpCodes.Ldarg_1);
-            ctorIL.Emit(OpCodes.Stfld, valueField.AsFieldInfo());
+            ctorIL.Emit(OpCodes.Stfld, valueField.AsFieldRef());
             ctorIL.Emit(OpCodes.Ret);
 
             // Collect all interface methods — including inherited ones from embedded interfaces.
@@ -734,7 +734,7 @@ namespace Ngo.Compiler.Emit
                         _ctx.Definitions.RegisterMethod(qualifiedWrapperName, ifaceMethodName, wrapperParamTypes, wrapperMethod);
                         var wrapperIL = wrapperMethod.GetILWriter();
                         wrapperIL.Emit(OpCodes.Ldarg_0);
-                        wrapperIL.Emit(OpCodes.Ldfld, valueField.AsFieldInfo());
+                        wrapperIL.Emit(OpCodes.Ldfld, valueField.AsFieldRef());
                         for (int pi = 0; pi < ifaceMethod.Parameters.Count; pi++)
                         {
                             wrapperIL.Emit(OpCodes.Ldarg, pi + 1);
@@ -876,14 +876,14 @@ namespace Ngo.Compiler.Emit
                 {
                     // Promoted method: load _value then access the embedded field
                     methodIL.Emit(OpCodes.Ldarg_0);
-                    methodIL.Emit(OpCodes.Ldfld, valueField.AsFieldInfo());
-                    methodIL.Emit(OpCodes.Ldfld, _ctx.StructFields[embeddedField].AsFieldInfo());
+                    methodIL.Emit(OpCodes.Ldfld, valueField.AsFieldRef());
+                    methodIL.Emit(OpCodes.Ldfld, _ctx.StructFields[embeddedField].AsFieldRef());
                 }
                 else
                 {
                     // Direct method: load _value as the receiver
                     methodIL.Emit(OpCodes.Ldarg_0);
-                    methodIL.Emit(OpCodes.Ldfld, valueField.AsFieldInfo());
+                    methodIL.Emit(OpCodes.Ldfld, valueField.AsFieldRef());
                 }
 
                 // Load method arguments
@@ -891,7 +891,7 @@ namespace Ngo.Compiler.Emit
                     methodIL.Emit(OpCodes.Ldarg, i + 1);
 
                 // Call the static Go method
-                methodIL.Emit(OpCodes.Call, goMethod.AsMethodInfo());
+                methodIL.Emit(OpCodes.Call, goMethod.AsMethodRef());
                 methodIL.Emit(OpCodes.Ret);
 
                 // Explicit interface override so the binding is serialized in archives
@@ -948,10 +948,10 @@ namespace Ngo.Compiler.Emit
                 if (errorMethod != null && _ctx.Methods.TryGetValue(errorMethod, out var goErrorMethod))
                 {
                     tsIL.Emit(OpCodes.Ldarg_0);
-                    tsIL.Emit(OpCodes.Ldfld, valueField.AsFieldInfo());
+                    tsIL.Emit(OpCodes.Ldfld, valueField.AsFieldRef());
                     if (errorEmbeddedField != null)
-                        tsIL.Emit(OpCodes.Ldfld, _ctx.StructFields[errorEmbeddedField].AsFieldInfo());
-                    tsIL.Emit(OpCodes.Call, goErrorMethod.AsMethodInfo());
+                        tsIL.Emit(OpCodes.Ldfld, _ctx.StructFields[errorEmbeddedField].AsFieldRef());
+                    tsIL.Emit(OpCodes.Call, goErrorMethod.AsMethodRef());
                     // Go Error() returns GoString, but ToString() must return .NET string
                     var tempGoStr = tsIL.DeclareLocal(typeof(GoString));
                     tsIL.Emit(OpCodes.Stloc, tempGoStr);
@@ -1030,39 +1030,43 @@ namespace Ngo.Compiler.Emit
             _ctx.Definitions.RegisterMethod(wrapperTypeName, methodName, paramTypes, wrapperMethod);
 
             // Try to delegate to the concrete type's method
-            MethodInfo? concreteClrMethod = null;
+            Refs.MethodRef? concreteMethodRef = null;
             try
             {
-                concreteClrMethod = concreteClrType.GetMethod(methodName);
+                var runtimeMethod = concreteClrType.GetMethod(methodName);
+                if (runtimeMethod != null)
+                {
+                    concreteMethodRef = Refs.MethodRef.FromRuntime(runtimeMethod);
+                }
             }
             catch (NotSupportedException)
             {
             }
 
-            if (concreteClrMethod == null)
+            if (concreteMethodRef == null)
             {
                 var concreteMethod = concreteType.LookupMethod(methodName);
                 if (concreteMethod != null && _ctx.Methods.TryGetValue(concreteMethod, out var goMethod))
                 {
-                    concreteClrMethod = goMethod.AsMethodInfo();
+                    concreteMethodRef = goMethod.AsMethodRef();
                 }
-                if (concreteClrMethod == null && concreteMethod != null
+                if (concreteMethodRef == null && concreteMethod != null
                     && _ctx.CachedMethods.TryGetValue(concreteMethod, out var cachedMethod))
                 {
-                    concreteClrMethod = cachedMethod;
+                    concreteMethodRef = Refs.MethodRef.FromRuntime(cachedMethod);
                 }
             }
 
             var methodIL = wrapperMethod.GetILWriter();
-            if (concreteClrMethod != null)
+            if (concreteMethodRef != null)
             {
                 methodIL.Emit(OpCodes.Ldarg_0);
-                methodIL.Emit(OpCodes.Ldfld, valueField.AsFieldInfo());
+                methodIL.Emit(OpCodes.Ldfld, valueField.AsFieldRef());
                 for (int i = 0; i < clrParams.Length; i++)
                 {
                     methodIL.Emit(OpCodes.Ldarg, i + 1);
                 }
-                methodIL.Emit(concreteClrType.IsValueType ? OpCodes.Call : OpCodes.Callvirt, concreteClrMethod);
+                methodIL.Emit(concreteClrType.IsValueType ? OpCodes.Call : OpCodes.Callvirt, concreteMethodRef);
                 methodIL.Emit(OpCodes.Ret);
             }
             else

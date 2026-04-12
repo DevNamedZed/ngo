@@ -225,7 +225,7 @@ namespace Ngo.Compiler.Emit
                     {
                         continue;
                     }
-                    var baseMethod = registration.Builder.AsMethodInfo();
+                    var baseMethod = GetMethodBuilderInfo(registration);
                     if (IsGenericInstantiation(concreteType, typeDef))
                     {
                         return TypeBuilder.GetMethod(concreteType, baseMethod);
@@ -242,7 +242,7 @@ namespace Ngo.Compiler.Emit
             {
                 if (registration.Name == name)
                 {
-                    var baseField = registration.Builder.AsFieldInfo();
+                    var baseField = GetFieldBuilderInfo(registration);
                     if (IsGenericInstantiation(concreteType, typeDef))
                     {
                         return TypeBuilder.GetField(concreteType, baseField);
@@ -273,6 +273,26 @@ namespace Ngo.Compiler.Emit
             // This will be addressed when NgoConstructorBuilder implements the pattern.
             throw new InvalidOperationException(
                 "DefinitionTable: constructor builder does not expose a ConstructorInfo");
+        }
+
+        private static MethodInfo GetMethodBuilderInfo(MethodDefinition registration)
+        {
+            if (registration.Builder is LiveMethodBuilder liveBuilder)
+            {
+                return liveBuilder.Inner;
+            }
+            throw new InvalidOperationException(
+                "DefinitionTable: method builder does not expose a MethodInfo compatible with TypeBuilder.GetMethod");
+        }
+
+        private static FieldInfo GetFieldBuilderInfo(FieldDefinition registration)
+        {
+            if (registration.Builder is LiveFieldBuilder liveBuilder)
+            {
+                return liveBuilder.Inner;
+            }
+            throw new InvalidOperationException(
+                "DefinitionTable: field builder does not expose a FieldInfo compatible with TypeBuilder.GetField");
         }
 
         private static ConstructorInfo? ResolveConstructorOnRuntimeGenericWithBuilderArgs(Type type,
@@ -447,7 +467,7 @@ namespace Ngo.Compiler.Emit
             foreach (var argument in type.GetGenericArguments())
             {
                 if (argument is TypeBuilder || argument is GenericTypeParameterBuilder
-                    || argument is Builder.NgoProxyType)
+                    || argument is Builder.NgoBuilderType || argument is Builder.NgoGenericParameterType)
                 {
                     return true;
                 }

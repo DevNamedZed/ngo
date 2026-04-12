@@ -441,20 +441,18 @@ namespace Ngo.Compiler.Emit
                         var packageTypeName = ctx.PackageType?.AsType().Name;
                         foreach (var kvp in ctx.Methods)
                         {
-                            if (kvp.Key.Name == origFunc.Name)
+                            if (kvp.Key.Name == origFunc.Name
+                                && kvp.Value is Builder.LiveMethodBuilder liveBuilder)
                             {
-                                var declaringType = kvp.Value.AsMethodInfo().DeclaringType;
-                                if (declaringType != null && declaringType.Name == packageTypeName)
+                                var methodBuilder = liveBuilder.Inner;
+                                if (methodBuilder.DeclaringType?.Name == packageTypeName)
                                 {
-                                    ctx.CachedMethods[origFunc] = kvp.Value.AsMethodInfo();
+                                    ctx.CachedMethods[origFunc] = methodBuilder;
                                     // Also register in LinkedMethods so archive linking
                                     // can resolve cross-package method tokens
-                                    if (kvp.Value.AsMethodInfo() is MethodBuilder methodBuilder)
-                                    {
-                                        var linkedKey = packageTypeName + "." + origFunc.Name;
-                                        ctx.LinkedMethods[linkedKey] = methodBuilder;
-                                        ctx.LinkedMethods[origFunc.Name] = methodBuilder;
-                                    }
+                                    var linkedKey = packageTypeName + "." + origFunc.Name;
+                                    ctx.LinkedMethods[linkedKey] = methodBuilder;
+                                    ctx.LinkedMethods[origFunc.Name] = methodBuilder;
                                     break;
                                 }
                             }
@@ -467,9 +465,10 @@ namespace Ngo.Compiler.Emit
                         {
                             foreach (var kvp in ctx.Methods)
                             {
-                                if (kvp.Key.Name == origMethod.Name && kvp.Key is MethodSymbol)
+                                if (kvp.Key.Name == origMethod.Name && kvp.Key is MethodSymbol
+                                    && kvp.Value is Builder.LiveMethodBuilder liveBuilder)
                                 {
-                                    ctx.CachedMethods[origMethod] = kvp.Value.AsMethodInfo();
+                                    ctx.CachedMethods[origMethod] = liveBuilder.Inner;
                                     break;
                                 }
                             }
@@ -625,9 +624,10 @@ namespace Ngo.Compiler.Emit
                 var packageTypeName = ctx.PackageType?.AsType().Name;
                 foreach (var kvp in ctx.Methods)
                 {
-                    if (kvp.Value.AsMethodInfo() is MethodBuilder methodBuilder
-                        && methodBuilder.DeclaringType?.Name == packageTypeName)
+                    if (kvp.Value is Builder.LiveMethodBuilder liveBuilder
+                        && liveBuilder.Inner.DeclaringType?.Name == packageTypeName)
                     {
+                        var methodBuilder = liveBuilder.Inner;
                         var fullKey = packageTypeName + "." + methodBuilder.Name;
                         if (!ctx.LinkedMethods.ContainsKey(fullKey))
                         {

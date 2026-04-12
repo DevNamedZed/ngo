@@ -16,10 +16,31 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
+using System;
+using System.Reflection;
+using Ngo.Compiler.Emit.Refs;
+
 namespace Ngo.Compiler.Emit.Builder
 {
     internal interface IConstructorBuilder
     {
         CilWriter GetILWriter();
+
+        /// <summary>
+        /// Returns a CtorRef pointing at this constructor. Preferred over constructing reflection proxies at call sites.
+        /// </summary>
+        CtorRef AsCtorRef();
+
+        /// <summary>
+        /// The constructor's parameter types in declaration order. Used by NgoWriter to build
+        /// MethodDef tokens for .ctor references without going through a reflection proxy.
+        /// </summary>
+        Type[] ParameterTypes { get; }
+
+        /// <summary>
+        /// The constructor's method attributes. Needed by NgoWriter for stack tracking
+        /// (static vs. instance, although ctors are instance in practice).
+        /// </summary>
+        MethodAttributes Attributes { get; }
     }
 }

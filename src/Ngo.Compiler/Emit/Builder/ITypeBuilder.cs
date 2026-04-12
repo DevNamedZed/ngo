@@ -45,7 +45,9 @@ namespace Ngo.Compiler.Emit.Builder
 
         /// <summary>
         /// Returns this type as a System.Type for use in TypeMapper, CilWriter.Emit, etc.
-        /// Live: returns the wrapped TypeBuilder. Ngo: returns a named proxy type.
+        /// Live: returns the wrapped TypeBuilder. Ngo: returns a named NgoBuilderType
+        /// that carries metadata (name, generic arity, value-type flag) without requiring
+        /// reflection on an unfinished TypeBuilder.
         /// </summary>
         Type AsType();
 

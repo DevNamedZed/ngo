@@ -20,6 +20,7 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Reflection.Emit;
+using Ngo.Compiler.Emit.Refs;
 
 namespace Ngo.Compiler.Emit.Builder
 {
@@ -172,6 +173,30 @@ namespace Ngo.Compiler.Emit.Builder
             }
             Log($"{op.Name} {declaringName}::{field.Name} (fieldType={field.FieldType?.Name ?? "?"})");
             _inner.Emit(op, field);
+        }
+
+        public override void Emit(OpCode op, TypeRef typeRef)
+        {
+            Log($"{op.Name} [{typeRef.DisplayName}]");
+            _inner.Emit(op, typeRef);
+        }
+
+        public override void Emit(OpCode op, MethodRef methodRef)
+        {
+            Log($"{op.Name} {methodRef}");
+            _inner.Emit(op, methodRef);
+        }
+
+        public override void Emit(OpCode op, CtorRef ctorRef)
+        {
+            Log($"{op.Name} {ctorRef}");
+            _inner.Emit(op, ctorRef);
+        }
+
+        public override void Emit(OpCode op, FieldRef fieldRef)
+        {
+            Log($"{op.Name} {fieldRef}");
+            _inner.Emit(op, fieldRef);
         }
 
         public override void Emit(OpCode op, Label label)

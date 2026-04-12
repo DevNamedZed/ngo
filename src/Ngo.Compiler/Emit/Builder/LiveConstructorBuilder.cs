@@ -16,17 +16,40 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
+using System;
+using System.Reflection;
 using System.Reflection.Emit;
+using Ngo.Compiler.Emit.Refs;
 
 namespace Ngo.Compiler.Emit.Builder
 {
     internal sealed class LiveConstructorBuilder : IConstructorBuilder
     {
         private readonly ConstructorBuilder _cb;
+        private readonly Type[] _paramTypes;
 
-        public LiveConstructorBuilder(ConstructorBuilder cb) => _cb = cb;
+        public LiveConstructorBuilder(ConstructorBuilder cb)
+            : this(cb, Type.EmptyTypes)
+        {
+        }
+
+        public LiveConstructorBuilder(ConstructorBuilder cb, Type[] paramTypes)
+        {
+            _cb = cb;
+            _paramTypes = paramTypes ?? Type.EmptyTypes;
+        }
 
         public ConstructorBuilder Inner => _cb;
+        public Type[] ParameterTypes => _paramTypes;
+        public MethodAttributes Attributes => _cb.Attributes;
         public CilWriter GetILWriter() => new ILGeneratorWriter(_cb.GetILGenerator());
+
+        public CtorRef AsCtorRef()
+        {
+            var declaringType = _cb.DeclaringType
+                ?? throw new InvalidOperationException(
+                    "LiveConstructorBuilder.AsCtorRef: underlying ConstructorBuilder has no declaring type");
+            return CtorRef.FromBuilder(this, TypeRef.FromRuntime(declaringType));
+        }
     }
 }

@@ -72,26 +72,26 @@ namespace Ngo.Runtime.Log
         [GoMethod(IsVariadic = true)]
         public void Println(params object?[] args)
         {
-            Output(FormatArgsLine(args));
+            WriteOutput(FormatArgsLine(args));
         }
 
         [GoMethod(IsVariadic = true)]
         public void Printf(GoString format, params object?[] args)
         {
             var formatted = Fmt.Package.Sprintf(format.ToNetString(), args).ToNetString();
-            Output(formatted);
+            WriteOutput(formatted);
         }
 
         [GoMethod(IsVariadic = true)]
         public void Print(params object?[] args)
         {
-            Output(FormatArgs(args));
+            WriteOutput(FormatArgs(args));
         }
 
         [GoMethod(IsVariadic = true)]
         public void Fatal(params object?[] args)
         {
-            Output(FormatArgs(args));
+            WriteOutput(FormatArgs(args));
             Environment.Exit(1);
         }
 
@@ -99,18 +99,57 @@ namespace Ngo.Runtime.Log
         public void Fatalf(GoString format, params object?[] args)
         {
             var formatted = Fmt.Package.Sprintf(format.ToNetString(), args).ToNetString();
-            Output(formatted);
+            WriteOutput(formatted);
             Environment.Exit(1);
         }
 
         [GoMethod(IsVariadic = true)]
         public void Fatalln(params object?[] args)
         {
-            Output(FormatArgsLine(args));
+            WriteOutput(FormatArgsLine(args));
             Environment.Exit(1);
         }
 
-        private void Output(string message)
+        [GoMethod(IsVariadic = true)]
+        public void Panic(params object?[] args)
+        {
+            var message = FormatArgs(args);
+            WriteOutput(message);
+            throw new GoPanicException(message);
+        }
+
+        [GoMethod(IsVariadic = true)]
+        public void Panicf(GoString format, params object?[] args)
+        {
+            var formatted = Fmt.Package.Sprintf(format.ToNetString(), args).ToNetString();
+            WriteOutput(formatted);
+            throw new GoPanicException(formatted);
+        }
+
+        [GoMethod(IsVariadic = true)]
+        public void Panicln(params object?[] args)
+        {
+            var message = FormatArgsLine(args);
+            WriteOutput(message);
+            throw new GoPanicException(message);
+        }
+
+        [GoMethod]
+        [return: GoReturn("error")]
+        public object? Output(long calldepth, GoString message)
+        {
+            WriteOutput(message.ToNetString());
+            return null;
+        }
+
+        [GoMethod]
+        [return: GoReturn("io.Writer")]
+        public object Writer()
+        {
+            return _output;
+        }
+
+        private void WriteOutput(string message)
         {
             var now = DateTime.Now;
             var sb = new System.Text.StringBuilder();

@@ -16,6 +16,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
+using System;
 using Ngo.Runtime.Discovery;
 
 namespace Ngo.Runtime.Math.Rand
@@ -24,6 +25,46 @@ namespace Ngo.Runtime.Math.Rand
     public static class Package
     {
         private static System.Random _random = new System.Random();
+
+        [GoFunc]
+        [return: GoReturn("Source")]
+        public static object NewSource(long seed)
+        {
+            return new GoRandSource(seed);
+        }
+
+        [GoFunc]
+        [return: GoReturn("*Rand")]
+        public static GoRand New([GoParam("Source")] object source)
+        {
+            IGoRandSource resolvedSource = source as IGoRandSource ?? new GoRandSource(1);
+            return new GoRand(resolvedSource);
+        }
+
+        [GoFunc]
+        public static void Shuffle(long n, [GoParam("func(i, j int)")] Action<long, long> swap)
+        {
+            if (swap == null || n < 2)
+            {
+                return;
+            }
+            for (long i = n - 1; i > 0; i--)
+            {
+                long j = unchecked((long)(_random.NextDouble() * (i + 1)));
+                swap(i, j);
+            }
+        }
+
+        [GoFunc]
+        public static (long, object?) Read(Slice<byte> buffer)
+        {
+            int length = buffer.Len;
+            for (int i = 0; i < length; i++)
+            {
+                buffer[i] = (byte)_random.Next(256);
+            }
+            return (length, null);
+        }
 
         [GoFunc]
         public static void Seed(long seed)
@@ -41,6 +82,12 @@ namespace Ngo.Runtime.Math.Rand
         public static double Float64()
         {
             return _random.NextDouble();
+        }
+
+        [GoFunc]
+        public static float Float32()
+        {
+            return (float)_random.NextDouble();
         }
 
         [GoFunc]

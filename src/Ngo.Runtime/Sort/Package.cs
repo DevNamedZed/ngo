@@ -263,6 +263,82 @@ namespace Ngo.Runtime.Sort
         }
 
         /// <summary>
+        /// Go sort.SliceStable: stable sort via less function. Uses binary-insertion
+        /// merge sort so equal elements retain their original relative order.
+        /// </summary>
+        public static void SliceStable(object sliceObj, Func<long, long, bool> less)
+        {
+            if (sliceObj is not ISliceOps ops || ops.Len <= 1)
+            {
+                return;
+            }
+
+            StableSortByIndex(ops, less, 0, ops.Len);
+        }
+
+        private static void StableSortByIndex(ISliceOps ops, Func<long, long, bool> less, int low, int high)
+        {
+            int length = high - low;
+            if (length < 2)
+            {
+                return;
+            }
+
+            const int runSize = 16;
+            for (int start = low; start < high; start += runSize)
+            {
+                int end = System.Math.Min(start + runSize, high);
+                InsertionSortStable(ops, less, start, end);
+            }
+
+            for (int width = runSize; width < length; width *= 2)
+            {
+                for (int leftStart = low; leftStart < high - width; leftStart += 2 * width)
+                {
+                    int mid = leftStart + width;
+                    int rightEnd = System.Math.Min(leftStart + 2 * width, high);
+                    MergeStable(ops, less, leftStart, mid, rightEnd);
+                }
+            }
+        }
+
+        private static void InsertionSortStable(ISliceOps ops, Func<long, long, bool> less, int low, int high)
+        {
+            for (int i = low + 1; i < high; i++)
+            {
+                for (int j = i; j > low && less(j, j - 1); j--)
+                {
+                    ops.Swap(j, j - 1);
+                }
+            }
+        }
+
+        private static void MergeStable(ISliceOps ops, Func<long, long, bool> less, int low, int mid, int high)
+        {
+            int left = low;
+            int right = mid;
+            while (left < right && right < high)
+            {
+                if (less(right, left))
+                {
+                    int target = right;
+                    while (target > left)
+                    {
+                        ops.Swap(target, target - 1);
+                        target--;
+                    }
+                    left++;
+                    right++;
+                    mid++;
+                }
+                else
+                {
+                    left++;
+                }
+            }
+        }
+
+        /// <summary>
         /// Go sort.SliceIsSorted: reports whether a slice is sorted according to less.
         /// </summary>
         public static bool SliceIsSorted(object sliceObj, Func<long, long, bool> less)

@@ -358,117 +358,124 @@ namespace Ngo.Compiler.Semantics
                     continue;
                 }
 
-                // Resolve deferred underlying types now that all type names are registered
-                if (goType._deferredUnderlying != null)
+                // Push this type's TypeParameters into typeMap so any StringToType call
+                // below (deferred underlying, field types, method parameter/return types)
+                // resolves references like *T, K, V to the real TypeParameterSymbol instead
+                // of manufacturing a fake empty StructTypeSymbol via the unknown-type fallthrough.
+                var savedTypeParams = new Dictionary<string, TypeSymbol>();
+                foreach (var typeParam in goType.TypeParameters)
                 {
-                    // Push type parameters into typeMap so underlying type refs like K, V resolve
-                    var savedTypeParams = new Dictionary<string, TypeSymbol>();
-                    foreach (var typeParam in goType.TypeParameters)
+                    if (!typeMap.ContainsKey(typeParam.Name))
                     {
-                        if (!typeMap.ContainsKey(typeParam.Name))
+                        typeMap[typeParam.Name] = typeParam;
+                        savedTypeParams[typeParam.Name] = typeParam;
+                    }
+                }
+
+                try
+                {
+                    // Resolve deferred underlying types now that all type names are registered
+                    if (goType._deferredUnderlying != null)
+                    {
+                        var underlying = PackageMetadataSerializer.StringToType(
+                            goType._deferredUnderlying, typeMap, crossPkgResolver);
+                        goType.UnderlyingType = underlying;
+                        goType.TypeKind = underlying.TypeKind;
+                        goType._deferredUnderlying = null;
+                    }
+
+                    if (goType is StructTypeSymbol structType)
+                    {
+                        var fields = new List<FieldSymbol>();
+                        // Include inherited fields to support Go struct embedding (base class = embedded struct)
+                        foreach (var fi in entry.ClrType.GetFields(BindingFlags.Public | BindingFlags.Instance))
                         {
-                            typeMap[typeParam.Name] = typeParam;
-                            savedTypeParams[typeParam.Name] = typeParam;
+                            var fieldAttr = fi.GetCustomAttribute<GoFieldAttribute>();
+                            if (fieldAttr == null)
+                            {
+                                continue;
+                            }
+                            var fieldName = fieldAttr.Name ?? fi.Name;
+                            var fieldType = fieldAttr.Type != null
+                                ? PackageMetadataSerializer.StringToType(fieldAttr.Type, typeMap, crossPkgResolver)
+                                : MapClrType(fi.FieldType, typeMap);
+                            fields.Add(new FieldSymbol(fieldName, fieldType, fields.Count, isEmbedded: fieldAttr.Embedded));
+                        }
+                        foreach (var pi in entry.ClrType.GetProperties(BindingFlags.Public | BindingFlags.Instance))
+                        {
+                            var fieldAttr = pi.GetCustomAttribute<GoFieldAttribute>();
+                            if (fieldAttr == null)
+                            {
+                                continue;
+                            }
+                            var fieldName = fieldAttr.Name ?? pi.Name;
+                            var fieldType = fieldAttr.Type != null
+                                ? PackageMetadataSerializer.StringToType(fieldAttr.Type, typeMap, crossPkgResolver)
+                                : MapClrType(pi.PropertyType, typeMap);
+                            fields.Add(new FieldSymbol(fieldName, fieldType, fields.Count, isEmbedded: fieldAttr.Embedded));
+                        }
+                        if (fields.Count > 0)
+                        {
+                            structType.SetFields(fields);
                         }
                     }
 
-                    var underlying = PackageMetadataSerializer.StringToType(
-                        goType._deferredUnderlying, typeMap, crossPkgResolver);
-                    goType.UnderlyingType = underlying;
-                    goType.TypeKind = underlying.TypeKind;
-                    goType._deferredUnderlying = null;
+                    // For type methods, only include instance methods (not static — those are package functions)
+                    // Exception: include static methods only if the class doesn't also have [GoPackage]
+                    var includeStatic = entry.ClrType.GetCustomAttribute<GoPackageAttribute>() == null;
+                    // Include inherited methods for Go struct embedding support
+                    var methodFlags = BindingFlags.Public | BindingFlags.Instance;
+                    if (includeStatic)
+                    {
+                        methodFlags |= BindingFlags.Static;
+                    }
+                    // For interfaces, also include inherited methods from parent interfaces
+                    // (e.g., io.ReadSeeker inherits Read from Reader and Seek from Seeker)
+                    var methods = entry.ClrType.GetMethods(methodFlags);
+                    if (goType is InterfaceTypeSymbol && entry.ClrType.IsInterface)
+                    {
+                        var allMethods = new List<System.Reflection.MethodInfo>(methods);
+                        var seen = new HashSet<string>();
+                        foreach (var m in methods) seen.Add(m.Name);
+                        foreach (var parentIface in entry.ClrType.GetInterfaces())
+                        {
+                            foreach (var m in parentIface.GetMethods(BindingFlags.Public | BindingFlags.Instance))
+                            {
+                                if (!m.IsSpecialName && seen.Add(m.Name))
+                                    allMethods.Add(m);
+                            }
+                        }
+                        methods = allMethods.ToArray();
+                    }
+                    foreach (var mi in methods)
+                    {
+                        if (mi.IsSpecialName) continue; // skip property getters/setters
+                        // Skip .NET System.Object methods (GetType, ToString, Equals, GetHashCode)
+                        if (mi.DeclaringType == typeof(object)) continue;
 
-                    // Remove type parameters from typeMap to avoid polluting other types
+                        var methodAttr = mi.GetCustomAttribute<GoMethodAttribute>();
+                        var methodName = methodAttr?.Name ?? mi.Name;
+                        var isMethodVariadic = methodAttr?.IsVariadic ?? HasParamsArray(mi);
+                        var parameters = BuildParameters(mi, typeMap, isMethodVariadic, crossPkgResolver);
+                        var returnTypes = BuildReturnTypes(mi, typeMap, crossPkgResolver);
+
+                        if (goType is InterfaceTypeSymbol ifaceType)
+                        {
+                            ifaceType.AddMethod(new MethodSymbol(methodName, null!, false,
+                                Array.Empty<TypeParameterSymbol>(), parameters, returnTypes, isMethodVariadic));
+                        }
+                        else
+                        {
+                            goType.AddMethod(new MethodSymbol(methodName, goType, false,
+                                Array.Empty<TypeParameterSymbol>(), parameters, returnTypes, isMethodVariadic));
+                        }
+                    }
+                }
+                finally
+                {
                     foreach (var savedParam in savedTypeParams)
                     {
                         typeMap.Remove(savedParam.Key);
-                    }
-                }
-
-                if (goType is StructTypeSymbol structType)
-                {
-                    var fields = new List<FieldSymbol>();
-                    // Include inherited fields to support Go struct embedding (base class = embedded struct)
-                    foreach (var fi in entry.ClrType.GetFields(BindingFlags.Public | BindingFlags.Instance))
-                    {
-                        var fieldAttr = fi.GetCustomAttribute<GoFieldAttribute>();
-                        if (fieldAttr == null)
-                        {
-                            continue;
-                        }
-                        var fieldName = fieldAttr.Name ?? fi.Name;
-                        var fieldType = fieldAttr.Type != null
-                            ? PackageMetadataSerializer.StringToType(fieldAttr.Type, typeMap, crossPkgResolver)
-                            : MapClrType(fi.FieldType, typeMap);
-                        fields.Add(new FieldSymbol(fieldName, fieldType, fields.Count, isEmbedded: fieldAttr.Embedded));
-                    }
-                    foreach (var pi in entry.ClrType.GetProperties(BindingFlags.Public | BindingFlags.Instance))
-                    {
-                        var fieldAttr = pi.GetCustomAttribute<GoFieldAttribute>();
-                        if (fieldAttr == null)
-                        {
-                            continue;
-                        }
-                        var fieldName = fieldAttr.Name ?? pi.Name;
-                        var fieldType = fieldAttr.Type != null
-                            ? PackageMetadataSerializer.StringToType(fieldAttr.Type, typeMap, crossPkgResolver)
-                            : MapClrType(pi.PropertyType, typeMap);
-                        fields.Add(new FieldSymbol(fieldName, fieldType, fields.Count, isEmbedded: fieldAttr.Embedded));
-                    }
-                    if (fields.Count > 0)
-                    {
-                        structType.SetFields(fields);
-                    }
-                }
-
-                // For type methods, only include instance methods (not static — those are package functions)
-                // Exception: include static methods only if the class doesn't also have [GoPackage]
-                var includeStatic = entry.ClrType.GetCustomAttribute<GoPackageAttribute>() == null;
-                // Include inherited methods for Go struct embedding support
-                var methodFlags = BindingFlags.Public | BindingFlags.Instance;
-                if (includeStatic)
-                {
-                    methodFlags |= BindingFlags.Static;
-                }
-                // For interfaces, also include inherited methods from parent interfaces
-                // (e.g., io.ReadSeeker inherits Read from Reader and Seek from Seeker)
-                var methods = entry.ClrType.GetMethods(methodFlags);
-                if (goType is InterfaceTypeSymbol && entry.ClrType.IsInterface)
-                {
-                    var allMethods = new List<System.Reflection.MethodInfo>(methods);
-                    var seen = new HashSet<string>();
-                    foreach (var m in methods) seen.Add(m.Name);
-                    foreach (var parentIface in entry.ClrType.GetInterfaces())
-                    {
-                        foreach (var m in parentIface.GetMethods(BindingFlags.Public | BindingFlags.Instance))
-                        {
-                            if (!m.IsSpecialName && seen.Add(m.Name))
-                                allMethods.Add(m);
-                        }
-                    }
-                    methods = allMethods.ToArray();
-                }
-                foreach (var mi in methods)
-                {
-                    if (mi.IsSpecialName) continue; // skip property getters/setters
-                    // Skip .NET System.Object methods (GetType, ToString, Equals, GetHashCode)
-                    if (mi.DeclaringType == typeof(object)) continue;
-
-                    var methodAttr = mi.GetCustomAttribute<GoMethodAttribute>();
-                    var methodName = methodAttr?.Name ?? mi.Name;
-                    var isMethodVariadic = methodAttr?.IsVariadic ?? HasParamsArray(mi);
-                    var parameters = BuildParameters(mi, typeMap, isMethodVariadic, crossPkgResolver);
-                    var returnTypes = BuildReturnTypes(mi, typeMap, crossPkgResolver);
-
-                    if (goType is InterfaceTypeSymbol ifaceType)
-                    {
-                        ifaceType.AddMethod(new MethodSymbol(methodName, null!, false,
-                            Array.Empty<TypeParameterSymbol>(), parameters, returnTypes, isMethodVariadic));
-                    }
-                    else
-                    {
-                        goType.AddMethod(new MethodSymbol(methodName, goType, false,
-                            Array.Empty<TypeParameterSymbol>(), parameters, returnTypes, isMethodVariadic));
                     }
                 }
             }

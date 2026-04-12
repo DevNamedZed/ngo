@@ -90,9 +90,9 @@ namespace Ngo.Compiler.Emit
         // All linked field builders across all archives (for cross-package variable access)
         public Dictionary<string, FieldBuilder> LinkedFields { get; } = new();
 
-        private readonly Dictionary<string, MethodInfo> _crossPkgMethodCache = new();
+        private readonly Dictionary<string, Refs.MethodRef> _crossPkgMethodCache = new();
 
-        public MethodInfo GetCrossPackageMethod(Symbols.FunctionSymbol func, TypeMapper mapper)
+        public Refs.MethodRef GetCrossPackageMethod(Symbols.FunctionSymbol func, TypeMapper mapper)
         {
             var key = (func.PackageName ?? "") + "::" + func.Name;
             if (_crossPkgMethodCache.TryGetValue(key, out var cached))
@@ -103,18 +103,19 @@ namespace Ngo.Compiler.Emit
             var fullPackageName = func.PackageName ?? "unknown";
             var lastSlash = fullPackageName.LastIndexOf('/');
             var shortPackageName = lastSlash >= 0 ? fullPackageName.Substring(lastSlash + 1) : fullPackageName;
-            var declaringType = new Builder.NgoProxyType(shortPackageName);
+            var declaringType = Refs.TypeRef.ExternalPackage(fullPackageName, shortPackageName);
 
-            var paramTypes = new Type[func.Parameters.Count];
-            for (int i = 0; i < paramTypes.Length; i++)
+            var parameterTypeRefs = new Refs.TypeRef[func.Parameters.Count];
+            for (int i = 0; i < parameterTypeRefs.Length; i++)
             {
-                paramTypes[i] = mapper.Map(func.Parameters[i].Type);
+                parameterTypeRefs[i] = Refs.TypeRef.FromRuntime(mapper.Map(func.Parameters[i].Type));
             }
 
-            var returnType = mapper.MapReturnType(func.ReturnTypes);
-            var proxy = new Builder.NgoProxyMethodInfo(declaringType, func.Name, paramTypes, returnType);
-            _crossPkgMethodCache[key] = proxy;
-            return proxy;
+            var returnTypeRef = Refs.TypeRef.FromRuntime(mapper.MapReturnType(func.ReturnTypes));
+            var methodRef = Refs.MethodRef.MemberRef(
+                declaringType, func.Name, parameterTypeRefs, returnTypeRef, isStatic: true);
+            _crossPkgMethodCache[key] = methodRef;
+            return methodRef;
         }
 
         // CGo native library resolver initializer (called from .cctor)
@@ -197,313 +198,14 @@ namespace Ngo.Compiler.Emit
         public bool IsExported(string goName) =>
             goName.Length > 0 && char.IsUpper(goName[0]);
 
-        /// <summary>
-        /// Gets a constructor from a possibly TypeBuilder-instantiated generic type.
-        /// When a generic type is instantiated with TypeBuilder args, normal GetConstructor fails.
-        /// </summary>
-        public static ConstructorInfo GetConstructorSafe(Type type, Type[] paramTypes)
-        {
-            bool typeHasTBArgs = HasTypeBuilderArgs(type);
-            bool paramsHaveTB = HasAnyTypeBuilder(paramTypes);
-
-            if (typeHasTBArgs)
-            {
-                // When the type has TypeBuilder generic arguments (e.g., Slice<MyStructBuilder>),
-                // always use NgoProxyConstructorInfo. The ConstructorInfo from TypeBuilder.GetConstructor
-                // has broken GetParameters() that returns generic type params like 'T' instead of
-                // the actual instantiated types, which breaks NgoWriter serialization.
-                return new Builder.NgoProxyConstructorInfo(type, paramTypes);
-            }
-
-            if (paramsHaveTB)
-            {
-                // Type is normal but params contain TypeBuilders — match by count
-                foreach (var ctor in type.GetConstructors())
-                {
-                    if (ctor.GetParameters().Length == paramTypes.Length)
-                        return ctor;
-                }
-            }
-
-            return type.GetConstructor(paramTypes)!;
-        }
-
-        /// <summary>
-        /// Gets a field from a possibly TypeBuilder-instantiated generic type.
-        /// </summary>
-        public static FieldInfo GetFieldSafe(Type type, string name)
-        {
-            if (HasTypeBuilderArgs(type))
-            {
-                var genericDef = type.GetGenericTypeDefinition();
-                var baseField = genericDef.GetField(name);
-                if (baseField != null)
-                {
-                    try
-                    {
-                        return TypeBuilder.GetField(type, baseField);
-                    }
-                    catch (NotSupportedException)
-                    {
-                        return new Builder.NgoProxyFieldInfo(type, name, baseField.FieldType);
-                    }
-                }
-            }
-            var field = type.GetField(name);
-            if (field == null)
-            {
-                throw new InvalidOperationException(
-                    $"Field '{name}' not found on type '{type.FullName ?? type.Name}'");
-            }
-            return field;
-        }
-
-        /// <summary>
-        /// Gets a method from a possibly TypeBuilder-instantiated generic type.
-        /// </summary>
-        public static MethodInfo GetMethodSafe(Type type, string name, Type[]? paramTypes = null)
-        {
-            bool typeHasTBArgs = HasTypeBuilderArgs(type);
-            bool paramsHaveTB = paramTypes != null && HasAnyTypeBuilder(paramTypes);
-
-            if (typeHasTBArgs)
-            {
-                var genericDef = type.GetGenericTypeDefinition();
-                MethodInfo? baseMethod = null;
-
-                if (paramTypes != null && !paramsHaveTB)
-                {
-                    baseMethod = genericDef.GetMethod(name, paramTypes);
-                }
-
-                // Param types contain TypeBuilders or exact match failed — find by name + count.
-                // When multiple overloads share the same name and arity (e.g. Slice<T>.Append
-                // has both (Slice<T>, T[]) and (Slice<T>, Slice<T>)), compare the generic shape
-                // of each parameter to disambiguate.
-                if (baseMethod == null)
-                {
-                    var typeGenericArgs = type.GetGenericArguments();
-                    MethodInfo? fallback = null;
-                    foreach (var m in genericDef.GetMethods())
-                    {
-                        if (m.Name != name || (paramTypes != null && m.GetParameters().Length != paramTypes.Length))
-                        {
-                            continue;
-                        }
-                        if (paramTypes != null)
-                        {
-                            var methodParams = m.GetParameters();
-                            bool shapesMatch = true;
-                            for (int pi = 0; pi < paramTypes.Length; pi++)
-                            {
-                                if (!GenericShapeMatches(methodParams[pi].ParameterType, paramTypes[pi], typeGenericArgs))
-                                {
-                                    shapesMatch = false;
-                                    break;
-                                }
-                            }
-                            if (shapesMatch)
-                            {
-                                baseMethod = m;
-                                break;
-                            }
-                            // Keep the first name+count match as fallback
-                            fallback ??= m;
-                        }
-                        else
-                        {
-                            baseMethod = m;
-                            break;
-                        }
-                    }
-                    baseMethod ??= fallback;
-                }
-
-                if (baseMethod == null && paramTypes == null)
-                    baseMethod = genericDef.GetMethod(name);
-
-                if (baseMethod != null)
-                {
-                    try
-                    {
-                        return TypeBuilder.GetMethod(type, baseMethod);
-                    }
-                    catch (NotSupportedException)
-                    {
-                        var baseParams = baseMethod.GetParameters();
-                        var proxyParams = new Type[baseParams.Length];
-                        for (int pi = 0; pi < baseParams.Length; pi++)
-                        {
-                            proxyParams[pi] = baseParams[pi].ParameterType;
-                        }
-                        return new Builder.NgoProxyMethodInfo(type, name, proxyParams, baseMethod.ReturnType);
-                    }
-                }
-            }
-
-            if (paramTypes != null)
-            {
-                if (paramsHaveTB || IsNonRuntimeType(type))
-                {
-                    try
-                    {
-                        foreach (var m in type.GetMethods())
-                        {
-                            if (m.Name == name && m.GetParameters().Length == paramTypes.Length)
-                                return m;
-                        }
-                    }
-                    catch (NotSupportedException)
-                    {
-                        // TypeBuilderInstantiation doesn't support GetMethods()
-                        // Use TypeBuilder.GetMethod for generic type instantiations
-                        if (type.IsGenericType && type.GetGenericTypeDefinition() is System.Reflection.Emit.TypeBuilder genericDef)
-                        {
-                            var baseMethods = genericDef.GetMethods();
-                            foreach (var baseMethod in baseMethods)
-                            {
-                                if (baseMethod.Name == name && baseMethod.GetParameters().Length == paramTypes.Length)
-                                {
-                                    return System.Reflection.Emit.TypeBuilder.GetMethod(type, baseMethod);
-                                }
-                            }
-                        }
-                    }
-                }
-                    try
-                {
-                    return type.GetMethod(name, paramTypes)!;
-                }
-                catch (NotSupportedException)
-                {
-                    // Verify the method exists on the generic definition before creating a proxy.
-                    // This prevents fake proxies for methods that don't exist on the type.
-                    if (type.IsGenericType)
-                    {
-                        var genDef = type.GetGenericTypeDefinition();
-                        bool found = false;
-                        foreach (var candidate in genDef.GetMethods())
-                        {
-                            if (candidate.Name == name && candidate.GetParameters().Length == paramTypes.Length)
-                            {
-                                found = true;
-                                break;
-                            }
-                        }
-                        if (!found)
-                        {
-                            return null;
-                        }
-                    }
-                    return new Builder.NgoProxyMethodInfo(type, name, paramTypes, typeof(object));
-                }
-            }
-            try
-            {
-                var result = type.GetMethod(name);
-                return result;
-            }
-            catch (NotSupportedException)
-            {
-                // Verify method exists on generic definition before creating proxy
-                if (type.IsGenericType)
-                {
-                    var genDef = type.GetGenericTypeDefinition();
-                    if (genDef.GetMethod(name) == null)
-                    {
-                        return null;
-                    }
-                }
-                return new Builder.NgoProxyMethodInfo(type, name);
-            }
-        }
-
-        /// <summary>
-        /// Gets a property getter from a possibly TypeBuilder-instantiated generic type.
-        /// </summary>
-        public static MethodInfo GetPropertyGetterSafe(Type type, string name)
-        {
-            if (HasTypeBuilderArgs(type))
-            {
-                var genericDef = type.GetGenericTypeDefinition();
-                var baseProp = genericDef.GetProperty(name);
-                if (baseProp != null)
-                {
-                    var baseGetter = baseProp.GetGetMethod()!;
-                    try
-                    {
-                        return TypeBuilder.GetMethod(type, baseGetter);
-                    }
-                    catch (NotSupportedException)
-                    {
-                        return new Builder.NgoProxyMethodInfo(type, baseGetter.Name,
-                            Type.EmptyTypes, baseProp.PropertyType);
-                    }
-                }
-            }
-            return type.GetProperty(name)!.GetGetMethod()!;
-        }
-
-        /// <summary>
-        /// Gets a property setter from a possibly TypeBuilder-instantiated generic type.
-        /// </summary>
-        public static MethodInfo GetPropertySetterSafe(Type type, string name)
-        {
-            if (HasTypeBuilderArgs(type))
-            {
-                var genericDef = type.GetGenericTypeDefinition();
-                var baseProp = genericDef.GetProperty(name);
-                if (baseProp != null)
-                {
-                    var baseSetter = baseProp.GetSetMethod()!;
-                    return TypeBuilder.GetMethod(type, baseSetter);
-                }
-            }
-            return type.GetProperty(name)!.GetSetMethod()!;
-        }
-
         public static bool HasAnyTypeBuilderPublic(Type[] types) => HasAnyTypeBuilder(types);
 
         public static bool IsNonRuntimeType(Type type)
         {
             return type is TypeBuilder
                 || type is GenericTypeParameterBuilder
-                || type is Builder.NgoProxyType;
-        }
-
-        /// <summary>
-        /// Checks whether a generic definition parameter type (e.g. Slice&lt;!0&gt; or !0[])
-        /// structurally matches a concrete caller type (e.g. Slice&lt;Ptr&lt;Regexp&gt;&gt;).
-        /// This is used to disambiguate overloads when TypeBuilder args prevent exact matching.
-        /// </summary>
-        private static bool GenericShapeMatches(Type definitionParamType, Type callerParamType, Type[] typeGenericArgs)
-        {
-            // Generic parameter (!0, !1, etc.) — matches any caller type that corresponds to the
-            // type argument at that position. Since we can't easily compare substituted types
-            // across TypeBuilder boundaries, treat generic parameters as matching any type.
-            if (definitionParamType.IsGenericParameter)
-            {
-                return true;
-            }
-
-            // Array type (!0[]) — caller must also be an array
-            if (definitionParamType.IsArray)
-            {
-                return callerParamType.IsArray;
-            }
-
-            // Generic type (Slice<!0>) — caller must be a generic type with the same definition
-            if (definitionParamType.IsGenericType)
-            {
-                if (!callerParamType.IsGenericType)
-                {
-                    return false;
-                }
-                return definitionParamType.GetGenericTypeDefinition() == callerParamType.GetGenericTypeDefinition();
-            }
-
-            // Non-generic, non-array, non-parameter: compare directly (e.g. int, string)
-            return definitionParamType == callerParamType;
+                || type is Builder.NgoBuilderType
+                || type is Builder.NgoGenericParameterType;
         }
 
         private static bool HasAnyTypeBuilder(Type[] types)

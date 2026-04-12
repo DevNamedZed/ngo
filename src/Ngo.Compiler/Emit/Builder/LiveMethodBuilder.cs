@@ -19,19 +19,45 @@
 using System;
 using System.Reflection;
 using System.Reflection.Emit;
+using Ngo.Compiler.Emit.Refs;
 
 namespace Ngo.Compiler.Emit.Builder
 {
     internal sealed class LiveMethodBuilder : IMethodBuilder
     {
         private readonly MethodBuilder _mb;
+        private Type _returnType;
+        private Type[] _paramTypes;
 
-        public LiveMethodBuilder(MethodBuilder mb) => _mb = mb;
+        public LiveMethodBuilder(MethodBuilder mb)
+            : this(mb, typeof(void), Type.EmptyTypes)
+        {
+        }
+
+        public LiveMethodBuilder(MethodBuilder mb, Type returnType, Type[] paramTypes)
+        {
+            _mb = mb;
+            _returnType = returnType ?? typeof(void);
+            _paramTypes = paramTypes ?? Type.EmptyTypes;
+        }
 
         public MethodBuilder Inner => _mb;
         public string Name => _mb.Name;
         public MethodAttributes Attributes => _mb.Attributes;
-        public MethodInfo AsMethodInfo() => _mb;
+        public Type ReturnType => _returnType;
+        public Type[] ParameterTypes => _paramTypes;
+        public Type? DeclaringType => _mb.DeclaringType;
+        public Type[] GenericArguments => _mb.IsGenericMethodDefinition
+            ? _mb.GetGenericArguments()
+            : Type.EmptyTypes;
+
+        public MethodRef AsMethodRef()
+        {
+            var declaringType = _mb.DeclaringType
+                ?? throw new InvalidOperationException(
+                    "LiveMethodBuilder.AsMethodRef: underlying MethodBuilder has no declaring type");
+            return MethodRef.FromBuilder(this, TypeRef.FromRuntime(declaringType));
+        }
 
         public Type[] DefineGenericParameters(string[] names)
             => _mb.DefineGenericParameters(names);
@@ -39,8 +65,18 @@ namespace Ngo.Compiler.Emit.Builder
         public void DefineParameter(int position, ParameterAttributes attrs, string? name)
             => _mb.DefineParameter(position, attrs, name);
 
-        public void SetReturnType(Type type) => _mb.SetReturnType(type);
-        public void SetParameters(Type[] types) => _mb.SetParameters(types);
+        public void SetReturnType(Type type)
+        {
+            _returnType = type;
+            _mb.SetReturnType(type);
+        }
+
+        public void SetParameters(Type[] types)
+        {
+            _paramTypes = types ?? Type.EmptyTypes;
+            _mb.SetParameters(types);
+        }
+
         public void SetCustomAttribute(System.Reflection.Emit.CustomAttributeBuilder attr) => _mb.SetCustomAttribute(attr);
 
         public CilWriter GetILWriter() => new ILGeneratorWriter(_mb.GetILGenerator());

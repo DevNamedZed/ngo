@@ -159,7 +159,7 @@ namespace Ngo.Compiler.Emit
                     : typeof(Func<object>);
             }
             _ctx.IL.Emit(OpCodes.Ldnull);
-            _ctx.IL.Emit(OpCodes.Ldftn, lambdaMethod.AsMethodInfo());
+            _ctx.IL.Emit(OpCodes.Ldftn, lambdaMethod.AsMethodRef());
             var delegateCtor = _ctx.Definitions.GetConstructor(delegateType, new[] { typeof(object), typeof(IntPtr) });
             _ctx.IL.Emit(OpCodes.Newobj, delegateCtor);
         }
@@ -249,11 +249,11 @@ namespace Ngo.Compiler.Emit
             // Load captured Box<T> references from closure fields into locals
             foreach (var (sym, field) in captureFields)
             {
-                var local = _ctx.IL.DeclareLocal(field.AsFieldInfo().FieldType); // Box<T>
+                var local = _ctx.IL.DeclareLocal(field.FieldType); // Box<T>
                 _ctx.Locals[sym] = local;
                 _ctx.CapturedSymbols.Add(sym); // Enable .Value access in EmitLoad/EmitStore
                 _ctx.IL.Emit(OpCodes.Ldarg_0);
-                _ctx.IL.Emit(OpCodes.Ldfld, field.AsFieldInfo());
+                _ctx.IL.Emit(OpCodes.Ldfld, field.AsFieldRef());
                 _ctx.IL.Emit(OpCodes.Stloc, local);
             }
 
@@ -420,12 +420,12 @@ namespace Ngo.Compiler.Emit
             // Emit Invoke body: load receiver from field, load params, call target method
             var invokeIL = invokeMethod.GetILWriter();
             invokeIL.Emit(OpCodes.Ldarg_0);
-            invokeIL.Emit(OpCodes.Ldfld, receiverField.AsFieldInfo());
+            invokeIL.Emit(OpCodes.Ldfld, receiverField.AsFieldRef());
             for (int i = 0; i < paramTypes.Length; i++)
             {
                 invokeIL.Emit(OpCodes.Ldarg, i + 1);
             }
-            invokeIL.Emit(OpCodes.Call, targetMethod.AsMethodInfo());
+            invokeIL.Emit(OpCodes.Call, targetMethod.AsMethodRef());
             invokeIL.Emit(OpCodes.Ret);
 
             closureBuilder.CreateType();
@@ -457,7 +457,7 @@ namespace Ngo.Compiler.Emit
             // The target method IS already static (receiver as first param), so we can use it directly.
             var delegateType = _ctx.Mapper.Map(mv.FunctionType);
             _ctx.IL.Emit(OpCodes.Ldnull);
-            _ctx.IL.Emit(OpCodes.Ldftn, targetMethod.AsMethodInfo());
+            _ctx.IL.Emit(OpCodes.Ldftn, targetMethod.AsMethodRef());
             var delegateCtor = _ctx.Definitions.GetConstructor(delegateType, new[] { typeof(object), typeof(IntPtr) });
             if (delegateCtor == null)
             {

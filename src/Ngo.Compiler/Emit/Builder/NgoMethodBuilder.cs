@@ -20,6 +20,7 @@ using System;
 using Ngo.Compiler.Archive;
 using System.Collections.Generic;
 using System.Reflection;
+using Ngo.Compiler.Emit.Refs;
 
 namespace Ngo.Compiler.Emit.Builder
 {
@@ -30,9 +31,10 @@ namespace Ngo.Compiler.Emit.Builder
         private readonly string _name;
         private readonly MethodAttributes _attrs;
         private string _returnTypeName;
+        private Type _returnType;
         private readonly List<string> _paramTypeNames;
+        private Type[] _paramTypes;
         private NgoWriter? _writer;
-        private readonly NgoProxyMethodInfo _proxy;
         private string[] _genericParamNames = Array.Empty<string>();
         private Type[] _genericParamTypes = Type.EmptyTypes;
 
@@ -43,20 +45,24 @@ namespace Ngo.Compiler.Emit.Builder
             _declaringTypeBuilder = declaringTypeBuilder;
             _name = name;
             _attrs = attrs;
-            _returnTypeName = returnType != null ? NgoWriter.GetTypeNameStatic(returnType) : "System.Void";
+            _returnType = returnType ?? typeof(void);
+            _returnTypeName = NgoWriter.GetTypeNameStatic(_returnType);
+            _paramTypes = paramTypes ?? Type.EmptyTypes;
             _paramTypeNames = new List<string>();
-            if (paramTypes != null)
+            foreach (var pt in _paramTypes)
             {
-                foreach (var pt in paramTypes)
-                    _paramTypeNames.Add(NgoWriter.GetTypeNameStatic(pt));
+                _paramTypeNames.Add(NgoWriter.GetTypeNameStatic(pt));
             }
-            _proxy = new NgoProxyMethodInfo(declaringType, name, paramTypes ?? Type.EmptyTypes, returnType ?? typeof(void));
         }
 
         public string Name => _name;
         public MethodAttributes Attributes => _attrs;
         public string ReturnTypeName => _returnTypeName;
+        public Type ReturnType => _returnType;
         public IReadOnlyList<string> ParamTypeNames => _paramTypeNames;
+        public Type[] ParameterTypes => _paramTypes;
+        public Type? DeclaringType => _declaringType;
+        public Type[] GenericArguments => _genericParamTypes;
         public NgoWriter? Writer => _writer;
         public IReadOnlyList<string> GenericParamNames => _genericParamNames;
 
@@ -66,7 +72,7 @@ namespace Ngo.Compiler.Emit.Builder
             var result = new Type[names.Length];
             for (int i = 0; i < names.Length; i++)
             {
-                result[i] = new NgoProxyType(names[i], i, isMethodGenericParam: true);
+                result[i] = new NgoGenericParameterType(names[i], i, isMethodGenericParam: true);
             }
             _genericParamTypes = result;
             return result;
@@ -76,16 +82,18 @@ namespace Ngo.Compiler.Emit.Builder
 
         public void SetReturnType(Type type)
         {
+            _returnType = type;
             _returnTypeName = NgoWriter.GetTypeNameStatic(type);
-            _proxy.UpdateReturnType(type);
         }
 
         public void SetParameters(Type[] types)
         {
+            _paramTypes = types;
             _paramTypeNames.Clear();
             foreach (var t in types)
+            {
                 _paramTypeNames.Add(NgoWriter.GetTypeNameStatic(t));
-            _proxy.UpdateParameterTypes(types);
+            }
         }
 
         public CilWriter GetILWriter()
@@ -99,7 +107,14 @@ namespace Ngo.Compiler.Emit.Builder
             return _writer;
         }
 
-        public MethodInfo AsMethodInfo() => _proxy;
+        public MethodRef AsMethodRef()
+        {
+            var declaringTypeRef = _declaringTypeBuilder != null
+                ? TypeRef.FromBuilder(_declaringTypeBuilder)
+                : TypeRef.FromRuntime(_declaringType);
+            return MethodRef.FromBuilder(this, declaringTypeRef);
+        }
+
         public void SetCustomAttribute(System.Reflection.Emit.CustomAttributeBuilder attr) { }
     }
 }

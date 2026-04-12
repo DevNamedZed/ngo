@@ -19,6 +19,7 @@
 using System;
 using System.Reflection;
 using System.Reflection.Emit;
+using Ngo.Compiler.Emit.Refs;
 
 namespace Ngo.Compiler.Emit.Builder
 {
@@ -42,6 +43,11 @@ namespace Ngo.Compiler.Emit.Builder
         public abstract void Emit(OpCode op, Label label);
         public abstract void Emit(OpCode op, Label[] labels);
         public abstract void Emit(OpCode op, LocalBuilder local);
+
+        public abstract void Emit(OpCode op, TypeRef typeRef);
+        public abstract void Emit(OpCode op, MethodRef methodRef);
+        public abstract void Emit(OpCode op, CtorRef ctorRef);
+        public abstract void Emit(OpCode op, FieldRef fieldRef);
 
         public abstract LocalBuilder DeclareLocal(Type type);
         public abstract Label DefineLabel();

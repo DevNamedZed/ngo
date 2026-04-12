@@ -38,13 +38,13 @@ namespace Ngo.Compiler.Emit.Builder
             => new LiveFieldBuilder(_tb.DefineField(name, type, attrs));
 
         public IMethodBuilder DefineMethod(string name, MethodAttributes attrs, Type returnType, Type[] paramTypes)
-            => new LiveMethodBuilder(_tb.DefineMethod(name, attrs, returnType, paramTypes));
+            => new LiveMethodBuilder(_tb.DefineMethod(name, attrs, returnType, paramTypes), returnType, paramTypes);
 
         public IMethodBuilder DefineMethod(string name, MethodAttributes attrs)
             => new LiveMethodBuilder(_tb.DefineMethod(name, attrs));
 
         public IConstructorBuilder DefineConstructor(MethodAttributes attrs, CallingConventions callingConvention, Type[] paramTypes)
-            => new LiveConstructorBuilder(_tb.DefineConstructor(attrs, callingConvention, paramTypes));
+            => new LiveConstructorBuilder(_tb.DefineConstructor(attrs, callingConvention, paramTypes), paramTypes);
 
         public Type[] DefineGenericParameters(string[] names)
             => _tb.DefineGenericParameters(names);

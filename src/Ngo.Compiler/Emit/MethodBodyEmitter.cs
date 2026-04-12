@@ -23,6 +23,7 @@ using System.Reflection.Emit;
 using Ngo.Compiler.Ast;
 using Ngo.Compiler.Archive;
 using Ngo.Compiler.Emit.Builder;
+using Ngo.Compiler.Emit.Refs;
 using Ngo.Compiler.Semantics;
 using Ngo.Compiler.Symbols;
 using Ngo.Runtime;
@@ -99,7 +100,7 @@ namespace Ngo.Compiler.Emit
             if (func.Symbol.TypeParameters.Count > 0)
             {
                 methodTypeParams = func.Symbol.TypeParameters;
-                methodGenericParams = method.AsMethodInfo().GetGenericArguments();
+                methodGenericParams = method.GenericArguments;
 
                 var typeParams = func.Symbol.TypeParameters;
                 var names = new string[typeParams.Count];
@@ -334,7 +335,7 @@ namespace Ngo.Compiler.Emit
             // Initialize CGo native library resolver before anything else
             if (_ctx.CgoResolverInitMethod != null)
             {
-                _ctx.IL.Emit(OpCodes.Call, _ctx.CgoResolverInitMethod.AsMethodInfo());
+                _ctx.IL.Emit(OpCodes.Call, _ctx.CgoResolverInitMethod.AsMethodRef());
                 _ctx.CgoResolverInitMethod = null; // Only emit once
             }
 
@@ -349,21 +350,21 @@ namespace Ngo.Compiler.Emit
                 if (v.Initializer != null)
                 {
                     EmitExpression(v.Initializer);
-                    _ctx.IL.Emit(OpCodes.Stsfld, field.AsFieldInfo());
+                    _ctx.IL.Emit(OpCodes.Stsfld, field.AsFieldRef());
                 }
                 else if (v.Symbol.Type is ArrayTypeSymbol arrayType)
                 {
                     var elemClrType = _ctx.Mapper.Map(arrayType.ElementType);
                     _ctx.IL.Emit(OpCodes.Ldc_I4, arrayType.Length);
                     _ctx.IL.Emit(OpCodes.Newarr, elemClrType);
-                    _ctx.IL.Emit(OpCodes.Stsfld, field.AsFieldInfo());
+                    _ctx.IL.Emit(OpCodes.Stsfld, field.AsFieldRef());
                 }
                 else
                 {
                     // Go struct types that map to C# classes need explicit zero-value
                     // initialization (new T()) since class fields default to null,
                     // not to the zero-valued struct that Go expects.
-                    var fieldClrType = field.AsFieldInfo().FieldType;
+                    var fieldClrType = field.FieldType;
                     if (!fieldClrType.IsValueType && !fieldClrType.IsArray
                         && fieldClrType != typeof(object)
                         && !fieldClrType.IsInterface && !fieldClrType.IsAbstract)
@@ -372,7 +373,7 @@ namespace Ngo.Compiler.Emit
                         if (defaultCtor != null)
                         {
                             _ctx.IL.Emit(OpCodes.Newobj, defaultCtor);
-                            _ctx.IL.Emit(OpCodes.Stsfld, field.AsFieldInfo());
+                            _ctx.IL.Emit(OpCodes.Stsfld, field.AsFieldRef());
                         }
                     }
                 }
@@ -383,7 +384,7 @@ namespace Ngo.Compiler.Emit
             {
                 if (_ctx.Methods.TryGetValue(initFunc.Symbol, out var mb))
                 {
-                    _ctx.IL.Emit(OpCodes.Call, mb.AsMethodInfo());
+                    _ctx.IL.Emit(OpCodes.Call, mb.AsMethodRef());
                 }
             }
 
@@ -984,7 +985,7 @@ namespace Ngo.Compiler.Emit
                             $"EmitMultiAssignment: field '{sel.Field.Name}' not found in StructFields " +
                             $"(declaring type={sel.Target?.Type?.Name}, pkg={_ctx.CurrentPackagePath})");
                     }
-                    _ctx.IL.Emit(OpCodes.Stfld, fb.AsFieldInfo());
+                    _ctx.IL.Emit(OpCodes.Stfld, fb.AsFieldRef());
                 }
                 else if (target is IndexExpression idx)
                 {
@@ -1135,7 +1136,7 @@ namespace Ngo.Compiler.Emit
                             $"EmitParallelAssignment: field '{sel.Field.Name}' not found in StructFields " +
                             $"(declaring type={sel.Target?.Type?.Name}, pkg={_ctx.CurrentPackagePath})");
                     }
-                    _ctx.IL.Emit(OpCodes.Stfld, fb.AsFieldInfo());
+                    _ctx.IL.Emit(OpCodes.Stfld, fb.AsFieldRef());
                 }
                 else if (target is IndexExpression idx)
                 {
@@ -1176,7 +1177,7 @@ namespace Ngo.Compiler.Emit
                             $"EmitAssignment: field '{sel.Field.Name}' not found in StructFields " +
                             $"(declaring type={sel.Target?.Type?.Name}, pkg={_ctx.CurrentPackagePath})");
                     }
-                    _ctx.IL.Emit(OpCodes.Stfld, assignFb.AsFieldInfo());
+                    _ctx.IL.Emit(OpCodes.Stfld, assignFb.AsFieldRef());
                     break;
 
                 case IndexExpression idx:
@@ -1283,10 +1284,10 @@ namespace Ngo.Compiler.Emit
                 // s.field++ → load address, load field, inc/dec, store field
                 EmitAddressForStore(sel.Target);
                 _ctx.IL.Emit(OpCodes.Dup);
-                _ctx.IL.Emit(OpCodes.Ldfld, fieldBuilder.AsFieldInfo());
+                _ctx.IL.Emit(OpCodes.Ldfld, fieldBuilder.AsFieldRef());
                 EmitIntConstant(1, incDec.Operand.Type);
                 _ctx.IL.Emit(incDec.IsIncrement ? OpCodes.Add : OpCodes.Sub);
-                _ctx.IL.Emit(OpCodes.Stfld, fieldBuilder.AsFieldInfo());
+                _ctx.IL.Emit(OpCodes.Stfld, fieldBuilder.AsFieldRef());
             }
             else if (incDec.Operand is DerefExpression deref)
             {
@@ -2390,9 +2391,9 @@ namespace Ngo.Compiler.Emit
                     continue;
 
                 _ctx.IL.Emit(OpCodes.Ldloca, leftLocal);
-                _ctx.IL.Emit(OpCodes.Ldfld, fb.AsFieldInfo());
+                _ctx.IL.Emit(OpCodes.Ldfld, fb.AsFieldRef());
                 _ctx.IL.Emit(OpCodes.Ldloca, rightLocal);
-                _ctx.IL.Emit(OpCodes.Ldfld, fb.AsFieldInfo());
+                _ctx.IL.Emit(OpCodes.Ldfld, fb.AsFieldRef());
 
                 if (field.Type.TypeKind == TypeKind.String || field.Type.TypeKind == TypeKind.UntypedString)
                 {
@@ -2508,13 +2509,13 @@ namespace Ngo.Compiler.Emit
                 // Generic function call: instantiate with concrete type args
                 if (call.TypeArguments != null && call.TypeArguments.Count > 0)
                 {
-                    var typeArgs = new Type[call.TypeArguments.Count];
+                    var typeArgRefs = new TypeRef[call.TypeArguments.Count];
                     for (int i = 0; i < call.TypeArguments.Count; i++)
                     {
-                        typeArgs[i] = _ctx.Mapper.Map(call.TypeArguments[i]);
+                        typeArgRefs[i] = TypeRef.FromRuntime(_ctx.Mapper.Map(call.TypeArguments[i]));
                     }
 
-                    var instantiated = method.AsMethodInfo().MakeGenericMethod(typeArgs);
+                    var instantiated = method.AsMethodRef().MakeGenericMethod(typeArgRefs);
                     EmitCallArguments(call);
                     _ctx.IL.Emit(OpCodes.Call, instantiated);
                     EmitPendingWritebacks();
@@ -2523,12 +2524,12 @@ namespace Ngo.Compiler.Emit
 
                 if (call.Function.IsVariadic)
                 {
-                    EmitVariadicCall(call, method.AsMethodInfo());
+                    EmitVariadicCall(call, method.AsMethodRef());
                 }
                 else
                 {
                     EmitCallArguments(call);
-                    _ctx.IL.Emit(OpCodes.Call, method.AsMethodInfo());
+                    _ctx.IL.Emit(OpCodes.Call, method.AsMethodRef());
                     EmitPendingWritebacks();
                 }
 
@@ -2552,7 +2553,7 @@ namespace Ngo.Compiler.Emit
 
                 if (call.Function.IsVariadic)
                 {
-                    EmitVariadicCall(call, resolvedCachedMethod);
+                    EmitVariadicCall(call, MethodRef.FromRuntime(resolvedCachedMethod));
                 }
                 else
                 {
@@ -2633,7 +2634,7 @@ namespace Ngo.Compiler.Emit
                     }
                     else
                     {
-                        EmitVariadicCall(call, runtimeMethod);
+                        EmitVariadicCall(call, MethodRef.FromRuntime(runtimeMethod));
                     }
                     return;
                 }
@@ -2667,7 +2668,7 @@ namespace Ngo.Compiler.Emit
 
                         if (linkedFunc.IsVariadic)
                         {
-                            EmitVariadicCall(call, resolvedLinked);
+                            EmitVariadicCall(call, MethodRef.FromRuntime(resolvedLinked));
                         }
                         else
                         {
@@ -2692,10 +2693,10 @@ namespace Ngo.Compiler.Emit
                 if (invokeMethod == null)
                 {
                     // Delegate type mapping failed — try direct call by name
-                    MethodInfo? directClr = null;
+                    Refs.MethodRef? directRef = null;
                     if (_ctx.Methods.TryGetValue(call.Function, out var directMethod))
                     {
-                        directClr = directMethod.AsMethodInfo();
+                        directRef = directMethod.AsMethodRef();
                     }
                     else
                     {
@@ -2704,27 +2705,27 @@ namespace Ngo.Compiler.Emit
                         {
                             if (kvp.Key.Name == call.Function.Name)
                             {
-                                directClr = kvp.Value.AsMethodInfo();
+                                directRef = kvp.Value.AsMethodRef();
                                 break;
                             }
                         }
                     }
-                    if (directClr == null)
+                    if (directRef == null)
                     {
                         foreach (var kvp in _ctx.CachedMethods)
                         {
                             if (kvp.Key.Name == call.Function.Name)
                             {
-                                directClr = kvp.Value;
+                                directRef = Refs.MethodRef.FromRuntime(kvp.Value);
                                 break;
                             }
                         }
                     }
-                    if (directClr != null)
+                    if (directRef != null)
                     {
                         // Pop the function value (not needed for direct call) and call directly
                         _ctx.IL.Emit(OpCodes.Pop);
-                        _ctx.IL.Emit(OpCodes.Call, directClr);
+                        _ctx.IL.Emit(OpCodes.Call, directRef);
                     }
                     else
                     {
@@ -2751,7 +2752,7 @@ namespace Ngo.Compiler.Emit
                 return;
             }
 
-            // Cross-package call during dependency emit: emit real IL with proxy MethodInfo.
+            // Cross-package call during dependency emit: build a cross-package MethodRef.
             // NgoWriter captures the symbolic token reference (e.g., "slices::Sort(...)").
             // The linker resolves it at link time against the host module's linked types.
 
@@ -2763,8 +2764,8 @@ namespace Ngo.Compiler.Emit
                 var shortPkgName = lastSlash >= 0 ? fullPkgName.Substring(lastSlash + 1) : fullPkgName;
 
                 // When emitting into a real module (EmitDependencyFromSource), resolve
-                // cross-package calls against already-linked MethodBuilders. Proxy methods
-                // only work with NgoWriter for archive serialization.
+                // cross-package calls against already-linked MethodBuilders. Symbolic
+                // cross-package MethodRefs are only honored by NgoWriter archive serialization.
                 bool isRealModule = _ctx.Module is Builder.LiveModuleBuilder;
                 if (isRealModule)
                 {
@@ -2809,61 +2810,67 @@ namespace Ngo.Compiler.Emit
                     }
                 }
 
-                // On real modules, if we didn't find the linked method above, we can't
-                // create a proxy (NgoProxyMethodInfo only works with NgoWriter).
+                // On real modules, if we didn't find the linked method above, we cannot
+                // build a MemberRef — the live emit path rejects non-runtime MethodRef kinds.
                 // Fall through to the IsDependencyEmit stub.
                 if (!isRealModule)
                 {
-                // Archive serialization path: create proxy for NgoWriter to capture
-                var declaringType = new Builder.NgoProxyType(shortPkgName);
+                    // Archive serialization path: build a MemberRef targeting another package.
+                    var declaringTypeRef = Refs.TypeRef.ExternalPackage(fullPkgName, shortPkgName);
 
-                Type[] clrParamTypes;
-                Type clrReturnType;
+                    Type[] clrParamTypes;
+                    Type clrReturnType;
 
-                if (call.TypeArguments != null && call.TypeArguments.Count > 0
-                    && crossFunc.TypeParameters.Count > 0)
-                {
-                    var substParams = TypeSubstituter.SubstituteParams(
-                        crossFunc.Parameters, crossFunc.TypeParameters, call.TypeArguments);
-                    var substReturns = TypeSubstituter.SubstituteTypes(
-                        crossFunc.ReturnTypes, crossFunc.TypeParameters, call.TypeArguments);
+                    if (call.TypeArguments != null && call.TypeArguments.Count > 0
+                        && crossFunc.TypeParameters.Count > 0)
+                    {
+                        var substParams = TypeSubstituter.SubstituteParams(
+                            crossFunc.Parameters, crossFunc.TypeParameters, call.TypeArguments);
+                        var substReturns = TypeSubstituter.SubstituteTypes(
+                            crossFunc.ReturnTypes, crossFunc.TypeParameters, call.TypeArguments);
 
-                    clrParamTypes = new Type[substParams.Count];
+                        clrParamTypes = new Type[substParams.Count];
+                        for (int i = 0; i < clrParamTypes.Length; i++)
+                        {
+                            clrParamTypes[i] = _ctx.Mapper.Map(substParams[i].Type);
+                        }
+                        clrReturnType = _ctx.Mapper.MapReturnType(substReturns);
+                    }
+                    else
+                    {
+                        clrParamTypes = new Type[call.Arguments.Count];
+                        for (int i = 0; i < clrParamTypes.Length; i++)
+                        {
+                            clrParamTypes[i] = _ctx.Mapper.Map(call.Arguments[i].Type);
+                        }
+                        clrReturnType = _ctx.Mapper.MapReturnType(crossFunc.ReturnTypes);
+                    }
+
+                    var parameterTypeRefs = new Refs.TypeRef[clrParamTypes.Length];
                     for (int i = 0; i < clrParamTypes.Length; i++)
                     {
-                        clrParamTypes[i] = _ctx.Mapper.Map(substParams[i].Type);
+                        parameterTypeRefs[i] = Refs.TypeRef.FromRuntime(clrParamTypes[i]);
                     }
-                    clrReturnType = _ctx.Mapper.MapReturnType(substReturns);
-                }
-                else
-                {
-                    clrParamTypes = new Type[call.Arguments.Count];
-                    for (int i = 0; i < clrParamTypes.Length; i++)
+                    var returnTypeRef = Refs.TypeRef.FromRuntime(clrReturnType);
+
+                    var crossPkgMethodRef = Refs.MethodRef.MemberRef(
+                        declaringTypeRef, crossFunc.Name, parameterTypeRefs, returnTypeRef, isStatic: true);
+
+                    if (call.TypeArguments != null && call.TypeArguments.Count > 0
+                        && crossFunc.TypeParameters.Count > 0)
                     {
-                        clrParamTypes[i] = _ctx.Mapper.Map(call.Arguments[i].Type);
+                        var methodTypeArgs = new Refs.TypeRef[call.TypeArguments.Count];
+                        for (int i = 0; i < methodTypeArgs.Length; i++)
+                        {
+                            methodTypeArgs[i] = Refs.TypeRef.FromRuntime(_ctx.Mapper.Map(call.TypeArguments[i]));
+                        }
+                        crossPkgMethodRef = crossPkgMethodRef.MakeGenericMethod(methodTypeArgs);
                     }
-                    clrReturnType = _ctx.Mapper.MapReturnType(crossFunc.ReturnTypes);
+
+                    EmitCallArguments(call);
+                    _ctx.IL.Emit(OpCodes.Call, crossPkgMethodRef);
+                    return;
                 }
-
-                var proxyMethodDef = new Builder.NgoProxyMethodInfo(
-                    declaringType, crossFunc.Name, clrParamTypes, clrReturnType);
-
-                MethodInfo proxyMethod = proxyMethodDef;
-                if (call.TypeArguments != null && call.TypeArguments.Count > 0
-                    && crossFunc.TypeParameters.Count > 0)
-                {
-                    var methodTypeArgs = new Type[call.TypeArguments.Count];
-                    for (int i = 0; i < methodTypeArgs.Length; i++)
-                    {
-                        methodTypeArgs[i] = _ctx.Mapper.Map(call.TypeArguments[i]);
-                    }
-                    proxyMethod = proxyMethodDef.MakeGenericMethod(methodTypeArgs);
-                }
-
-                EmitCallArguments(call);
-                _ctx.IL.Emit(OpCodes.Call, proxyMethod);
-                return;
-                } // end if (!isRealModule)
             }
 
             if (_ctx.IsDependencyEmit)
@@ -2984,7 +2991,7 @@ namespace Ngo.Compiler.Emit
             return null;
         }
 
-        private void EmitVariadicCall(CallExpression call, MethodInfo method)
+        private void EmitVariadicCall(CallExpression call, MethodRef method)
         {
             // Variadic function: last CLR parameter is Slice<T>.
             // Pack extra arguments past the required params into a Slice<T>.
@@ -3149,14 +3156,14 @@ namespace Ngo.Compiler.Emit
             if (fb != null)
             {
                 if (sel.Field.Type is ArrayTypeSymbol selectorArrType
-                    && !fb.AsFieldInfo().FieldType.IsArray)
+                    && !fb.FieldType.IsArray)
                 {
                     EmitInlineArrayAsArray(sel, selectorArrType,
                         _ctx.Mapper.Map(selectorArrType.ElementType));
                     return;
                 }
                 EmitExpression(sel.Target);
-                _ctx.IL.Emit(OpCodes.Ldfld, fb.AsFieldInfo());
+                _ctx.IL.Emit(OpCodes.Ldfld, fb.AsFieldRef());
                 return;
             }
 
@@ -3181,7 +3188,7 @@ namespace Ngo.Compiler.Emit
                 // Check emitter-registered fields first (anonymous/dynamic structs)
                 if (_ctx.StructFields.TryGetValue(sel.Field, out var registeredField))
                 {
-                    _ctx.IL.Emit(OpCodes.Ldfld, registeredField.AsFieldInfo());
+                    _ctx.IL.Emit(OpCodes.Ldfld, registeredField.AsFieldRef());
                     return;
                 }
 
@@ -3271,7 +3278,7 @@ namespace Ngo.Compiler.Emit
                     _ctx.IL.Emit(OpCodes.Ldloc, ptrLocal);
                     foreach (var arg in call.Arguments)
                         EmitExpression(arg);
-                    _ctx.IL.Emit(OpCodes.Call, method.AsMethodInfo());
+                    _ctx.IL.Emit(OpCodes.Call, method.AsMethodRef());
 
                     // Copy modified value back to local
                     _ctx.IL.Emit(OpCodes.Ldloc, ptrLocal);
@@ -3283,7 +3290,7 @@ namespace Ngo.Compiler.Emit
                 // Static method with receiver as first arg
                 EmitExpression(call.Receiver);
                 EmitMethodCallArguments(call);
-                _ctx.IL.Emit(OpCodes.Call, method.AsMethodInfo());
+                _ctx.IL.Emit(OpCodes.Call, method.AsMethodRef());
                 return;
             }
 
@@ -3349,8 +3356,8 @@ namespace Ngo.Compiler.Emit
                 {
                     // For generic types, verify the method exists on the generic definition
                     // before trying to resolve on the instantiation. This prevents creating
-                    // fake proxy methods for non-existent methods (e.g., Ptr<T> doesn't have
-                    // Load/Store — those are on the wrapped Go struct type).
+                    // fake method references for non-existent methods (e.g., Ptr<T> doesn't
+                    // have Load/Store — those are on the wrapped Go struct type).
                     bool methodExistsOnType = true;
                     if (receiverClrType.IsGenericType)
                     {
@@ -3590,8 +3597,8 @@ namespace Ngo.Compiler.Emit
                         }
                     }
 
-                    // Archive serialization path: create proxy for NgoWriter.
-                    // Only for NgoModuleBuilder — real modules can't use proxy methods.
+                    // Archive serialization path: build a cross-package MethodRef for NgoWriter.
+                    // Only for NgoModuleBuilder — real modules require a resolved MethodBuilder.
                     if (_ctx.Module is Builder.LiveModuleBuilder)
                     {
                         // Fall through to IsDependencyEmit stub
@@ -3604,16 +3611,16 @@ namespace Ngo.Compiler.Emit
                         {
                             allParams[i + 1] = call.Method.Parameters[i];
                         }
-                        var proxyFunc = new Symbols.FunctionSymbol(staticName, allParams,
+                        var crossPkgFunc = new Symbols.FunctionSymbol(staticName, allParams,
                             call.Method.ReturnTypes, call.Method.IsVariadic, packagePath);
-                        var proxyMethod = _ctx.GetCrossPackageMethod(proxyFunc, _ctx.Mapper);
+                        var crossPkgMethodRef = _ctx.GetCrossPackageMethod(crossPkgFunc, _ctx.Mapper);
 
                         EmitExpression(call.Receiver);
                         foreach (var arg in call.Arguments)
                         {
                             EmitExpression(arg);
                         }
-                        _ctx.IL.Emit(OpCodes.Call, proxyMethod);
+                        _ctx.IL.Emit(OpCodes.Call, crossPkgMethodRef);
                         return;
                     }
                 }
@@ -3737,13 +3744,13 @@ namespace Ngo.Compiler.Emit
                         else
                         {
                             var valClrType = _ctx.Mapper.Map(init.Value.Type);
-                            var fldClrType = fb.AsFieldInfo().FieldType;
+                            var fldClrType = fb.FieldType;
                             if (valClrType.IsValueType && !fldClrType.IsValueType)
                             {
                                 _ctx.IL.Emit(OpCodes.Box, valClrType);
                             }
                         }
-                        _ctx.IL.Emit(OpCodes.Stfld, fb.AsFieldInfo());
+                        _ctx.IL.Emit(OpCodes.Stfld, fb.AsFieldRef());
                     }
                 }
             }
@@ -4344,13 +4351,13 @@ namespace Ngo.Compiler.Emit
                         }
                     }
                 }
-                if (writeFb != null && !writeFb.AsFieldInfo().FieldType.IsArray)
+                if (writeFb != null && !writeFb.FieldType.IsArray)
                 {
                     EmitInlineArrayFieldAddress(writeSel);
                     EmitExpression(idx.Index);
                     _ctx.IL.Emit(OpCodes.Conv_I4);
                     EmitExpression(value);
-                    var bufferType = writeFb.AsFieldInfo().FieldType;
+                    var bufferType = writeFb.FieldType;
                     _ctx.IL.Emit(OpCodes.Call,
                         typeof(BuiltIn).GetMethod("InlineArraySet")!
                             .MakeGenericMethod(bufferType, elemClrType));
@@ -4646,7 +4653,7 @@ namespace Ngo.Compiler.Emit
 
             if (_ctx.PackageFields.TryGetValue(symbol, out var field))
             {
-                _ctx.IL.Emit(OpCodes.Ldsfld, field.AsFieldInfo());
+                _ctx.IL.Emit(OpCodes.Ldsfld, field.AsFieldRef());
                 return;
             }
 
@@ -4678,22 +4685,26 @@ namespace Ngo.Compiler.Emit
 
             if (symbol is FunctionSymbol funcSym)
             {
-                MethodInfo? clrMethod = null;
+                Refs.MethodRef? methodRef = null;
 
                 if (_ctx.Methods.TryGetValue(funcSym, out var funcMethod))
                 {
-                    clrMethod = funcMethod.AsMethodInfo();
+                    methodRef = funcMethod.AsMethodRef();
                 }
                 else if (_ctx.CachedMethods.TryGetValue(funcSym, out var cachedMethod))
                 {
-                    clrMethod = cachedMethod;
+                    methodRef = Refs.MethodRef.FromRuntime(cachedMethod);
                 }
                 else if (!string.IsNullOrEmpty(funcSym.PackageName))
                 {
-                    clrMethod = ResolveRuntimeFunction(funcSym.PackageName, funcSym.Name, null!);
+                    var runtimeMethod = ResolveRuntimeFunction(funcSym.PackageName, funcSym.Name, null!);
+                    if (runtimeMethod != null)
+                    {
+                        methodRef = Refs.MethodRef.FromRuntime(runtimeMethod);
+                    }
                 }
 
-                if (clrMethod != null)
+                if (methodRef != null)
                 {
                     var paramTypes = new List<TypeSymbol>();
                     foreach (var p in funcSym.Parameters)
@@ -4704,7 +4715,7 @@ namespace Ngo.Compiler.Emit
                     var delegateType = _ctx.Mapper.Map(funcType);
                     var delegateCtor = _ctx.Definitions.GetConstructor(delegateType, new[] { typeof(object), typeof(IntPtr) });
                     _ctx.IL.Emit(OpCodes.Ldnull);
-                    _ctx.IL.Emit(OpCodes.Ldftn, clrMethod);
+                    _ctx.IL.Emit(OpCodes.Ldftn, methodRef);
                     _ctx.IL.Emit(OpCodes.Newobj, delegateCtor);
                     return;
                 }
@@ -4793,7 +4804,7 @@ namespace Ngo.Compiler.Emit
 
             if (_ctx.PackageFields.TryGetValue(symbol, out var field))
             {
-                _ctx.IL.Emit(OpCodes.Stsfld, field.AsFieldInfo());
+                _ctx.IL.Emit(OpCodes.Stsfld, field.AsFieldRef());
                 return;
             }
 
@@ -5067,11 +5078,10 @@ namespace Ngo.Compiler.Emit
             {
                 if (_ctx.StructFields.TryGetValue(selectorTarget.Field, out var selectorFb))
                 {
-                    var fieldInfo = selectorFb.AsFieldInfo();
-                    if (fieldInfo.FieldType.IsValueType)
+                    if (selectorFb.FieldType.IsValueType)
                     {
                         EmitAddressForStore(selectorTarget.Target);
-                        _ctx.IL.Emit(OpCodes.Ldflda, fieldInfo);
+                        _ctx.IL.Emit(OpCodes.Ldflda, selectorFb.AsFieldRef());
                         return;
                     }
                 }
@@ -5189,14 +5199,14 @@ namespace Ngo.Compiler.Emit
             {
                 EmitExpressionAddress(sel.Target, _ctx.Mapper.Map(structType));
             }
-            _ctx.IL.Emit(OpCodes.Ldflda, _ctx.StructFields[sel.Field!].AsFieldInfo());
+            _ctx.IL.Emit(OpCodes.Ldflda, _ctx.StructFields[sel.Field!].AsFieldRef());
         }
 
         internal void EmitInlineArrayAsArray(SelectorExpression sel, ArrayTypeSymbol arrayType, Type elemClrType)
         {
             EmitInlineArrayFieldAddress(sel);
             _ctx.IL.Emit(OpCodes.Ldc_I4, arrayType.Length);
-            var bufferType = _ctx.StructFields[sel.Field!].AsFieldInfo().FieldType;
+            var bufferType = _ctx.StructFields[sel.Field!].FieldType;
             var spanMethod = typeof(BuiltIn).GetMethod("InlineArrayAsSpan")!
                 .MakeGenericMethod(bufferType, elemClrType);
             _ctx.IL.Emit(OpCodes.Call, spanMethod);

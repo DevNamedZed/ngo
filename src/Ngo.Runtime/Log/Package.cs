@@ -43,26 +43,26 @@ namespace Ngo.Runtime.Log
         [GoFunc(IsVariadic = true)]
         public static void Print(params object?[] args)
         {
-            Output(FormatArgs(args));
+            WriteOutput(FormatArgs(args));
         }
 
         [GoFunc(IsVariadic = true)]
         public static void Printf(GoString format, params object?[] args)
         {
             var formatted = Fmt.Package.Sprintf(format.ToNetString(), args).ToNetString();
-            Output(formatted);
+            WriteOutput(formatted);
         }
 
         [GoFunc(IsVariadic = true)]
         public static void Println(params object?[] args)
         {
-            Output(FormatArgsLine(args));
+            WriteOutput(FormatArgsLine(args));
         }
 
         [GoFunc(IsVariadic = true)]
         public static void Fatal(params object?[] args)
         {
-            Output(FormatArgs(args));
+            WriteOutput(FormatArgs(args));
             Environment.Exit(1);
         }
 
@@ -70,14 +70,14 @@ namespace Ngo.Runtime.Log
         public static void Fatalf(GoString format, params object?[] args)
         {
             var formatted = Fmt.Package.Sprintf(format.ToNetString(), args).ToNetString();
-            Output(formatted);
+            WriteOutput(formatted);
             Environment.Exit(1);
         }
 
         [GoFunc(IsVariadic = true)]
         public static void Fatalln(params object?[] args)
         {
-            Output(FormatArgsLine(args));
+            WriteOutput(FormatArgsLine(args));
             Environment.Exit(1);
         }
 
@@ -85,7 +85,7 @@ namespace Ngo.Runtime.Log
         public static void Panic(params object?[] args)
         {
             var message = FormatArgs(args);
-            Output(message);
+            WriteOutput(message);
             throw new GoPanicException(message);
         }
 
@@ -93,7 +93,7 @@ namespace Ngo.Runtime.Log
         public static void Panicf(GoString format, params object?[] args)
         {
             var formatted = Fmt.Package.Sprintf(format.ToNetString(), args).ToNetString();
-            Output(formatted);
+            WriteOutput(formatted);
             throw new GoPanicException(formatted);
         }
 
@@ -101,7 +101,7 @@ namespace Ngo.Runtime.Log
         public static void Panicln(params object?[] args)
         {
             var message = FormatArgsLine(args);
-            Output(message);
+            WriteOutput(message);
             throw new GoPanicException(message);
         }
 
@@ -157,7 +157,15 @@ namespace Ngo.Runtime.Log
             return new Logger(writer, prefix, flag);
         }
 
-        private static void Output(string message)
+        [GoFunc]
+        [return: GoReturn("error")]
+        public static object? Output(long calldepth, GoString s)
+        {
+            WriteOutput(s.ToNetString());
+            return null;
+        }
+
+        private static void WriteOutput(string message)
         {
             var now = DateTime.Now;
             var sb = new System.Text.StringBuilder();

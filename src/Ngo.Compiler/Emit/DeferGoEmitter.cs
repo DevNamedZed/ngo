@@ -393,7 +393,7 @@ namespace Ngo.Compiler.Emit
                             wIL.Emit(OpCodes.Ret);
 
                             _ctx.IL.Emit(OpCodes.Ldloc, funcLocal);
-                            _ctx.IL.Emit(OpCodes.Ldftn, wrapperMethod.AsMethodInfo());
+                            _ctx.IL.Emit(OpCodes.Ldftn, wrapperMethod.AsMethodRef());
                             var actionCtor = typeof(Action).GetConstructor(new[] { typeof(object), typeof(IntPtr) })!;
                             _ctx.IL.Emit(OpCodes.Newobj, actionCtor);
                         }
@@ -463,7 +463,7 @@ namespace Ngo.Compiler.Emit
                     // User function: load args then call
                     for (int i = 0; i < paramTypes.Length; i++)
                         lambdaIL.Emit(OpCodes.Ldarg, i);
-                    lambdaIL.Emit(OpCodes.Call, targetMethod.AsMethodInfo());
+                    lambdaIL.Emit(OpCodes.Call, targetMethod.AsMethodRef());
                     if (call.Function.ReturnType != BuiltinTypes.Void)
                         lambdaIL.Emit(OpCodes.Pop);
                 }
@@ -480,7 +480,7 @@ namespace Ngo.Compiler.Emit
                 {
                     // Simple: new Action(null, ldftn lambda)
                     _ctx.IL.Emit(OpCodes.Ldnull);
-                    _ctx.IL.Emit(OpCodes.Ldftn, lambdaMethod.AsMethodInfo());
+                    _ctx.IL.Emit(OpCodes.Ldftn, lambdaMethod.AsMethodRef());
                     var actionCtor = typeof(Action).GetConstructor(new[] { typeof(object), typeof(IntPtr) })!;
                     _ctx.IL.Emit(OpCodes.Newobj, actionCtor);
                 }
@@ -527,7 +527,7 @@ namespace Ngo.Compiler.Emit
 
                 if (_ctx.Methods.TryGetValue(methodCall.Method, out var targetMethod))
                 {
-                    lambdaIL.Emit(OpCodes.Call, targetMethod.AsMethodInfo());
+                    lambdaIL.Emit(OpCodes.Call, targetMethod.AsMethodRef());
                 }
                 else if (!recvType.IsValueType)
                 {
@@ -601,9 +601,9 @@ namespace Ngo.Compiler.Emit
             for (int i = 0; i < argFields.Count; i++)
             {
                 invokeIL.Emit(OpCodes.Ldarg_0);
-                invokeIL.Emit(OpCodes.Ldfld, argFields[i].AsFieldInfo());
+                invokeIL.Emit(OpCodes.Ldfld, argFields[i].AsFieldRef());
             }
-            invokeIL.Emit(OpCodes.Call, lambdaMethod.AsMethodInfo());
+            invokeIL.Emit(OpCodes.Call, lambdaMethod.AsMethodRef());
             invokeIL.Emit(OpCodes.Ret);
 
             var closureType = closureBuilder.CreateType()!;
@@ -676,11 +676,11 @@ namespace Ngo.Compiler.Emit
             _ctx.Definitions.RegisterMethod(wrapperName, "Invoke", Type.EmptyTypes, invokeMethod);
             var wIL = invokeMethod.GetILWriter();
             wIL.Emit(OpCodes.Ldarg_0);
-            wIL.Emit(OpCodes.Ldfld, fnField.AsFieldInfo());
+            wIL.Emit(OpCodes.Ldfld, fnField.AsFieldRef());
             for (int i = 0; i < argFields.Count; i++)
             {
                 wIL.Emit(OpCodes.Ldarg_0);
-                wIL.Emit(OpCodes.Ldfld, argFields[i].AsFieldInfo());
+                wIL.Emit(OpCodes.Ldfld, argFields[i].AsFieldRef());
             }
             wIL.Emit(OpCodes.Callvirt, _ctx.Definitions.GetMethod(delegateType, "Invoke"));
             if (funcLit.ReturnTypes.Count > 0)

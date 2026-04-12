@@ -16,8 +16,10 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
+using System;
 using System.Reflection;
 using System.Reflection.Emit;
+using Ngo.Compiler.Emit.Refs;
 
 namespace Ngo.Compiler.Emit.Builder
 {
@@ -26,9 +28,28 @@ namespace Ngo.Compiler.Emit.Builder
         void SetCustomAttribute(CustomAttributeBuilder attr);
 
         /// <summary>
-        /// Returns this field as a FieldInfo for use in CilWriter.Emit(OpCodes.Ldfld, field).
-        /// Live: returns the wrapped FieldBuilder. Ngo: returns a proxy FieldInfo.
+        /// Returns a FieldRef pointing at this field. Used for all emit call sites.
         /// </summary>
-        FieldInfo AsFieldInfo();
+        FieldRef AsFieldRef();
+
+        /// <summary>
+        /// The field name. Used by NgoWriter to build FieldDef tokens without going through a
+        /// reflection proxy.
+        /// </summary>
+        string Name { get; }
+
+        /// <summary>
+        /// The field's type. Exposed so NgoWriter can build tokens and so emitters can reason
+        /// about the field's shape without materialising a reflection proxy.
+        /// </summary>
+        Type FieldType { get; }
+
+        /// <summary>
+        /// The type that declares this field. For the live path this is the underlying
+        /// <see cref="FieldBuilder.DeclaringType"/>; for the archive path it is the lightweight
+        /// declaring type tracked by the builder. Exposed so emitters can compare declaring types
+        /// without reflecting through a proxy <see cref="FieldInfo"/>.
+        /// </summary>
+        Type? DeclaringType { get; }
     }
 }

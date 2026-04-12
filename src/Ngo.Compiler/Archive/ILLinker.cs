@@ -1451,8 +1451,9 @@ namespace Ngo.Compiler.Archive
                     {
                         return _currentTypeGenericParameters[token.GenericParamIndex];
                     }
-                    // Fallback: try method generic params (some closures emit type params that
-                    // should be method params due to proxy type limitations)
+                    // Fallback: closures sometimes serialize a generic parameter under TypeParam
+                    // when the resolved parameter actually belongs to the enclosing method's
+                    // generic signature. Retry against method generic parameters.
                     if (token.GenericParamIndex < _currentMethodGenericParameters.Length)
                     {
                         return _currentMethodGenericParameters[token.GenericParamIndex];
@@ -2061,15 +2062,19 @@ namespace Ngo.Compiler.Archive
             // via the StructFields dictionary which tracks live-emitted fields.
             foreach (var kvp in _emitContext.StructFields)
             {
-                if (kvp.Key.Name == fieldName)
+                if (kvp.Key.Name != fieldName)
                 {
-                    var fieldInfo = kvp.Value.AsFieldInfo();
-                    var declaringName = fieldInfo.DeclaringType?.Name;
-                    if (declaringName == declaringTypeName
-                        || (declaringName != null && declaringTypeName.EndsWith("." + declaringName)))
-                    {
-                        return fieldInfo;
-                    }
+                    continue;
+                }
+                if (kvp.Value is not LiveFieldBuilder liveField)
+                {
+                    continue;
+                }
+                var declaringName = liveField.DeclaringType?.Name;
+                if (declaringName == declaringTypeName
+                    || (declaringName != null && declaringTypeName.EndsWith("." + declaringName)))
+                {
+                    return liveField.Inner;
                 }
             }
 
