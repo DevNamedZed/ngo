@@ -25,353 +25,476 @@ namespace Ngo.Runtime.Strings
     public static class Package
     {
         [GoFunc]
-        public static bool Contains(string s, string substr) => s.Contains(substr);
+        public static bool Contains(GoString s, GoString substr) =>
+            s.ToNetString().Contains(substr.ToNetString());
 
         [GoFunc]
-        public static bool HasPrefix(string s, string prefix) => s.StartsWith(prefix);
+        public static bool HasPrefix(GoString s, GoString prefix) =>
+            s.ToNetString().StartsWith(prefix.ToNetString());
 
         [GoFunc]
-        public static bool HasSuffix(string s, string suffix) => s.EndsWith(suffix);
+        public static bool HasSuffix(GoString s, GoString suffix) =>
+            s.ToNetString().EndsWith(suffix.ToNetString());
 
         [GoFunc]
-        public static string Join(Slice<string> elems, string sep)
+        public static GoString Join(Slice<GoString> elems, GoString sep)
         {
             var parts = new string[elems.Len];
             for (int i = 0; i < elems.Len; i++)
             {
-                parts[i] = elems[i];
+                parts[i] = elems[i].ToNetString();
             }
-            return string.Join(sep, parts);
+            return GoString.FromNetString(string.Join(sep.ToNetString(), parts));
         }
 
         [GoFunc]
-        public static Slice<string> Split(string s, string sep)
+        public static Slice<GoString> Split(GoString s, GoString sep)
         {
-            var parts = s.Split(new[] { sep }, StringSplitOptions.None);
-            return new Slice<string>(parts);
+            var parts = s.ToNetString().Split(new[] { sep.ToNetString() }, StringSplitOptions.None);
+            var result = new GoString[parts.Length];
+            for (int i = 0; i < parts.Length; i++)
+            {
+                result[i] = GoString.FromNetString(parts[i]);
+            }
+            return new Slice<GoString>(result);
         }
 
         [GoFunc]
-        public static string Replace(string s, string old, string @new, long n)
+        public static GoString Replace(GoString s, GoString old, GoString @new, long n)
         {
-            if (n < 0) return s.Replace(old, @new);
-
-            var result = s;
+            var str = s.ToNetString();
+            var oldStr = old.ToNetString();
+            var newStr = @new.ToNetString();
+            if (n < 0)
+            {
+                return GoString.FromNetString(str.Replace(oldStr, newStr));
+            }
+            var result = str;
             for (long i = 0; i < n; i++)
             {
-                int idx = result.IndexOf(old, StringComparison.Ordinal);
-                if (idx < 0) break;
-                result = result.Substring(0, idx) + @new + result.Substring(idx + old.Length);
+                int idx = result.IndexOf(oldStr, StringComparison.Ordinal);
+                if (idx < 0)
+                {
+                    break;
+                }
+                result = result.Substring(0, idx) + newStr + result.Substring(idx + oldStr.Length);
             }
-            return result;
+            return GoString.FromNetString(result);
         }
 
         [GoFunc]
-        public static string TrimSpace(string s) => s.Trim();
+        public static GoString TrimSpace(GoString s) =>
+            GoString.FromNetString(s.ToNetString().Trim());
 
         [GoFunc]
-        public static string ToUpper(string s) => s.ToUpper();
+        public static GoString ToUpper(GoString s) =>
+            GoString.FromNetString(s.ToNetString().ToUpper());
 
         [GoFunc]
-        public static string ToLower(string s) => s.ToLower();
+        public static GoString ToLower(GoString s) =>
+            GoString.FromNetString(s.ToNetString().ToLower());
 
         [GoFunc]
-        public static long Index(string s, string substr) => s.IndexOf(substr, StringComparison.Ordinal);
+        public static long Index(GoString s, GoString substr) =>
+            s.ToNetString().IndexOf(substr.ToNetString(), StringComparison.Ordinal);
 
         [GoFunc]
-        public static string Repeat(string s, long count)
+        public static GoString Repeat(GoString s, long count)
         {
-            if (count <= 0) return "";
-            var sb = new System.Text.StringBuilder(s.Length * (int)count);
-            for (long i = 0; i < count; i++) sb.Append(s);
-            return sb.ToString();
+            if (count <= 0)
+            {
+                return default;
+            }
+            var str = s.ToNetString();
+            var sb = new System.Text.StringBuilder(str.Length * (int)count);
+            for (long i = 0; i < count; i++)
+            {
+                sb.Append(str);
+            }
+            return GoString.FromNetString(sb.ToString());
         }
 
         [GoFunc]
-        public static string ReplaceAll(string s, string old, string @new) => s.Replace(old, @new);
+        public static GoString ReplaceAll(GoString s, GoString old, GoString @new) =>
+            GoString.FromNetString(s.ToNetString().Replace(old.ToNetString(), @new.ToNetString()));
 
         [GoFunc]
-        public static string Trim(string s, string cutset) => s.Trim(cutset.ToCharArray());
+        public static GoString Trim(GoString s, GoString cutset) =>
+            GoString.FromNetString(s.ToNetString().Trim(cutset.ToNetString().ToCharArray()));
 
         [GoFunc]
-        public static string TrimPrefix(string s, string prefix) =>
-            s.StartsWith(prefix) ? s.Substring(prefix.Length) : s;
-
-        [GoFunc]
-        public static string TrimSuffix(string s, string suffix) =>
-            s.EndsWith(suffix) ? s.Substring(0, s.Length - suffix.Length) : s;
-
-        [GoFunc]
-        public static string TrimLeft(string s, string cutset) => s.TrimStart(cutset.ToCharArray());
-
-        [GoFunc]
-        public static string TrimRight(string s, string cutset) => s.TrimEnd(cutset.ToCharArray());
-
-        [GoFunc]
-        public static long Count(string s, string substr)
+        public static GoString TrimPrefix(GoString s, GoString prefix)
         {
-            if (string.IsNullOrEmpty(substr)) return (long)s.Length + 1;
+            var str = s.ToNetString();
+            var pre = prefix.ToNetString();
+            return GoString.FromNetString(str.StartsWith(pre) ? str.Substring(pre.Length) : str);
+        }
+
+        [GoFunc]
+        public static GoString TrimSuffix(GoString s, GoString suffix)
+        {
+            var str = s.ToNetString();
+            var suf = suffix.ToNetString();
+            return GoString.FromNetString(str.EndsWith(suf) ? str.Substring(0, str.Length - suf.Length) : str);
+        }
+
+        [GoFunc]
+        public static GoString TrimLeft(GoString s, GoString cutset) =>
+            GoString.FromNetString(s.ToNetString().TrimStart(cutset.ToNetString().ToCharArray()));
+
+        [GoFunc]
+        public static GoString TrimRight(GoString s, GoString cutset) =>
+            GoString.FromNetString(s.ToNetString().TrimEnd(cutset.ToNetString().ToCharArray()));
+
+        [GoFunc]
+        public static long Count(GoString s, GoString substr)
+        {
+            var str = s.ToNetString();
+            var sub = substr.ToNetString();
+            if (string.IsNullOrEmpty(sub))
+            {
+                return (long)str.Length + 1;
+            }
             long count = 0;
             int idx = 0;
-            while ((idx = s.IndexOf(substr, idx, StringComparison.Ordinal)) >= 0)
+            while ((idx = str.IndexOf(sub, idx, StringComparison.Ordinal)) >= 0)
             {
                 count++;
-                idx += substr.Length;
+                idx += sub.Length;
             }
             return count;
         }
 
         [GoFunc]
-        public static bool EqualFold(string s, string t) =>
-            string.Equals(s, t, StringComparison.OrdinalIgnoreCase);
+        public static bool EqualFold(GoString s, GoString t) =>
+            string.Equals(s.ToNetString(), t.ToNetString(), StringComparison.OrdinalIgnoreCase);
 
         [GoFunc]
-        public static Slice<string> Fields(string s)
+        public static Slice<GoString> Fields(GoString s)
         {
-            var parts = s.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-            return new Slice<string>(parts);
+            var parts = s.ToNetString().Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+            var result = new GoString[parts.Length];
+            for (int i = 0; i < parts.Length; i++)
+            {
+                result[i] = GoString.FromNetString(parts[i]);
+            }
+            return new Slice<GoString>(result);
         }
 
         [GoFunc]
-        public static long LastIndex(string s, string substr) =>
-            (long)s.LastIndexOf(substr, StringComparison.Ordinal);
+        public static long LastIndex(GoString s, GoString substr) =>
+            (long)s.ToNetString().LastIndexOf(substr.ToNetString(), StringComparison.Ordinal);
 
         [GoFunc]
-        public static bool ContainsRune(string s, [GoParam("rune")] long r) =>
-            s.IndexOf((char)r) >= 0;
+        public static bool ContainsRune(GoString s, [GoParam("rune")] long r) =>
+            s.ToNetString().IndexOf((char)r) >= 0;
 
         [GoFunc]
-        public static bool ContainsAny(string s, string chars)
+        public static bool ContainsAny(GoString s, GoString chars)
         {
-            foreach (char c in chars)
+            var str = s.ToNetString();
+            foreach (char c in chars.ToNetString())
             {
-                if (s.IndexOf(c) >= 0) return true;
+                if (str.IndexOf(c) >= 0)
+                {
+                    return true;
+                }
             }
             return false;
         }
 
         [GoFunc]
         [return: GoReturn("string", "string", "bool")]
-        public static (string before, string after, bool found) Cut(string s, string sep)
+        public static (GoString before, GoString after, bool found) Cut(GoString s, GoString sep)
         {
-            int idx = s.IndexOf(sep, StringComparison.Ordinal);
+            var str = s.ToNetString();
+            var sepStr = sep.ToNetString();
+            int idx = str.IndexOf(sepStr, StringComparison.Ordinal);
             if (idx < 0)
             {
-                return (s, "", false);
+                return (s, default, false);
             }
-            return (s.Substring(0, idx), s.Substring(idx + sep.Length), true);
+            return (GoString.FromNetString(str.Substring(0, idx)),
+                    GoString.FromNetString(str.Substring(idx + sepStr.Length)),
+                    true);
         }
 
         [GoFunc]
-        public static string Map([GoParam("func(rune) rune")] Func<long, long> mapping, string s)
+        public static GoString Map([GoParam("func(rune) rune")] Func<long, long> mapping, GoString s)
         {
-            var sb = new System.Text.StringBuilder(s.Length);
-            foreach (var c in s)
+            var str = s.ToNetString();
+            var sb = new System.Text.StringBuilder(str.Length);
+            foreach (var c in str)
             {
                 var r = mapping((long)c);
                 if (r >= 0)
+                {
                     sb.Append((char)r);
+                }
             }
-
-            return sb.ToString();
+            return GoString.FromNetString(sb.ToString());
         }
 
         [GoFunc]
-        public static Slice<string> SplitN(string s, string sep, long n)
+        public static Slice<GoString> SplitN(GoString s, GoString sep, long n)
         {
-            if (n == 0) return new Slice<string>(Array.Empty<string>());
-            var parts = s.Split(new[] { sep }, (int)n, StringSplitOptions.None);
-            return new Slice<string>(parts);
+            if (n == 0)
+            {
+                return new Slice<GoString>(Array.Empty<GoString>());
+            }
+            var parts = s.ToNetString().Split(new[] { sep.ToNetString() }, (int)n, StringSplitOptions.None);
+            var result = new GoString[parts.Length];
+            for (int i = 0; i < parts.Length; i++)
+            {
+                result[i] = GoString.FromNetString(parts[i]);
+            }
+            return new Slice<GoString>(result);
         }
 
         [GoFunc]
-        public static Slice<string> SplitAfter(string s, string sep)
+        public static Slice<GoString> SplitAfter(GoString s, GoString sep)
         {
-            if (string.IsNullOrEmpty(sep))
+            var sepStr = sep.ToNetString();
+            if (string.IsNullOrEmpty(sepStr))
+            {
                 return Split(s, sep);
-            var result = new System.Collections.Generic.List<string>();
+            }
+            var str = s.ToNetString();
+            var resultList = new System.Collections.Generic.List<GoString>();
             int start = 0;
             while (true)
             {
-                int idx = s.IndexOf(sep, start, StringComparison.Ordinal);
+                int idx = str.IndexOf(sepStr, start, StringComparison.Ordinal);
                 if (idx < 0)
                 {
-                    result.Add(s.Substring(start));
+                    resultList.Add(GoString.FromNetString(str.Substring(start)));
                     break;
                 }
-
-                result.Add(s.Substring(start, idx - start + sep.Length));
-                start = idx + sep.Length;
+                resultList.Add(GoString.FromNetString(str.Substring(start, idx - start + sepStr.Length)));
+                start = idx + sepStr.Length;
             }
-
-            return new Slice<string>(result.ToArray());
+            return new Slice<GoString>(resultList.ToArray());
         }
 
         [GoFunc]
-        public static Slice<string> SplitAfterN(string s, string sep, long n)
+        public static Slice<GoString> SplitAfterN(GoString s, GoString sep, long n)
         {
-            if (n == 0) return new Slice<string>(Array.Empty<string>());
-            if (n == 1) return new Slice<string>(new[] { s });
+            if (n == 0)
+            {
+                return new Slice<GoString>(Array.Empty<GoString>());
+            }
+            if (n == 1)
+            {
+                return new Slice<GoString>(new[] { s });
+            }
             var all = SplitAfter(s, sep);
             if (n < 0 || all.Len <= (int)n)
+            {
                 return all;
-            var result = new string[(int)n];
+            }
+            var result = new GoString[(int)n];
             for (int i = 0; i < (int)n - 1; i++)
+            {
                 result[i] = all[i];
+            }
             var rest = new System.Text.StringBuilder();
             for (int i = (int)n - 1; i < all.Len; i++)
-                rest.Append(all[i]);
-            result[(int)n - 1] = rest.ToString();
-            return new Slice<string>(result);
+            {
+                rest.Append(all[i].ToNetString());
+            }
+            result[(int)n - 1] = GoString.FromNetString(rest.ToString());
+            return new Slice<GoString>(result);
         }
 
         [GoFunc]
-        public static string Title(string s)
+        public static GoString Title(GoString s)
         {
-            if (string.IsNullOrEmpty(s)) return s;
-            var sb = new System.Text.StringBuilder(s.Length);
-            bool prev = true; // treat start as after space
-            foreach (var c in s)
+            var str = s.ToNetString();
+            if (string.IsNullOrEmpty(str))
+            {
+                return s;
+            }
+            var sb = new System.Text.StringBuilder(str.Length);
+            bool prev = true;
+            foreach (var c in str)
             {
                 sb.Append(prev ? char.ToUpper(c) : c);
                 prev = char.IsWhiteSpace(c);
             }
-
-            return sb.ToString();
+            return GoString.FromNetString(sb.ToString());
         }
 
         [GoFunc]
-        public static long IndexByte(string s, byte c)
+        public static long IndexByte(GoString s, byte c)
         {
-            return s.IndexOf((char)c);
+            return s.ToNetString().IndexOf((char)c);
         }
 
         [GoFunc]
-        public static long IndexRune(string s, [GoParam("rune")] long r)
+        public static long IndexRune(GoString s, [GoParam("rune")] long r)
         {
-            return s.IndexOf((char)r);
+            return s.ToNetString().IndexOf((char)r);
         }
 
         [GoFunc]
-        public static long IndexAny(string s, string chars)
+        public static long IndexAny(GoString s, GoString chars)
         {
-            return s.IndexOfAny(chars.ToCharArray());
+            return s.ToNetString().IndexOfAny(chars.ToNetString().ToCharArray());
         }
 
         [GoFunc]
-        public static string TrimFunc(string s, [GoParam("func(rune) bool")] Func<long, bool> f)
+        public static GoString TrimFunc(GoString s, [GoParam("func(rune) bool")] Func<long, bool> f)
         {
+            var str = s.ToNetString();
             int start = 0;
-            while (start < s.Length && f((long)s[start]))
+            while (start < str.Length && f((long)str[start]))
+            {
                 start++;
-            int end = s.Length;
-            while (end > start && f((long)s[end - 1]))
+            }
+            int end = str.Length;
+            while (end > start && f((long)str[end - 1]))
+            {
                 end--;
-            return s.Substring(start, end - start);
+            }
+            return GoString.FromNetString(str.Substring(start, end - start));
         }
 
         [GoFunc]
-        public static string TrimRightFunc(string s, [GoParam("func(rune) bool")] Func<long, bool> f)
+        public static GoString TrimRightFunc(GoString s, [GoParam("func(rune) bool")] Func<long, bool> f)
         {
-            int end = s.Length;
-            while (end > 0 && f((long)s[end - 1]))
+            var str = s.ToNetString();
+            int end = str.Length;
+            while (end > 0 && f((long)str[end - 1]))
+            {
                 end--;
-            return s.Substring(0, end);
+            }
+            return GoString.FromNetString(str.Substring(0, end));
         }
 
         [GoFunc]
-        public static string TrimLeftFunc(string s, [GoParam("func(rune) bool")] Func<long, bool> f)
+        public static GoString TrimLeftFunc(GoString s, [GoParam("func(rune) bool")] Func<long, bool> f)
         {
+            var str = s.ToNetString();
             int start = 0;
-            while (start < s.Length && f((long)s[start]))
+            while (start < str.Length && f((long)str[start]))
+            {
                 start++;
-            return s.Substring(start);
-        }
-
-        [GoFunc]
-        public static long IndexFunc(string s, [GoParam("func(rune) bool")] Func<long, bool> f)
-        {
-            for (int i = 0; i < s.Length; i++)
-            {
-                if (f((long)s[i])) return i;
             }
-            return -1;
+            return GoString.FromNetString(str.Substring(start));
         }
 
         [GoFunc]
-        public static long LastIndexFunc(string s, [GoParam("func(rune) bool")] Func<long, bool> f)
+        public static long IndexFunc(GoString s, [GoParam("func(rune) bool")] Func<long, bool> f)
         {
-            for (int i = s.Length - 1; i >= 0; i--)
+            var str = s.ToNetString();
+            for (int i = 0; i < str.Length; i++)
             {
-                if (f((long)s[i])) return i;
-            }
-            return -1;
-        }
-
-        [GoFunc]
-        public static Slice<string> FieldsFunc(string s, [GoParam("func(rune) bool")] Func<long, bool> f)
-        {
-            var result = new System.Collections.Generic.List<string>();
-            int start = -1;
-            for (int i = 0; i < s.Length; i++)
-            {
-                if (f((long)s[i]))
+                if (f((long)str[i]))
                 {
-                    if (start >= 0) { result.Add(s.Substring(start, i - start)); start = -1; }
+                    return i;
                 }
-                else if (start < 0) { start = i; }
             }
-            if (start >= 0) result.Add(s.Substring(start));
-            return new Slice<string>(result.ToArray());
+            return -1;
         }
 
         [GoFunc]
-        public static long LastIndexByte(string s, byte c)
+        public static long LastIndexFunc(GoString s, [GoParam("func(rune) bool")] Func<long, bool> f)
         {
-            return s.LastIndexOf((char)c);
+            var str = s.ToNetString();
+            for (int i = str.Length - 1; i >= 0; i--)
+            {
+                if (f((long)str[i]))
+                {
+                    return i;
+                }
+            }
+            return -1;
         }
 
         [GoFunc]
-        public static long LastIndexAny(string s, string chars)
+        public static Slice<GoString> FieldsFunc(GoString s, [GoParam("func(rune) bool")] Func<long, bool> f)
         {
-            return s.LastIndexOfAny(chars.ToCharArray());
+            var str = s.ToNetString();
+            var resultList = new System.Collections.Generic.List<GoString>();
+            int start = -1;
+            for (int i = 0; i < str.Length; i++)
+            {
+                if (f((long)str[i]))
+                {
+                    if (start >= 0)
+                    {
+                        resultList.Add(GoString.FromNetString(str.Substring(start, i - start)));
+                        start = -1;
+                    }
+                }
+                else if (start < 0)
+                {
+                    start = i;
+                }
+            }
+            if (start >= 0)
+            {
+                resultList.Add(GoString.FromNetString(str.Substring(start)));
+            }
+            return new Slice<GoString>(resultList.ToArray());
         }
 
         [GoFunc]
-        public static long Compare(string a, string b) => string.Compare(a, b, StringComparison.Ordinal);
+        public static long LastIndexByte(GoString s, byte c)
+        {
+            return s.ToNetString().LastIndexOf((char)c);
+        }
 
         [GoFunc]
-        public static string Clone(string s) => s;
+        public static long LastIndexAny(GoString s, GoString chars)
+        {
+            return s.ToNetString().LastIndexOfAny(chars.ToNetString().ToCharArray());
+        }
+
+        [GoFunc]
+        public static long Compare(GoString a, GoString b) =>
+            string.Compare(a.ToNetString(), b.ToNetString(), StringComparison.Ordinal);
+
+        [GoFunc]
+        public static GoString Clone(GoString s) => s;
 
         [GoFunc]
         [return: GoReturn("string", "bool")]
-        public static (string, bool) CutPrefix(string s, string prefix)
+        public static (GoString, bool) CutPrefix(GoString s, GoString prefix)
         {
-            if (s.StartsWith(prefix))
-                return (s.Substring(prefix.Length), true);
+            var str = s.ToNetString();
+            var pre = prefix.ToNetString();
+            if (str.StartsWith(pre))
+            {
+                return (GoString.FromNetString(str.Substring(pre.Length)), true);
+            }
             return (s, false);
         }
 
         [GoFunc]
         [return: GoReturn("string", "bool")]
-        public static (string, bool) CutSuffix(string s, string suffix)
+        public static (GoString, bool) CutSuffix(GoString s, GoString suffix)
         {
-            if (s.EndsWith(suffix))
-                return (s.Substring(0, s.Length - suffix.Length), true);
+            var str = s.ToNetString();
+            var suf = suffix.ToNetString();
+            if (str.EndsWith(suf))
+            {
+                return (GoString.FromNetString(str.Substring(0, str.Length - suf.Length)), true);
+            }
             return (s, false);
         }
 
         [GoFunc]
-        public static string ToTitle(string s) => s.ToUpper();
+        public static GoString ToTitle(GoString s) =>
+            GoString.FromNetString(s.ToNetString().ToUpper());
 
         [GoFunc]
-        public static string ToValidUTF8(string s, string replacement) => s;
+        public static GoString ToValidUTF8(GoString s, GoString replacement) => s;
 
         [GoFunc]
         [return: GoReturn("*Reader")]
-        public static Reader NewReader(string s)
+        public static Reader NewReader(GoString s)
         {
-            Console.Error.WriteLine($"[TRACE] strings.NewReader called, s='{s}'");
             return new Reader(s);
         }
 

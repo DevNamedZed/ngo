@@ -31,7 +31,7 @@ namespace Ngo.Runtime
         // --- len ---
 
         public static int Len<T>(Slice<T> s) => s.Len;
-        public static int Len(string s) => GoString.Len(s);
+        public static int Len(GoString s) => s.Len;
         public static int Len<K, V>(Map<K, V> m) where K : notnull => m.Len;
         public static int Len<T>(Channel<T> ch) => ch.Length;
 
@@ -64,17 +64,17 @@ namespace Ngo.Runtime
         public static int Copy<T>(Slice<T> dst, Slice<T> src)
             => Slice<T>.Copy(dst, src);
 
-        public static int Copy(Slice<byte> dst, string src)
+        public static int Copy(Slice<byte> dst, GoString src)
         {
-            if (dst.IsNil || src == null || src.Length == 0)
+            if (dst.IsNil || src.Len == 0)
             {
                 return 0;
             }
-            var srcBytes = global::System.Text.Encoding.UTF8.GetBytes(src);
-            int count = global::System.Math.Min(dst.Len, srcBytes.Length);
+            var srcSpan = src.AsSpan();
+            int count = global::System.Math.Min(dst.Len, srcSpan.Length);
             for (int i = 0; i < count; i++)
             {
-                dst[i] = srcBytes[i];
+                dst[i] = srcSpan[i];
             }
             return count;
         }

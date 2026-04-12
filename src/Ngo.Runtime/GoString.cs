@@ -17,179 +17,288 @@
 // -----------------------------------------------------------------------
 
 using System;
-using System.Buffers;
 using System.Collections.Generic;
 using System.Text;
-using System.Text.Unicode;
 
 namespace Ngo.Runtime
 {
     /// <summary>
-    /// String helpers bridging Go's UTF-8 string semantics and .NET's UTF-16 strings.
-    /// Go: strings are immutable byte sequences (UTF-8), len() returns byte count,
-    /// s[i] returns the i-th byte, for-range iterates runes.
-    /// .NET: strings are UTF-16 char sequences.
+    /// Go string value type. Backed by a UTF-8 byte array with offset and length,
+    /// matching Go's string semantics: immutable byte sequence, len() returns byte count,
+    /// s[i] returns the i-th byte, for-range iterates runes. Slicing is O(1) and shares
+    /// the underlying storage.
     /// </summary>
-    public static class GoString
+    public readonly struct GoString : IEquatable<GoString>, IComparable<GoString>
     {
-        private const int StackAllocThreshold = 256;
+        private readonly byte[]? _bytes;
+        private readonly int _offset;
+        private readonly int _length;
+
+        public GoString(byte[] bytes, int offset, int length)
+        {
+            _bytes = bytes;
+            _offset = offset;
+            _length = length;
+        }
+
+        public GoString(byte[] bytes)
+        {
+            _bytes = bytes;
+            _offset = 0;
+            _length = bytes.Length;
+        }
 
         /// <summary>Go len(s) — returns UTF-8 byte count.</summary>
-        public static int Len(string s)
-        {
-            if (s == null) return 0;
-            if (System.Text.Ascii.IsValid(s)) return s.Length;
-            return global::System.Text.Encoding.UTF8.GetByteCount(s);
-        }
+        public int Len => _length;
 
-        /// <summary>Go s[i] — returns the i-th UTF-8 byte.</summary>
-        public static byte ByteAt(string s, int index)
+        /// <summary>Go s[i] — returns the i-th byte.</summary>
+        public byte this[int index]
         {
-            if (System.Text.Ascii.IsValid(s))
+            get
             {
-                if ((uint)index >= (uint)s.Length)
-                    throw new GoPanicException($"runtime error: index out of range [{index}] with length {s.Length}");
-                return (byte)s[index];
-            }
-
-            int byteOffset = 0;
-            foreach (var rune in s.EnumerateRunes())
-            {
-                int runeByteLen = rune.Utf8SequenceLength;
-                if (index < byteOffset + runeByteLen)
+                if ((uint)index >= (uint)_length)
                 {
-                    Span<byte> buf = stackalloc byte[4];
-                    rune.EncodeToUtf8(buf);
-                    return buf[index - byteOffset];
+                    throw new GoPanicException(
+                        $"runtime error: index out of range [{index}] with length {_length}");
                 }
-                byteOffset += runeByteLen;
+                return (_bytes ?? Array.Empty<byte>())[_offset + index];
             }
-
-            throw new GoPanicException($"runtime error: index out of range [{index}] with length {byteOffset}");
         }
 
-        /// <summary>Convert string to []byte (UTF-8 encoding).</summary>
-        public static Slice<byte> ToBytes(string s)
+        /// <summary>Go s[low:high] — O(1) slice sharing the backing array.</summary>
+        public GoString Slice(int low, int high)
         {
-            if (s == null) return default;
-
-            if (System.Text.Ascii.IsValid(s))
+            if (high < 0)
             {
-                var bytes = new byte[s.Length];
-                System.Text.Ascii.FromUtf16(s, bytes, out _);
-                return new Slice<byte>(bytes);
+                high = _length;
             }
-
-            var byteCount = global::System.Text.Encoding.UTF8.GetByteCount(s);
-            var arr = new byte[byteCount];
-            global::System.Text.Encoding.UTF8.TryGetBytes(s.AsSpan(), arr, out _);
-            return new Slice<byte>(arr);
-        }
-
-        /// <summary>Convert []byte to string (UTF-8 decoding).</summary>
-        public static string FromBytes(Slice<byte> bytes)
-        {
-            if (bytes.IsNil) return "";
-            return global::System.Text.Encoding.UTF8.GetString(bytes.AsReadOnlySpan());
-        }
-
-        /// <summary>Convert string to []rune (Unicode code points).</summary>
-        public static Slice<int> ToRunes(string s)
-        {
-            if (s == null) return default;
-
-            int count = 0;
-            foreach (var rune in s.EnumerateRunes())
+            if (low < 0 || high < low || high > _length)
             {
-                count++;
+                throw new GoPanicException(
+                    $"runtime error: slice bounds out of range [{low}:{high}] with length {_length}");
             }
-
-            var arr = new int[count];
-            int idx = 0;
-            foreach (var rune in s.EnumerateRunes())
+            if (_bytes == null)
             {
-                arr[idx++] = rune.Value;
+                return default;
             }
-
-            return new Slice<int>(arr);
+            return new GoString(_bytes, _offset + low, high - low);
         }
 
-        /// <summary>Convert []rune to string.</summary>
-        public static string FromRunes(Slice<int> runes)
+        /// <summary>Create a GoString from a .NET string literal (UTF-16 → UTF-8).</summary>
+        public static GoString FromNetString(string value)
         {
-            if (runes.IsNil) return "";
-            var sb = new StringBuilder(runes.Len);
+            if (value == null || value.Length == 0)
+            {
+                return default;
+            }
+            var bytes = Encoding.UTF8.GetBytes(value);
+            return new GoString(bytes, 0, bytes.Length);
+        }
+
+        /// <summary>Convert to .NET string (UTF-8 → UTF-16) for interop.</summary>
+        public string ToNetString()
+        {
+            if (_bytes == null || _length == 0)
+            {
+                return "";
+            }
+            return Encoding.UTF8.GetString(_bytes, _offset, _length);
+        }
+
+        /// <summary>Get a ReadOnlySpan over the underlying UTF-8 bytes.</summary>
+        public ReadOnlySpan<byte> AsSpan()
+        {
+            if (_bytes == null)
+            {
+                return ReadOnlySpan<byte>.Empty;
+            }
+            return new ReadOnlySpan<byte>(_bytes, _offset, _length);
+        }
+
+        /// <summary>Convert Go string to []byte (copy, since Go copies on conversion).</summary>
+        public static Slice<byte> ToBytes(GoString source)
+        {
+            if (source._bytes == null || source._length == 0)
+            {
+                return new Slice<byte>(Array.Empty<byte>());
+            }
+            var copy = new byte[source._length];
+            Array.Copy(source._bytes, source._offset, copy, 0, source._length);
+            return new Slice<byte>(copy);
+        }
+
+        /// <summary>Convert []byte to Go string (copy).</summary>
+        public static GoString FromBytes(Slice<byte> bytes)
+        {
+            if (bytes.IsNil || bytes.Len == 0)
+            {
+                return default;
+            }
+            var copy = new byte[bytes.Len];
+            for (int i = 0; i < bytes.Len; i++)
+            {
+                copy[i] = bytes[i];
+            }
+            return new GoString(copy, 0, copy.Length);
+        }
+
+        /// <summary>Convert Go string to []rune (Unicode code points).</summary>
+        public static Slice<int> ToRunes(GoString source)
+        {
+            if (source._bytes == null || source._length == 0)
+            {
+                return default;
+            }
+            var span = source.AsSpan();
+            var runes = new List<int>();
+            int position = 0;
+            while (position < span.Length)
+            {
+                var status = System.Text.Rune.DecodeFromUtf8(span.Slice(position), out var rune, out int bytesConsumed);
+                if (status != System.Buffers.OperationStatus.Done)
+                {
+                    runes.Add(0xFFFD);
+                    position++;
+                }
+                else
+                {
+                    runes.Add(rune.Value);
+                    position += bytesConsumed;
+                }
+            }
+            return new Slice<int>(runes.ToArray());
+        }
+
+        /// <summary>Convert []rune to Go string.</summary>
+        public static GoString FromRunes(Slice<int> runes)
+        {
+            if (runes.IsNil || runes.Len == 0)
+            {
+                return default;
+            }
+            var sb = new StringBuilder();
             var span = runes.AsReadOnlySpan();
             for (int i = 0; i < span.Length; i++)
             {
                 sb.Append(char.ConvertFromUtf32(span[i]));
             }
-            return sb.ToString();
+            return FromNetString(sb.ToString());
+        }
+
+        /// <summary>Go string(runeValue) — convert a single rune to a string.</summary>
+        public static GoString FromRune(int rune)
+        {
+            return FromNetString(char.ConvertFromUtf32(rune));
         }
 
         /// <summary>
         /// Iterate runes in a string (for i, r := range s).
         /// Yields (byteIndex, rune) pairs matching Go's range-over-string semantics.
         /// </summary>
-        public static IEnumerable<(int index, int rune)> RangeRunes(string s)
+        public static IEnumerable<(int index, int rune)> RangeRunes(GoString source)
         {
-            if (s == null) yield break;
-
-            if (System.Text.Ascii.IsValid(s))
+            if (source._bytes == null || source._length == 0)
             {
-                for (int i = 0; i < s.Length; i++)
-                {
-                    yield return (i, s[i]);
-                }
                 yield break;
             }
-
-            int byteIndex = 0;
-            foreach (var rune in s.EnumerateRunes())
+            var bytes = source._bytes;
+            int offset = source._offset;
+            int end = offset + source._length;
+            int position = 0;
+            while (offset < end)
             {
-                yield return (byteIndex, rune.Value);
-                byteIndex += rune.Utf8SequenceLength;
+                byte leading = bytes[offset];
+                if (leading < 0x80)
+                {
+                    yield return (position, leading);
+                    offset++;
+                    position++;
+                }
+                else
+                {
+                    var remaining = new ReadOnlySpan<byte>(bytes, offset, end - offset);
+                    var status = System.Text.Rune.DecodeFromUtf8(remaining, out var rune, out int bytesConsumed);
+                    if (status != System.Buffers.OperationStatus.Done)
+                    {
+                        yield return (position, 0xFFFD);
+                        offset++;
+                        position++;
+                    }
+                    else
+                    {
+                        yield return (position, rune.Value);
+                        offset += bytesConsumed;
+                        position += bytesConsumed;
+                    }
+                }
             }
         }
 
-        /// <summary>Go string(runeValue) — convert a single rune to a string.</summary>
-        public static string FromRune(int rune)
+        // --- Operators ---
+
+        public static GoString operator +(GoString left, GoString right)
         {
-            return char.ConvertFromUtf32(rune);
+            if (left._length == 0)
+            {
+                return right;
+            }
+            if (right._length == 0)
+            {
+                return left;
+            }
+            var combined = new byte[left._length + right._length];
+            Array.Copy(left._bytes!, left._offset, combined, 0, left._length);
+            Array.Copy(right._bytes!, right._offset, combined, left._length, right._length);
+            return new GoString(combined, 0, combined.Length);
         }
 
-        /// <summary>Go string slicing s[low:high] — operates on byte indices.</summary>
-        public static string SliceString(string s, int low, int high)
+        public static bool operator ==(GoString left, GoString right) => left.Equals(right);
+        public static bool operator !=(GoString left, GoString right) => !left.Equals(right);
+        public static bool operator <(GoString left, GoString right) => left.CompareTo(right) < 0;
+        public static bool operator >(GoString left, GoString right) => left.CompareTo(right) > 0;
+        public static bool operator <=(GoString left, GoString right) => left.CompareTo(right) <= 0;
+        public static bool operator >=(GoString left, GoString right) => left.CompareTo(right) >= 0;
+
+        // --- Implicit conversion from .NET string for ease of use in runtime code ---
+
+        public static implicit operator GoString(string value) => FromNetString(value);
+
+        // --- IEquatable / IComparable ---
+
+        public bool Equals(GoString other)
         {
-            // -1 sentinel means "use len(s)"
-            if (high < 0) high = s.Length;
-
-            if (System.Text.Ascii.IsValid(s))
+            if (_length != other._length)
             {
-                if (low < 0 || high < low || high > s.Length)
-                    throw new GoPanicException($"runtime error: slice bounds out of range [{low}:{high}] with length {s.Length}");
-                return s.Substring(low, high - low);
+                return false;
             }
-
-            var byteCount = global::System.Text.Encoding.UTF8.GetByteCount(s);
-            if (low < 0 || high < low || high > byteCount)
-                throw new GoPanicException($"runtime error: slice bounds out of range [{low}:{high}] with length {byteCount}");
-
-            byte[]? rented = null;
-            try
-            {
-                Span<byte> buffer = byteCount <= StackAllocThreshold
-                    ? stackalloc byte[byteCount]
-                    : (rented = ArrayPool<byte>.Shared.Rent(byteCount)).AsSpan(0, byteCount);
-
-                global::System.Text.Encoding.UTF8.GetBytes(s.AsSpan(), buffer);
-                return global::System.Text.Encoding.UTF8.GetString(buffer.Slice(low, high - low));
-            }
-            finally
-            {
-                if (rented != null) ArrayPool<byte>.Shared.Return(rented);
-            }
+            return AsSpan().SequenceEqual(other.AsSpan());
         }
 
+        public int CompareTo(GoString other)
+        {
+            return AsSpan().SequenceCompareTo(other.AsSpan());
+        }
+
+        public override bool Equals(object? obj)
+        {
+            return obj is GoString other && Equals(other);
+        }
+
+        public override int GetHashCode()
+        {
+            if (_bytes == null || _length == 0)
+            {
+                return 0;
+            }
+            var hash = new HashCode();
+            var span = AsSpan();
+            for (int i = 0; i < span.Length; i++)
+            {
+                hash.Add(span[i]);
+            }
+            return hash.ToHashCode();
+        }
+
+        public override string ToString() => ToNetString();
     }
 }

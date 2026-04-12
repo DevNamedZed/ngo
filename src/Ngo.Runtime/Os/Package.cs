@@ -147,24 +147,24 @@ namespace Ngo.Runtime.Os
         }
 
         [GoFunc]
-        public static string Getenv(string key)
+        public static GoString Getenv(GoString key)
         {
-            return Environment.GetEnvironmentVariable(key) ?? "";
+            return GoString.FromNetString(Environment.GetEnvironmentVariable(key.ToNetString()) ?? "");
         }
 
         [GoFunc]
         [return: GoReturn("error")]
-        public static object? Setenv(string key, string value)
+        public static object? Setenv(GoString key, GoString value)
         {
-            Environment.SetEnvironmentVariable(key, value);
-            return null; // nil error
+            Environment.SetEnvironmentVariable(key.ToNetString(), value.ToNetString());
+            return null;
         }
 
         [GoFunc]
         [return: GoReturn("error")]
-        public static object? Unsetenv(string key)
+        public static object? Unsetenv(GoString key)
         {
-            Environment.SetEnvironmentVariable(key, null);
+            Environment.SetEnvironmentVariable(key.ToNetString(), null);
             return null;
         }
 
@@ -179,24 +179,24 @@ namespace Ngo.Runtime.Os
 
         [GoFunc]
         [return: GoReturn("string", "bool")]
-        public static (string, bool) LookupEnv(string key)
+        public static (GoString, bool) LookupEnv(GoString key)
         {
-            var val = Environment.GetEnvironmentVariable(key);
-            return val != null ? (val, true) : ("", false);
+            var val = Environment.GetEnvironmentVariable(key.ToNetString());
+            return val != null ? (GoString.FromNetString(val), true) : (default, false);
         }
 
         [GoFunc]
-        public static Slice<string> Environ()
+        public static Slice<GoString> Environ()
         {
             var envVars = Environment.GetEnvironmentVariables();
-            var result = new string[envVars.Count];
+            var result = new GoString[envVars.Count];
             int i = 0;
             foreach (System.Collections.DictionaryEntry entry in envVars)
             {
-                result[i++] = $"{entry.Key}={entry.Value}";
+                result[i++] = GoString.FromNetString($"{entry.Key}={entry.Value}");
             }
 
-            return new Slice<string>(result);
+            return new Slice<GoString>(result);
         }
 
         [GoFunc]
@@ -759,51 +759,52 @@ namespace Ngo.Runtime.Os
             return (new GoFile(pipeOut, "|0"), new GoFile(pipeIn, "|1"), null);
         }
 
-        // os.Expand(s string, mapping func(string) string) string
         [GoFunc]
-        public static string Expand(string s, Func<string, string> mapping)
+        public static GoString Expand(GoString s, Func<GoString, GoString> mapping)
         {
+            var str = s.ToNetString();
             var sb = new System.Text.StringBuilder();
             int i = 0;
-            while (i < s.Length)
+            while (i < str.Length)
             {
-                if (s[i] == '$' && i + 1 < s.Length)
+                if (str[i] == '$' && i + 1 < str.Length)
                 {
                     i++;
                     string varName;
-                    if (s[i] == '{')
+                    if (str[i] == '{')
                     {
-                        int end = s.IndexOf('}', i + 1);
+                        int end = str.IndexOf('}', i + 1);
                         if (end < 0)
                         {
                             sb.Append("${");
                             i++;
                             continue;
                         }
-                        varName = s.Substring(i + 1, end - i - 1);
+                        varName = str.Substring(i + 1, end - i - 1);
                         i = end + 1;
                     }
                     else
                     {
                         int start = i;
-                        while (i < s.Length && (char.IsLetterOrDigit(s[i]) || s[i] == '_'))
+                        while (i < str.Length && (char.IsLetterOrDigit(str[i]) || str[i] == '_'))
+                        {
                             i++;
-                        varName = s.Substring(start, i - start);
+                        }
+                        varName = str.Substring(start, i - start);
                     }
-                    sb.Append(mapping(varName));
+                    sb.Append(mapping(GoString.FromNetString(varName)).ToNetString());
                 }
                 else
                 {
-                    sb.Append(s[i]);
+                    sb.Append(str[i]);
                     i++;
                 }
             }
-            return sb.ToString();
+            return GoString.FromNetString(sb.ToString());
         }
 
-        // os.ExpandEnv(s string) string
         [GoFunc]
-        public static string ExpandEnv(string s)
+        public static GoString ExpandEnv(GoString s)
         {
             return Expand(s, Getenv);
         }

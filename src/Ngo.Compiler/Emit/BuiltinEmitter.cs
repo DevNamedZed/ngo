@@ -393,7 +393,7 @@ namespace Ngo.Compiler.Emit
                 case "NewReader":
                     _body.EmitExpression(call.Arguments[0]);
                     _ctx.IL.Emit(OpCodes.Newobj,
-                        typeof(Ngo.Runtime.Strings.Reader).GetConstructor(new[] { typeof(string) })!);
+                        typeof(Ngo.Runtime.Strings.Reader).GetConstructor(new[] { typeof(GoString) })!);
                     return true;
                 case "NewReplacer":
                     EmitVariadicStringArray(call, 0);
@@ -434,6 +434,7 @@ namespace Ngo.Compiler.Emit
                 _ctx.IL.Emit(OpCodes.Dup);
                 _ctx.IL.Emit(OpCodes.Ldc_I4, i);
                 _body.EmitExpression(call.Arguments[startIndex + i]);
+                EmitGoStringToNetString();
                 _ctx.IL.Emit(OpCodes.Stelem_Ref);
             }
         }
@@ -477,15 +478,28 @@ namespace Ngo.Compiler.Emit
                     _body.EmitExpression(call.Arguments[i]);
                     var argType = _ctx.Mapper.Map(call.Arguments[i].Type);
                     var paramType = methodParams[i].ParameterType;
-                    if (argType != paramType)
+                    if (argType == typeof(GoString) && paramType == typeof(object))
+                    {
+                        EmitGoStringToNetString();
+                        _ctx.IL.Emit(OpCodes.Box, typeof(string));
+                    }
+                    else if (argType != paramType)
                     {
                         if (paramType == typeof(object) && argType.IsValueType)
+                        {
                             _ctx.IL.Emit(OpCodes.Box, argType);
+                        }
                         else
+                        {
                             EmitImplicitConv(argType, paramType);
+                        }
                     }
                 }
                 _ctx.IL.Emit(OpCodes.Call, method);
+                if (method.ReturnType == typeof(string))
+                {
+                    _ctx.IL.Emit(OpCodes.Call, typeof(GoString).GetMethod("FromNetString")!);
+                }
                 return true;
             }
 
@@ -514,12 +528,23 @@ namespace Ngo.Compiler.Emit
                 _ctx.IL.Emit(OpCodes.Ldc_I4, i);
                 _body.EmitExpression(call.Arguments[fixedCount + i]);
                 var argType = _ctx.Mapper.Map(call.Arguments[fixedCount + i].Type);
-                if (argType.IsValueType)
+                if (argType == typeof(GoString))
+                {
+                    EmitGoStringToNetString();
+                    _ctx.IL.Emit(OpCodes.Box, typeof(string));
+                }
+                else if (argType.IsValueType)
+                {
                     _ctx.IL.Emit(OpCodes.Box, argType);
+                }
                 _ctx.IL.Emit(OpCodes.Stelem_Ref);
             }
 
             _ctx.IL.Emit(OpCodes.Call, method);
+            if (method.ReturnType == typeof(string))
+            {
+                _ctx.IL.Emit(OpCodes.Call, typeof(GoString).GetMethod("FromNetString")!);
+            }
             return true;
         }
 
@@ -667,7 +692,11 @@ namespace Ngo.Compiler.Emit
         private void EmitImplicitConv(Type source, Type target)
         {
             if (source == target) return;
-            if (target == typeof(object) && source.IsValueType)
+            if (source == typeof(GoString) && target == typeof(string))
+            {
+                EmitGoStringToNetString();
+            }
+            else if (target == typeof(object) && source.IsValueType)
             {
                 _ctx.IL.Emit(OpCodes.Box, source);
             }
@@ -717,7 +746,10 @@ namespace Ngo.Compiler.Emit
             if (argType.TypeKind == TypeKind.String || argType.TypeKind == TypeKind.UntypedString)
             {
                 _body.EmitExpression(arg);
-                _ctx.IL.Emit(OpCodes.Call, typeof(GoString).GetMethod("Len")!);
+                var tempStr = _ctx.IL.DeclareLocal(typeof(GoString));
+                _ctx.IL.Emit(OpCodes.Stloc, tempStr);
+                _ctx.IL.Emit(OpCodes.Ldloca, tempStr);
+                _ctx.IL.Emit(OpCodes.Call, typeof(GoString).GetProperty("Len")!.GetGetMethod()!);
                 _ctx.IL.Emit(OpCodes.Conv_I8);
                 return true;
             }
@@ -861,7 +893,7 @@ namespace Ngo.Compiler.Emit
                 var secondArgType = call.Arguments[1].Type;
                 if (secondArgType.TypeKind == TypeKind.String || secondArgType.TypeKind == TypeKind.UntypedString)
                 {
-                    var toBytesMethod = typeof(GoString).GetMethod("ToBytes", new[] { typeof(string) })!;
+                    var toBytesMethod = typeof(GoString).GetMethod("ToBytes", new[] { typeof(GoString) })!;
                     _ctx.IL.Emit(OpCodes.Call, toBytesMethod);
                 }
                 var appendSliceMethod = _ctx.Definitions.GetMethod(appendSliceType, "Append", new[] { sliceClrType, sliceClrType });
@@ -1052,7 +1084,7 @@ namespace Ngo.Compiler.Emit
 
                 // Convert string to byte[] then copy to span
                 _body.EmitExpression(call.Arguments[1]);
-                var toBytesMethod = typeof(GoString).GetMethod("ToBytes", new[] { typeof(string) })!;
+                var toBytesMethod = typeof(GoString).GetMethod("ToBytes", new[] { typeof(GoString) })!;
                 _ctx.IL.Emit(OpCodes.Call, toBytesMethod);
 
                 // Span<byte>.CopyFrom(Slice<byte>) — use Slice.AsSpan + CopyTo
@@ -1114,7 +1146,7 @@ namespace Ngo.Compiler.Emit
                 _body.EmitExpression(call.Arguments[1]);
 
                 var copyMethod = typeof(BuiltIn).GetMethod("Copy",
-                    new[] { typeof(Slice<byte>), typeof(string) });
+                    new[] { typeof(Slice<byte>), typeof(GoString) });
                 _ctx.IL.Emit(OpCodes.Call, copyMethod!);
                 _ctx.IL.Emit(OpCodes.Conv_I8);
                 return true;
@@ -1251,7 +1283,7 @@ namespace Ngo.Compiler.Emit
         {
             var argType = call.Arguments[0].Type;
             var clrType = _ctx.Mapper.Map(argType);
-            bool isString = clrType == typeof(string);
+            bool isString = clrType == typeof(GoString);
 
             _body.EmitExpression(call.Arguments[0]);
 
@@ -1270,8 +1302,15 @@ namespace Ngo.Compiler.Emit
                 {
                     _ctx.IL.Emit(OpCodes.Ldloc, candidateLocal);
                     _ctx.IL.Emit(OpCodes.Ldloc, resultLocal);
+                    // CompareTo is instance method on GoString
+                    var tempCand = _ctx.IL.DeclareLocal(typeof(GoString));
+                    var tempRes = _ctx.IL.DeclareLocal(typeof(GoString));
+                    _ctx.IL.Emit(OpCodes.Stloc, tempRes);
+                    _ctx.IL.Emit(OpCodes.Stloc, tempCand);
+                    _ctx.IL.Emit(OpCodes.Ldloca, tempCand);
+                    _ctx.IL.Emit(OpCodes.Ldloc, tempRes);
                     _ctx.IL.Emit(OpCodes.Call,
-                        typeof(string).GetMethod("Compare", new[] { typeof(string), typeof(string) })!);
+                        typeof(GoString).GetMethod("CompareTo", new[] { typeof(GoString) })!);
                     _ctx.IL.Emit(OpCodes.Ldc_I4_0);
                     if (isMin)
                         _ctx.IL.Emit(OpCodes.Bge, keepCurrent);
@@ -1390,6 +1429,7 @@ namespace Ngo.Compiler.Emit
             if (call.Arguments.Count > 0)
             {
                 _body.EmitExpression(call.Arguments[0]);
+                EmitGoStringToNetString();
             }
             else
             {
@@ -1420,6 +1460,7 @@ namespace Ngo.Compiler.Emit
             if (call.Arguments.Count > formatArgIndex)
             {
                 _body.EmitExpression(call.Arguments[formatArgIndex]);
+                EmitGoStringToNetString();
             }
             else
             {
@@ -1463,6 +1504,14 @@ namespace Ngo.Compiler.Emit
             }
         }
 
+        private void EmitGoStringToNetString()
+        {
+            var tempStr = _ctx.IL.DeclareLocal(typeof(GoString));
+            _ctx.IL.Emit(OpCodes.Stloc, tempStr);
+            _ctx.IL.Emit(OpCodes.Ldloca, tempStr);
+            _ctx.IL.Emit(OpCodes.Call, typeof(GoString).GetMethod("ToNetString")!);
+        }
+
         /// <summary>
         /// After creating a Ptr&lt;T&gt; for a value type T via new(T), initializes
         /// any reference-type fields that need non-null zero values. Go structs
@@ -1480,7 +1529,7 @@ namespace Ngo.Compiler.Emit
             foreach (var field in fields)
             {
                 var fieldType = field.FieldType;
-                if (fieldType.IsValueType || fieldType == typeof(string)
+                if (fieldType.IsValueType
                     || fieldType == typeof(object) || fieldType.IsInterface
                     || fieldType.IsAbstract || fieldType.IsArray)
                 {

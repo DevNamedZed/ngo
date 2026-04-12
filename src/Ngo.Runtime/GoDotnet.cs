@@ -51,11 +51,17 @@ namespace Ngo.Runtime
         {
             var type = ResolveType(typeName);
             if (type == null)
+            {
                 throw new InvalidOperationException($"dotnet: type '{typeName}' not found");
+            }
+
+            UnwrapGoStringArgs(args);
 
             var argTypes = new Type[args.Length];
             for (int i = 0; i < args.Length; i++)
+            {
                 argTypes[i] = args[i]?.GetType() ?? typeof(object);
+            }
 
             var method = type.GetMethod(methodName, BindingFlags.Public | BindingFlags.Static, argTypes);
             if (method == null)
@@ -75,22 +81,28 @@ namespace Ngo.Runtime
                 throw new InvalidOperationException(
                     $"dotnet: method '{methodName}' not found on type '{typeName}'");
 
-            return method.Invoke(null, args);
+            return WrapResult(method.Invoke(null, args));
         }
 
         public static object? GetStaticProperty(string typeName, string propertyName)
         {
             var type = ResolveType(typeName);
             if (type == null)
+            {
                 throw new InvalidOperationException($"dotnet: type '{typeName}' not found");
+            }
 
             var prop = type.GetProperty(propertyName, BindingFlags.Public | BindingFlags.Static);
             if (prop != null)
-                return prop.GetValue(null);
+            {
+                return WrapResult(prop.GetValue(null));
+            }
 
             var field = type.GetField(propertyName, BindingFlags.Public | BindingFlags.Static);
             if (field != null)
-                return field.GetValue(null);
+            {
+                return WrapResult(field.GetValue(null));
+            }
 
             throw new InvalidOperationException(
                 $"dotnet: property/field '{propertyName}' not found on type '{typeName}'");
@@ -100,8 +112,11 @@ namespace Ngo.Runtime
         {
             var type = ResolveType(typeName);
             if (type == null)
+            {
                 throw new InvalidOperationException($"dotnet: type '{typeName}' not found");
+            }
 
+            UnwrapGoStringArgs(args);
             return Activator.CreateInstance(type, args)!;
         }
 
@@ -109,9 +124,13 @@ namespace Ngo.Runtime
         {
             var type = instance.GetType();
 
+            UnwrapGoStringArgs(args);
+
             var argTypes = new Type[args.Length];
             for (int i = 0; i < args.Length; i++)
+            {
                 argTypes[i] = args[i]?.GetType() ?? typeof(object);
+            }
 
             var method = type.GetMethod(methodName, BindingFlags.Public | BindingFlags.Instance, argTypes);
             if (method == null)
@@ -130,7 +149,7 @@ namespace Ngo.Runtime
                 throw new InvalidOperationException(
                     $"dotnet: method '{methodName}' not found on type '{type.FullName}'");
 
-            return method.Invoke(instance, args);
+            return WrapResult(method.Invoke(instance, args));
         }
 
         public static object? GetProperty(object instance, string propertyName)
@@ -138,11 +157,15 @@ namespace Ngo.Runtime
             var type = instance.GetType();
             var prop = type.GetProperty(propertyName, BindingFlags.Public | BindingFlags.Instance);
             if (prop != null)
-                return prop.GetValue(instance);
+            {
+                return WrapResult(prop.GetValue(instance));
+            }
 
             var field = type.GetField(propertyName, BindingFlags.Public | BindingFlags.Instance);
             if (field != null)
-                return field.GetValue(instance);
+            {
+                return WrapResult(field.GetValue(instance));
+            }
 
             throw new InvalidOperationException(
                 $"dotnet: property/field '{propertyName}' not found on type '{type.FullName}'");
@@ -172,6 +195,26 @@ namespace Ngo.Runtime
         public static string TypeName(object? instance)
         {
             return instance?.GetType().FullName ?? "nil";
+        }
+
+        private static void UnwrapGoStringArgs(object?[] args)
+        {
+            for (int i = 0; i < args.Length; i++)
+            {
+                if (args[i] is GoString goStr)
+                {
+                    args[i] = goStr.ToNetString();
+                }
+            }
+        }
+
+        private static object? WrapResult(object? result)
+        {
+            if (result is string str)
+            {
+                return GoString.FromNetString(str);
+            }
+            return result;
         }
     }
 }

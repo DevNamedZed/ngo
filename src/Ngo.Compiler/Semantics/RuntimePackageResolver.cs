@@ -552,7 +552,7 @@ namespace Ngo.Compiler.Semantics
             if (clrType == typeof(long) || clrType == typeof(int) || clrType == typeof(short) || clrType == typeof(sbyte)
                 || clrType == typeof(ulong) || clrType == typeof(uint) || clrType == typeof(ushort) || clrType == typeof(byte))
                 return BuiltinTypes.UntypedInt;
-            if (clrType == typeof(string))
+            if (clrType == typeof(string) || clrType == typeof(GoString))
                 return BuiltinTypes.UntypedString;
             if (clrType == typeof(bool))
                 return BuiltinTypes.UntypedBool;
@@ -578,7 +578,7 @@ namespace Ngo.Compiler.Semantics
             if (clrType == typeof(float)) return BuiltinTypes.Float32;
             if (clrType == typeof(nuint)) return BuiltinTypes.Uintptr;
             if (clrType == typeof(nint)) return BuiltinTypes.Int;
-            if (clrType == typeof(string)) return BuiltinTypes.String;
+            if (clrType == typeof(string) || clrType == typeof(GoString)) return BuiltinTypes.String;
             if (clrType == typeof(object)) return BuiltinTypes.EmptyInterface;
 
             if (clrType.IsGenericType)

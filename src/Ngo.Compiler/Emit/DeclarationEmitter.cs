@@ -182,7 +182,7 @@ namespace Ngo.Compiler.Emit
 
                 var staticStringMethod = _ctx.PackageType.DefineMethod(staticMethodName,
                     MethodAttributes.Public | MethodAttributes.Static,
-                    typeof(string), new[] { receiverParamType });
+                    typeof(GoString), new[] { receiverParamType });
                 _ctx.Methods[stringMethod] = staticStringMethod;
 
                 var toString = typeBuilder.DefineMethod("ToString",
@@ -204,6 +204,11 @@ namespace Ngo.Compiler.Emit
                     il.Emit(OpCodes.Ldobj, structClrType);
                 }
                 il.Emit(OpCodes.Call, staticStringMethod.AsMethodInfo());
+                // Go String() returns GoString; convert to .NET string for ToString()
+                var tempGoStr = il.DeclareLocal(typeof(GoString));
+                il.Emit(OpCodes.Stloc, tempGoStr);
+                il.Emit(OpCodes.Ldloca, tempGoStr);
+                il.Emit(OpCodes.Call, typeof(GoString).GetMethod("ToNetString")!);
                 il.Emit(OpCodes.Ret);
                 typeBuilder.DefineMethodOverride(toString,
                     typeof(object).GetMethod("ToString")!);
@@ -793,9 +798,7 @@ namespace Ngo.Compiler.Emit
                         stubReturnType, stubParamTypes);
                     _ctx.Definitions.RegisterMethod(qualifiedWrapperName, ifaceMethodName, stubParamTypes, stubMethod);
                     var stubIL = stubMethod.GetILWriter();
-                    if (stubReturnType == typeof(string))
-                        stubIL.Emit(OpCodes.Ldstr, "");
-                    else if (stubReturnType == typeof(void))
+                    if (stubReturnType == typeof(void))
                     { /* no return value */ }
                     else if (stubReturnType.IsValueType)
                     {
@@ -949,6 +952,11 @@ namespace Ngo.Compiler.Emit
                     if (errorEmbeddedField != null)
                         tsIL.Emit(OpCodes.Ldfld, _ctx.StructFields[errorEmbeddedField].AsFieldInfo());
                     tsIL.Emit(OpCodes.Call, goErrorMethod.AsMethodInfo());
+                    // Go Error() returns GoString, but ToString() must return .NET string
+                    var tempGoStr = tsIL.DeclareLocal(typeof(GoString));
+                    tsIL.Emit(OpCodes.Stloc, tempGoStr);
+                    tsIL.Emit(OpCodes.Ldloca, tempGoStr);
+                    tsIL.Emit(OpCodes.Call, typeof(GoString).GetMethod("ToNetString")!);
                     tsIL.Emit(OpCodes.Ret);
                 }
                 else
@@ -1060,11 +1068,7 @@ namespace Ngo.Compiler.Emit
             else
             {
                 // No concrete method found — emit default return
-                if (interfaceMethod.ReturnType == typeof(string))
-                {
-                    methodIL.Emit(OpCodes.Ldstr, "");
-                }
-                else if (interfaceMethod.ReturnType == typeof(void))
+                if (interfaceMethod.ReturnType == typeof(void))
                 {
                     // nothing
                 }

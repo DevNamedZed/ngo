@@ -1,6 +1,7 @@
 using System.Reflection.Emit;
 using System.Threading;
 using Ngo.Compiler.Emit.Builder;
+using Ngo.Runtime;
 
 namespace Ngo.Compiler.Emit
 {
@@ -386,14 +387,16 @@ namespace Ngo.Compiler.Emit
 
                 // throw(s string) — used by sync internals
                 case "throw":
-                    il.Emit(OpCodes.Ldarg_0);
+                    il.Emit(OpCodes.Ldarga, 0);
+                    il.Emit(OpCodes.Call, typeof(GoString).GetMethod("ToNetString")!);
                     il.Emit(OpCodes.Newobj, typeof(System.Exception).GetConstructor(new[] { typeof(string) })!);
                     il.Emit(OpCodes.Throw);
                     return true;
 
                 // fatal(s string) — same as throw
                 case "fatal":
-                    il.Emit(OpCodes.Ldarg_0);
+                    il.Emit(OpCodes.Ldarga, 0);
+                    il.Emit(OpCodes.Call, typeof(GoString).GetMethod("ToNetString")!);
                     il.Emit(OpCodes.Newobj, typeof(System.Exception).GetConstructor(new[] { typeof(string) })!);
                     il.Emit(OpCodes.Throw);
                     return true;
@@ -476,11 +479,13 @@ namespace Ngo.Compiler.Emit
 
                 case "Version":
                     il.Emit(OpCodes.Ldstr, "go1.22.6");
+                    il.Emit(OpCodes.Call, typeof(GoString).GetMethod("FromNetString")!);
                     il.Emit(OpCodes.Ret);
                     return true;
 
                 case "GOROOT":
                     il.Emit(OpCodes.Ldstr, "");
+                    il.Emit(OpCodes.Call, typeof(GoString).GetMethod("FromNetString")!);
                     il.Emit(OpCodes.Ret);
                     return true;
 
@@ -512,6 +517,7 @@ namespace Ngo.Compiler.Emit
                     // Return dummy values — full stack walking requires System.Diagnostics.StackTrace
                     il.Emit(OpCodes.Ldc_I8, 0L);     // pc = 0
                     il.Emit(OpCodes.Ldstr, "");       // file = ""
+                    il.Emit(OpCodes.Call, typeof(GoString).GetMethod("FromNetString")!);
                     il.Emit(OpCodes.Ldc_I8, 0L);     // line = 0
                     il.Emit(OpCodes.Ldc_I4_0);        // ok = false
                     il.Emit(OpCodes.Ret);
@@ -524,7 +530,9 @@ namespace Ngo.Compiler.Emit
                     return true;
 
                 case "Getenv":
-                    il.Emit(OpCodes.Ldarg_0);
+                    // Convert GoString arg to .NET string
+                    il.Emit(OpCodes.Ldarga, 0);
+                    il.Emit(OpCodes.Call, typeof(GoString).GetMethod("ToNetString")!);
                     il.Emit(OpCodes.Call, typeof(System.Environment).GetMethod("GetEnvironmentVariable", new[] { typeof(string) })!);
                     il.Emit(OpCodes.Dup);
                     var notNull = il.DefineLabel();
@@ -532,6 +540,8 @@ namespace Ngo.Compiler.Emit
                     il.Emit(OpCodes.Pop);
                     il.Emit(OpCodes.Ldstr, "");
                     il.MarkLabel(notNull);
+                    // Convert .NET string result to GoString
+                    il.Emit(OpCodes.Call, typeof(GoString).GetMethod("FromNetString")!);
                     il.Emit(OpCodes.Ret);
                     return true;
 

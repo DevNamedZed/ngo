@@ -28,10 +28,10 @@ namespace Ngo.Runtime.Strings
 
         [GoMethod]
         [return: GoReturn("int", "error")]
-        public (long, object?) WriteString(string s)
+        public (long, object?) WriteString(GoString s)
         {
-            _sb.Append(s);
-            return (s.Length, null);
+            _sb.Append(s.ToNetString());
+            return (s.Len, null);
         }
 
         [GoMethod]
@@ -66,7 +66,7 @@ namespace Ngo.Runtime.Strings
         public long Len() => _sb.Length;
 
         [GoMethod]
-        public string String() => _sb.ToString();
+        public GoString String() => GoString.FromNetString(_sb.ToString());
 
         [GoMethod]
         public void Grow(long n) => _sb.EnsureCapacity((int)n);

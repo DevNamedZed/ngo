@@ -47,7 +47,8 @@ namespace Ngo.Runtime.Fmt
             for (int i = 0; i < args.Length; i++)
             {
                 // Print uses spaces between non-string operands
-                if (i > 0 && !(args[i - 1] is string) && !(args[i] is string))
+                if (i > 0 && !(args[i - 1] is string) && !(args[i - 1] is GoString)
+                    && !(args[i] is string) && !(args[i] is GoString))
                 {
                     Console.Write(" ");
                     n++;
@@ -61,12 +62,12 @@ namespace Ngo.Runtime.Fmt
 
         public static (long, string) Printf(string format, params object?[] args)
         {
-            var s = Sprintf(format, args);
+            var s = Sprintf(format, args).ToNetString();
             Console.Write(s);
             return (s.Length, "");
         }
 
-        public static string Sprintf(string format, params object?[] args)
+        public static GoString Sprintf(string format, params object?[] args)
         {
             var sb = new StringBuilder();
             int argIndex = 0;
@@ -139,10 +140,10 @@ namespace Ngo.Runtime.Fmt
                 sb.Append(FormatVerb(verb, arg, flagMinus, flagPlus, flagZero, flagHash, flagSpace, width, prec));
             }
 
-            return sb.ToString();
+            return GoString.FromNetString(sb.ToString());
         }
 
-        public static string Sprint(params object?[] args)
+        public static GoString Sprint(params object?[] args)
         {
             var sb = new StringBuilder();
             for (int i = 0; i < args.Length; i++)
@@ -153,7 +154,7 @@ namespace Ngo.Runtime.Fmt
                 }
                 sb.Append(FormatValue(args[i]));
             }
-            return sb.ToString();
+            return GoString.FromNetString(sb.ToString());
         }
 
         [GoFunc(IsVariadic = true)]
@@ -176,7 +177,7 @@ namespace Ngo.Runtime.Fmt
 
                 // Replace %w with %v for display
                 var displayFormat = format.Substring(0, wIdx) + "%v" + format.Substring(wIdx + 2);
-                string message = Sprintf(displayFormat, args);
+                string message = Sprintf(displayFormat, args).ToNetString();
 
                 return new WrappedError(message, wrappedErr);
             }
@@ -184,7 +185,7 @@ namespace Ngo.Runtime.Fmt
             return Sprintf(format, args);
         }
 
-        public static string Sprintln(params object?[] args)
+        public static GoString Sprintln(params object?[] args)
         {
             var sb = new StringBuilder();
             for (int i = 0; i < args.Length; i++)
@@ -193,7 +194,7 @@ namespace Ngo.Runtime.Fmt
                 sb.Append(FormatValue(args[i]));
             }
             sb.Append('\n');
-            return sb.ToString();
+            return GoString.FromNetString(sb.ToString());
         }
 
         private static string FormatVerb(char verb, object? arg,
@@ -367,7 +368,7 @@ namespace Ngo.Runtime.Fmt
 
             // Error() method (Go's error interface — checked before Stringer)
             var errorMethod = type.GetMethod("Error", Type.EmptyTypes);
-            if (errorMethod != null && errorMethod.ReturnType == typeof(string))
+            if (errorMethod != null && (errorMethod.ReturnType == typeof(string) || errorMethod.ReturnType == typeof(GoString)))
             {
                 var result = errorMethod.Invoke(arg, null);
                 if (result is string errorStr) return errorStr;
@@ -375,7 +376,7 @@ namespace Ngo.Runtime.Fmt
 
             // String() method (Go's fmt.Stringer interface)
             var stringMethod = type.GetMethod("String", Type.EmptyTypes);
-            if (stringMethod != null && stringMethod.ReturnType == typeof(string)
+            if (stringMethod != null && (stringMethod.ReturnType == typeof(string) || stringMethod.ReturnType == typeof(GoString))
                 && stringMethod.DeclaringType != typeof(object))
             {
                 var result = stringMethod.Invoke(arg, null);
@@ -481,7 +482,7 @@ namespace Ngo.Runtime.Fmt
             if (arg == null) return "<nil>";
             if (arg is int) return "int";
             if (arg is long) return "int64";
-            if (arg is string) return "string";
+            if (arg is string || arg is GoString) return "string";
             if (arg is bool) return "bool";
             if (arg is double) return "float64";
             if (arg is float) return "float32";
@@ -490,7 +491,7 @@ namespace Ngo.Runtime.Fmt
 
         public static (long, string) Fprintf(IGoWriter w, string format, params object?[] args)
         {
-            var s = Sprintf(format, args);
+            var s = Sprintf(format, args).ToNetString();
             var bytes = global::System.Text.Encoding.UTF8.GetBytes(s);
             var slice = new Slice<byte>(bytes);
             var (n, err) = w.Write(slice);
@@ -517,7 +518,8 @@ namespace Ngo.Runtime.Fmt
             var sb = new StringBuilder();
             for (int i = 0; i < args.Length; i++)
             {
-                if (i > 0 && !(args[i] is string) && (i == 0 || !(args[i - 1] is string)))
+                if (i > 0 && !(args[i] is string) && !(args[i] is GoString)
+                    && (i == 0 || (!(args[i - 1] is string) && !(args[i - 1] is GoString))))
                     sb.Append(' ');
                 sb.Append(FormatValue(args[i]));
             }
@@ -661,7 +663,7 @@ namespace Ngo.Runtime.Fmt
         [GoFunc(IsVariadic = true)]
         public static Slice<byte> Append(Slice<byte> b, params object?[] a)
         {
-            var s = Sprint(a);
+            var s = Sprint(a).ToNetString();
             var bytes = global::System.Text.Encoding.UTF8.GetBytes(s);
             return Slice<byte>.Append(b, bytes);
         }
@@ -670,7 +672,7 @@ namespace Ngo.Runtime.Fmt
         [GoFunc(IsVariadic = true)]
         public static Slice<byte> Appendf(Slice<byte> b, string format, params object?[] a)
         {
-            var s = Sprintf(format, a);
+            var s = Sprintf(format, a).ToNetString();
             var bytes = global::System.Text.Encoding.UTF8.GetBytes(s);
             return Slice<byte>.Append(b, bytes);
         }
@@ -679,7 +681,7 @@ namespace Ngo.Runtime.Fmt
         [GoFunc(IsVariadic = true)]
         public static Slice<byte> Appendln(Slice<byte> b, params object?[] a)
         {
-            var s = Sprintln(a);
+            var s = Sprintln(a).ToNetString();
             var bytes = global::System.Text.Encoding.UTF8.GetBytes(s);
             return Slice<byte>.Append(b, bytes);
         }

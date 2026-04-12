@@ -236,7 +236,7 @@ namespace Ngo.Compiler.Emit
 
                 case TypeKind.String:
                 case TypeKind.UntypedString:
-                    return typeof(string);
+                    return typeof(GoString);
 
                 case TypeKind.Void:
                     return typeof(void);

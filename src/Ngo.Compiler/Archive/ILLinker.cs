@@ -18,6 +18,7 @@
 
 using System;
 using Ngo.Compiler.Emit;
+using Ngo.Runtime;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -1578,7 +1579,7 @@ namespace Ngo.Compiler.Archive
                 PrimitiveTypeKind.UInt64 => typeof(ulong),
                 PrimitiveTypeKind.Float32 => typeof(float),
                 PrimitiveTypeKind.Float64 => typeof(double),
-                PrimitiveTypeKind.String => typeof(string),
+                PrimitiveTypeKind.String => typeof(GoString),
                 PrimitiveTypeKind.Object => typeof(object),
                 PrimitiveTypeKind.IntPtr => typeof(IntPtr),
                 PrimitiveTypeKind.UIntPtr => typeof(UIntPtr),

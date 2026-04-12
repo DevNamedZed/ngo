@@ -18,6 +18,7 @@
 
 using System;
 using Ngo.Compiler.Emit;
+using Ngo.Runtime;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
@@ -174,7 +175,8 @@ namespace Ngo.Compiler.Archive
                 "System.UInt64" => typeof(ulong),
                 "System.Single" => typeof(float),
                 "System.Double" => typeof(double),
-                "System.String" => typeof(string),
+                "System.String" => typeof(GoString),
+                "Ngo.Runtime.GoString" => typeof(GoString),
                 "System.Object" => typeof(object),
                 "System.IntPtr" => typeof(IntPtr),
                 "System.UIntPtr" => typeof(UIntPtr),

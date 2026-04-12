@@ -24,6 +24,7 @@ using System.Reflection;
 using System.Reflection.Emit;
 using Ngo.Compiler.Emit;
 using Ngo.Compiler.Emit.Builder;
+using Ngo.Runtime;
 using Ngo.Runtime.Discovery;
 
 namespace Ngo.Compiler.Archive
@@ -66,7 +67,7 @@ namespace Ngo.Compiler.Archive
             { typeof(ulong), PrimitiveTypeKind.UInt64 },
             { typeof(float), PrimitiveTypeKind.Float32 },
             { typeof(double), PrimitiveTypeKind.Float64 },
-            { typeof(string), PrimitiveTypeKind.String },
+            { typeof(GoString), PrimitiveTypeKind.String },
             { typeof(object), PrimitiveTypeKind.Object },
             { typeof(nint), PrimitiveTypeKind.IntPtr },
             { typeof(nuint), PrimitiveTypeKind.UIntPtr },
@@ -509,6 +510,21 @@ namespace Ngo.Compiler.Archive
                     throw CreateMissingGenericParameterException(type);
                 }
 
+                if (type.IsArray)
+                {
+                    return TypeToken.CreateArray(BuildTypeToken(GetRequiredElementType(type), inProgress));
+                }
+
+                if (type.IsPointer)
+                {
+                    return TypeToken.CreatePointer(BuildTypeToken(GetRequiredElementType(type), inProgress));
+                }
+
+                if (type.IsByRef)
+                {
+                    return TypeToken.CreateByRef(BuildTypeToken(GetRequiredElementType(type), inProgress));
+                }
+
                 if (type.IsGenericType && !type.IsGenericTypeDefinition)
                 {
                     var genericDefinition = type.GetGenericTypeDefinition();
@@ -755,42 +771,85 @@ namespace Ngo.Compiler.Archive
             for (int index = 0; index < parameters.Length; index++)
             {
                 var parameterType = parameters[index].ParameterType;
-
-                // Substitute generic parameters with their concrete type arguments
-                if (parameterType.IsGenericParameter && declaringTypeArguments != null && declaringTypeDefParameters != null)
-                {
-                    for (int genericIndex = 0; genericIndex < declaringTypeDefParameters.Length; genericIndex++)
-                    {
-                        if (declaringTypeDefParameters[genericIndex] == parameterType
-                            || declaringTypeDefParameters[genericIndex].Name == parameterType.Name)
-                        {
-                            parameterType = declaringTypeArguments[genericIndex];
-                            break;
-                        }
-                    }
-                }
-
-                // For generic parameters that weren't substituted (declaring type info unavailable),
-                // try to find the concrete type by matching the parameter name against the declaring
-                // type's actual generic arguments.
-                if (parameterType.IsGenericParameter && declaringType != null && declaringType.IsGenericType)
-                {
-                    // Try GenericTypeArguments property first (works for some instantiation types)
-                    var actualArgs = declaringType.GenericTypeArguments;
-                    if (actualArgs.Length > 0)
-                    {
-                        // The generic parameter index is stored in GenericParameterPosition
-                        int paramPosition = parameterType.GenericParameterPosition;
-                        if (paramPosition >= 0 && paramPosition < actualArgs.Length)
-                        {
-                            parameterType = actualArgs[paramPosition];
-                        }
-                    }
-                }
-
+                parameterType = SubstituteGenericParameters(parameterType, declaringType,
+                    declaringTypeArguments, declaringTypeDefParameters);
                 parameterTokens[index] = BuildTypeToken(parameterType);
             }
             return parameterTokens;
+        }
+
+        private static Type SubstituteGenericParameters(Type type, Type? declaringType,
+            Type[]? declaringTypeArguments, Type[]? declaringTypeDefParameters)
+        {
+            if (type.IsGenericParameter)
+            {
+                if (declaringTypeArguments != null && declaringTypeDefParameters != null)
+                {
+                    for (int genericIndex = 0; genericIndex < declaringTypeDefParameters.Length; genericIndex++)
+                    {
+                        if (declaringTypeDefParameters[genericIndex] == type
+                            || declaringTypeDefParameters[genericIndex].Name == type.Name)
+                        {
+                            return declaringTypeArguments[genericIndex];
+                        }
+                    }
+                }
+
+                if (declaringType != null && declaringType.IsGenericType)
+                {
+                    var actualArgs = declaringType.GenericTypeArguments;
+                    if (type.GenericParameterPosition >= 0 && type.GenericParameterPosition < actualArgs.Length)
+                    {
+                        return actualArgs[type.GenericParameterPosition];
+                    }
+                }
+
+                return type;
+            }
+
+            if (type.IsArray)
+            {
+                var elementType = type.GetElementType()!;
+                var substituted = SubstituteGenericParameters(elementType, declaringType,
+                    declaringTypeArguments, declaringTypeDefParameters);
+                if (substituted != elementType)
+                {
+                    return substituted.MakeArrayType();
+                }
+            }
+
+            if (type.IsByRef)
+            {
+                var elementType = type.GetElementType()!;
+                var substituted = SubstituteGenericParameters(elementType, declaringType,
+                    declaringTypeArguments, declaringTypeDefParameters);
+                if (substituted != elementType)
+                {
+                    return substituted.MakeByRefType();
+                }
+            }
+
+            if (type.IsGenericType && !type.IsGenericTypeDefinition)
+            {
+                var genericArgs = type.GetGenericArguments();
+                bool changed = false;
+                var newArgs = new Type[genericArgs.Length];
+                for (int i = 0; i < genericArgs.Length; i++)
+                {
+                    newArgs[i] = SubstituteGenericParameters(genericArgs[i], declaringType,
+                        declaringTypeArguments, declaringTypeDefParameters);
+                    if (newArgs[i] != genericArgs[i])
+                    {
+                        changed = true;
+                    }
+                }
+                if (changed)
+                {
+                    return type.GetGenericTypeDefinition().MakeGenericType(newArgs);
+                }
+            }
+
+            return type;
         }
 
         private static string GetPackageImportPath(Type type)
@@ -855,7 +914,7 @@ namespace Ngo.Compiler.Archive
         {
             if (type == typeof(void)) { return "System.Void"; }
             if (type == typeof(object)) { return "System.Object"; }
-            if (type == typeof(string)) { return "System.String"; }
+            if (type == typeof(GoString)) { return "Ngo.Runtime.GoString"; }
             if (type == typeof(int)) { return "System.Int32"; }
             if (type == typeof(long)) { return "System.Int64"; }
             if (type == typeof(bool)) { return "System.Boolean"; }

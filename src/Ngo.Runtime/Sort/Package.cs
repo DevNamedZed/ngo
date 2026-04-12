@@ -122,9 +122,9 @@ namespace Ngo.Runtime.Sort
             SortSlice(slice, (a, b) => a.CompareTo(b));
         }
 
-        public static void Strings(Slice<string> slice)
+        public static void Strings(Slice<GoString> slice)
         {
-            SortSlice(slice, (a, b) => string.Compare(a, b, StringComparison.Ordinal));
+            SortSlice(slice, (a, b) => a.CompareTo(b));
         }
 
         public static void Float64s(Slice<double> slice)

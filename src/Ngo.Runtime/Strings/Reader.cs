@@ -10,9 +10,10 @@ namespace Ngo.Runtime.Strings
         private byte[] _data;
         private int _pos;
 
-        public Reader(string s)
+        public Reader(GoString s)
         {
-            _data = global::System.Text.Encoding.UTF8.GetBytes(s ?? "");
+            var span = s.AsSpan();
+            _data = span.Length > 0 ? span.ToArray() : Array.Empty<byte>();
             _pos = 0;
         }
 
@@ -157,9 +158,10 @@ namespace Ngo.Runtime.Strings
         public long Size() => _data.Length;
 
         [GoMethod]
-        public void Reset(string s)
+        public void Reset(GoString s)
         {
-            _data = global::System.Text.Encoding.UTF8.GetBytes(s ?? "");
+            var span = s.AsSpan();
+            _data = span.Length > 0 ? span.ToArray() : Array.Empty<byte>();
             _pos = 0;
         }
     }

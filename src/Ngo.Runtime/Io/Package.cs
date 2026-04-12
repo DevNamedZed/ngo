@@ -195,11 +195,10 @@ namespace Ngo.Runtime.Io
         /// </summary>
         [GoFunc]
         [return: GoReturn("int", "error")]
-        public static (long, string) WriteString([GoParam("io.Writer")] IGoWriter w, string s)
+        public static (long, string) WriteString([GoParam("io.Writer")] IGoWriter w, GoString s)
         {
-            var bytes = global::System.Text.Encoding.UTF8.GetBytes(s);
-            var slice = new Slice<byte>(bytes);
-            var (n, err) = w.Write(slice);
+            var bytes = GoString.ToBytes(s);
+            var (n, err) = w.Write(bytes);
             return (n, err);
         }
 
