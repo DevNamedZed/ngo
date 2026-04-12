@@ -215,14 +215,21 @@ namespace Ngo.Compiler.Archive
                 if (resolved != null) return resolved;
             }
 
-            // Legacy short-name cross-package type: "pkg.TypeName" (backward compatibility)
+            // Legacy short-name cross-package type: "pkg.TypeName" (backward compatibility).
+            // Guard: only attempt this when the portion before the last dot looks like a short
+            // Go package name (no slashes, no dots of its own) — not a CLR namespace like
+            // "System.Collections.Generic" which would produce a spurious resolver call.
             if (crossPkgResolver != null && typeStr.Contains('.'))
             {
                 var dotIdx = typeStr.LastIndexOf('.');
                 var pkgName = typeStr.Substring(0, dotIdx);
                 var typeName = typeStr.Substring(dotIdx + 1);
-                var resolved = crossPkgResolver(pkgName, typeName);
-                if (resolved != null) return resolved;
+                // A legacy Go short-name has no further dots or slashes in the package part.
+                if (!pkgName.Contains('.') && !pkgName.Contains('/'))
+                {
+                    var resolved = crossPkgResolver(pkgName, typeName);
+                    if (resolved != null) return resolved;
+                }
             }
 
             // Unqualified fallback: try short name in local type map

@@ -36,11 +36,15 @@ namespace Ngo.Runtime.Io
         public (long, string) Read(Slice<byte> p)
         {
             if (_pos >= _data.Length)
+            {
                 return (0, GoIo.EOF);
+            }
 
             int n = global::System.Math.Min(p.Len, _data.Length - _pos);
             for (int i = 0; i < n; i++)
+            {
                 p[i] = _data[_pos + i];
+            }
             _pos += n;
 
             string err = _pos >= _data.Length ? GoIo.EOF : "";

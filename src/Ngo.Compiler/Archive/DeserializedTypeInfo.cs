@@ -28,12 +28,12 @@ namespace Ngo.Compiler.Archive
     internal sealed class DeserializedTypeInfo
     {
         public DeserializedTypeInfo(string fullTypeName, TypeBuilder typeBuilder,
-            int methodCount, List<SerializedMethodInfo> methods,
+            List<SerializedFieldInfo> fields, List<SerializedMethodInfo> methods,
             InterfaceMethodMapping[] interfaceMappings)
         {
             FullTypeName = fullTypeName;
             TypeBuilder = typeBuilder;
-            MethodCount = methodCount;
+            Fields = fields;
             Methods = methods;
             InterfaceMappings = interfaceMappings;
         }
@@ -42,7 +42,7 @@ namespace Ngo.Compiler.Archive
 
         public TypeBuilder TypeBuilder { get; }
 
-        public int MethodCount { get; }
+        public List<SerializedFieldInfo> Fields { get; }
 
         public List<SerializedMethodInfo> Methods { get; }
 

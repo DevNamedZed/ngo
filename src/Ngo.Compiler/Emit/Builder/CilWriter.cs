@@ -49,6 +49,9 @@ namespace Ngo.Compiler.Emit.Builder
 
         public abstract void BeginExceptionBlock();
         public abstract void BeginCatchBlock(Type type);
+        public abstract void BeginFinallyBlock();
+        public abstract void BeginFaultBlock();
+        public abstract void BeginExceptFilterBlock();
         public abstract void EndExceptionBlock();
     }
 }

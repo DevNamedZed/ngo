@@ -20,6 +20,7 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Reflection.Emit;
+using Ngo.Compiler.Archive;
 using Ngo.Compiler.Ast;
 using Ngo.Compiler.Emit.Builder;
 using Ngo.Compiler.Symbols;
@@ -34,8 +35,6 @@ namespace Ngo.Compiler.Emit
     {
         private readonly EmitContext _ctx;
         private int _initCounter;
-        private readonly List<(StructTypeSymbol structType, Symbols.FieldSymbol field)> _deferredFields = new();
-        private readonly HashSet<StructTypeSymbol> _structsWithDeferredFields = new();
 
         public DeclarationEmitter(EmitContext ctx)
         {
@@ -123,6 +122,7 @@ namespace Ngo.Compiler.Emit
 
             _ctx.Mapper.Register(structType, typeBuilder.AsType());
             _ctx.StructTypes[structType] = typeBuilder;
+            _ctx.Definitions.RegisterType(qualifiedName, typeBuilder);
         }
 
         /// <summary>
@@ -149,18 +149,6 @@ namespace Ngo.Compiler.Emit
                 else
                 {
                     fieldType = _ctx.Mapper.Map(field.Type);
-                }
-
-                // Defer fields with TypeBuilder generic args from OTHER structs.
-                // MakeGenericType(TypeBuilder) != MakeGenericType(RuntimeType), so fields
-                // defined with cross-struct TypeBuilder args would be incompatible with method bodies.
-                // Self-referential fields (same TypeBuilder) are fine — consistent identity.
-                if (EmitContext.HasTypeBuilderArgs(fieldType)
-                    && !IsSelfReferentialField(fieldType, typeBuilder.AsType()))
-                {
-                    _deferredFields.Add((structType, field));
-                    _structsWithDeferredFields.Add(structType);
-                    continue;
                 }
 
                 DefineStructField(typeBuilder, field, fieldType);
@@ -200,12 +188,14 @@ namespace Ngo.Compiler.Emit
                 var toString = typeBuilder.DefineMethod("ToString",
                     MethodAttributes.Public | MethodAttributes.Virtual | MethodAttributes.HideBySig,
                     typeof(string), Type.EmptyTypes);
+                var structFullName = typeBuilder.AsType().FullName ?? typeBuilder.AsType().Name;
+                _ctx.Definitions.RegisterMethod(structFullName, "ToString", Type.EmptyTypes, toString);
                 var il = toString.GetILWriter();
                 if (stringMethod.IsPointerReceiver)
                 {
                     il.Emit(OpCodes.Ldarg_0);
                     il.Emit(OpCodes.Ldobj, structClrType);
-                    var ptrCtor = EmitContext.GetConstructorSafe(receiverParamType, new[] { structClrType });
+                    var ptrCtor = _ctx.Definitions.GetConstructor(receiverParamType, new[] { structClrType });
                     il.Emit(OpCodes.Newobj, ptrCtor);
                 }
                 else
@@ -226,28 +216,6 @@ namespace Ngo.Compiler.Emit
             PopulateStructFields(structType);
         }
 
-        public bool HasDeferredFields(TypeSymbol structType) =>
-            structType is StructTypeSymbol sts && _structsWithDeferredFields.Contains(sts);
-
-        private static bool IsSelfReferentialField(Type fieldType, Type structType)
-        {
-            if (fieldType is System.Reflection.Emit.TypeBuilder tb && tb == structType)
-            {
-                return true;
-            }
-            if (fieldType.IsGenericType && !fieldType.IsGenericTypeDefinition)
-            {
-                foreach (var arg in fieldType.GetGenericArguments())
-                {
-                    if (IsSelfReferentialField(arg, structType))
-                    {
-                        return true;
-                    }
-                }
-            }
-            return false;
-        }
-
         private void DefineStructField(Builder.ITypeBuilder typeBuilder, Symbols.FieldSymbol field, Type fieldType)
         {
             var fieldVisibility = (_ctx.Options.IsLibrary && !_ctx.IsExported(field.Name))
@@ -257,6 +225,8 @@ namespace Ngo.Compiler.Emit
             if (field.Type is ArrayTypeSymbol goArrField && fb is Builder.NgoFieldBuilder ngoFb)
             {
                 ngoFb.GoArrayLength = goArrField.Length;
+                var elemClr = _ctx.Mapper.Map(goArrField.ElementType);
+                ngoFb.GoArrayElementTypeName = NgoWriter.GetTypeNameStatic(elemClr);
             }
             if (field.Tag != null)
             {
@@ -264,6 +234,8 @@ namespace Ngo.Compiler.Emit
                 fb.SetCustomAttribute(new CustomAttributeBuilder(tagCtor, new object[] { field.Tag }));
             }
             _ctx.StructFields[field] = fb;
+            var declaringTypeName = typeBuilder.AsType().FullName ?? typeBuilder.AsType().Name;
+            _ctx.Definitions.RegisterField(declaringTypeName, field.Name, fb);
 
             if (_ctx.IsDependencyEmit && fb is Builder.LiveFieldBuilder liveFb)
             {
@@ -276,52 +248,6 @@ namespace Ngo.Compiler.Emit
         /// Define fields that were deferred because their types contained TypeBuilder
         /// generic args. Called after struct finalization so Map() returns runtime types.
         /// </summary>
-        public void PopulateDeferredFields()
-        {
-            var stillDeferred = new List<(StructTypeSymbol, Symbols.FieldSymbol)>();
-
-            foreach (var (structType, field) in _deferredFields)
-            {
-                if (_ctx.StructFields.ContainsKey(field))
-                {
-                    continue;
-                }
-
-                if (!_ctx.StructTypes.TryGetValue(structType, out var typeBuilder))
-                {
-                    continue;
-                }
-
-                Type fieldType;
-                if (field.Type is ArrayTypeSymbol arrayFieldType)
-                {
-                    var elemClrType = _ctx.Mapper.Map(arrayFieldType.ElementType);
-                    fieldType = _ctx.Mapper.GetOrCreateInlineArrayType(elemClrType, arrayFieldType.Length);
-                }
-                else
-                {
-                    fieldType = _ctx.Mapper.Map(field.Type);
-                }
-
-                // If the mapped type STILL has TypeBuilder args, keep deferring
-                if (EmitContext.HasTypeBuilderArgs(fieldType))
-                {
-                    stillDeferred.Add((structType, field));
-                    continue;
-                }
-
-                DefineStructField(typeBuilder, field, fieldType);
-                _structsWithDeferredFields.Remove(structType);
-            }
-
-            _deferredFields.Clear();
-            _deferredFields.AddRange(stillDeferred);
-            foreach (var (st, _) in stillDeferred)
-            {
-                _structsWithDeferredFields.Add(st);
-            }
-        }
-
         private void EmitInterfaceType(InterfaceTypeSymbol interfaceType)
         {
             // Skip if already defined
@@ -356,6 +282,8 @@ namespace Ngo.Compiler.Emit
                 typeVisibility | TypeAttributes.Interface | TypeAttributes.Abstract,
                 null!, System.Type.EmptyTypes);
 
+            _ctx.Definitions.RegisterType(qualifiedIfaceName, typeBuilder);
+
             foreach (var method in interfaceType.Methods)
             {
                 var paramTypes = new Type[method.Parameters.Count];
@@ -365,11 +293,12 @@ namespace Ngo.Compiler.Emit
                 }
 
                 var returnType = _ctx.Mapper.MapReturnType(method.ReturnTypes);
-                typeBuilder.DefineMethod(
+                var interfaceMethod = typeBuilder.DefineMethod(
                     method.Name,
                     MethodAttributes.Public | MethodAttributes.Abstract | MethodAttributes.Virtual,
                     returnType,
                     paramTypes);
+                _ctx.Definitions.RegisterMethod(qualifiedIfaceName, method.Name, paramTypes, interfaceMethod);
             }
 
             _ctx.Mapper.Register(interfaceType, typeBuilder.AsType());
@@ -429,6 +358,8 @@ namespace Ngo.Compiler.Emit
                 }
 
                 _ctx.Methods[func.Symbol] = method;
+                var pkgTypeName = _ctx.PackageType.AsType().FullName ?? _ctx.PackageType.AsType().Name;
+                _ctx.Definitions.RegisterMethod(pkgTypeName, methodName, paramTypes, method);
             }
             else
             {
@@ -452,6 +383,8 @@ namespace Ngo.Compiler.Emit
                 }
 
                 _ctx.Methods[func.Symbol] = method;
+                var pkgTypeName = _ctx.PackageType.AsType().FullName ?? _ctx.PackageType.AsType().Name;
+                _ctx.Definitions.RegisterMethod(pkgTypeName, methodName, paramTypes, method);
             }
         }
 
@@ -522,6 +455,8 @@ namespace Ngo.Compiler.Emit
                 }
 
                 _ctx.Methods[decl.Symbol] = method;
+                var pkgTypeName = _ctx.PackageType.AsType().FullName ?? _ctx.PackageType.AsType().Name;
+                _ctx.Definitions.RegisterMethod(pkgTypeName, methodName, paramTypes, method);
             }
             else
             {
@@ -548,6 +483,8 @@ namespace Ngo.Compiler.Emit
                 }
 
                 _ctx.Methods[decl.Symbol] = method;
+                var pkgTypeName = _ctx.PackageType.AsType().FullName ?? _ctx.PackageType.AsType().Name;
+                _ctx.Definitions.RegisterMethod(pkgTypeName, methodName, paramTypes, method);
             }
         }
 
@@ -583,6 +520,8 @@ namespace Ngo.Compiler.Emit
                 fieldType,
                 fieldVisibility | FieldAttributes.Static);
             _ctx.PackageFields[decl.Symbol] = field;
+            var pkgTypeName = _ctx.PackageType.AsType().FullName ?? _ctx.PackageType.AsType().Name;
+            _ctx.Definitions.RegisterField(pkgTypeName, decl.Symbol.Name, field);
         }
 
         /// <summary>
@@ -610,29 +549,34 @@ namespace Ngo.Compiler.Emit
             var concreteClrType = _ctx.Mapper.Map(concreteType);
             var interfaceClrType = _ctx.Mapper.Map(interfaceType);
 
-            var wrapperName = $"{concreteType.Name}__{interfaceType.Name}__Wrapper";
+            var concreteTypeName = concreteType.Name.TrimStart('*');
+            var wrapperName = $"{concreteTypeName}__{interfaceType.Name}__Wrapper";
             if (interfaceType.Methods.Count == 0)
             {
                 Console.Error.WriteLine($"WARNING: wrapper '{wrapperName}' — interface '{interfaceType.Name}' has 0 methods, CLR type={interfaceClrType.GetType().Name}");
             }
 
+            var qualifiedWrapperName = _ctx.QualifyName(wrapperName);
             var wrapperBuilder = _ctx.Module.DefineType(
-                _ctx.QualifyName(wrapperName),
+                qualifiedWrapperName,
                 TypeAttributes.Public | TypeAttributes.Sealed,
                 typeof(object),
                 new[] { interfaceClrType });
+            _ctx.Definitions.RegisterType(qualifiedWrapperName, wrapperBuilder);
 
             // Field to hold the wrapped value
             var valueField = wrapperBuilder.DefineField(
                 "_value",
                 concreteClrType,
                 FieldAttributes.Public);
+            _ctx.Definitions.RegisterField(qualifiedWrapperName, "_value", valueField);
 
             // Constructor: takes the concrete value, stores in _value
             var ctorBuilder = wrapperBuilder.DefineConstructor(
                 MethodAttributes.Public,
                 CallingConventions.Standard,
                 new[] { concreteClrType });
+            _ctx.Definitions.RegisterConstructor(qualifiedWrapperName, new[] { concreteClrType }, ctorBuilder);
 
             var ctorIL = ctorBuilder.GetILWriter();
             ctorIL.Emit(OpCodes.Ldarg_0);
@@ -782,6 +726,7 @@ namespace Ngo.Compiler.Emit
                             ifaceMethodName,
                             MethodAttributes.Public | MethodAttributes.Virtual,
                             wrapperReturnType, wrapperParamTypes);
+                        _ctx.Definitions.RegisterMethod(qualifiedWrapperName, ifaceMethodName, wrapperParamTypes, wrapperMethod);
                         var wrapperIL = wrapperMethod.GetILWriter();
                         wrapperIL.Emit(OpCodes.Ldarg_0);
                         wrapperIL.Emit(OpCodes.Ldfld, valueField.AsFieldInfo());
@@ -846,6 +791,7 @@ namespace Ngo.Compiler.Emit
                         ifaceMethodName,
                         MethodAttributes.Public | MethodAttributes.Virtual,
                         stubReturnType, stubParamTypes);
+                    _ctx.Definitions.RegisterMethod(qualifiedWrapperName, ifaceMethodName, stubParamTypes, stubMethod);
                     var stubIL = stubMethod.GetILWriter();
                     if (stubReturnType == typeof(string))
                         stubIL.Emit(OpCodes.Ldstr, "");
@@ -919,6 +865,7 @@ namespace Ngo.Compiler.Emit
                     MethodAttributes.Public | MethodAttributes.Virtual,
                     returnType,
                     paramTypes);
+                _ctx.Definitions.RegisterMethod(qualifiedWrapperName, ifaceMethodName, paramTypes, methodBuilder);
 
                 var methodIL = methodBuilder.GetILWriter();
 
@@ -969,6 +916,7 @@ namespace Ngo.Compiler.Emit
                     MethodAttributes.Public | MethodAttributes.Virtual | MethodAttributes.HideBySig,
                     typeof(string),
                     Type.EmptyTypes);
+                _ctx.Definitions.RegisterMethod(qualifiedWrapperName, "ToString", Type.EmptyTypes, toStringBuilder);
                 var tsIL = toStringBuilder.GetILWriter();
 
                 // Find the Error() method — check direct, pointer element, then promoted
@@ -1012,20 +960,7 @@ namespace Ngo.Compiler.Emit
 
             Type wrapperType = wrapperBuilder.CreateType()!;
 
-            ConstructorInfo ctor;
-            try
-            {
-                ctor = wrapperType.GetConstructor(new[] { concreteClrType })!;
-            }
-            catch (NotSupportedException)
-            {
-                // NgoProxyType doesn't support GetConstructor — use NgoProxyConstructorInfo
-                ctor = new Builder.NgoProxyConstructorInfo(wrapperType, new[] { concreteClrType });
-            }
-            if (ctor == null)
-            {
-                ctor = new Builder.NgoProxyConstructorInfo(wrapperType, new[] { concreteClrType });
-            }
+            ConstructorInfo ctor = _ctx.Definitions.GetConstructor(wrapperType, new[] { concreteClrType })!;
             _ctx.WrapperTypes[key] = new WrapperTypeInfo(wrapperType, ctor);
 
             return wrapperType;
@@ -1033,17 +968,24 @@ namespace Ngo.Compiler.Emit
 
         private static MethodInfo? FindInterfaceMethod(Type interfaceType, string methodName)
         {
-            try
+            if (interfaceType is TypeBuilder tb && !tb.IsCreated())
             {
-                var method = interfaceType.GetMethod(methodName);
-                if (method != null) return method;
-                foreach (var parent in interfaceType.GetInterfaces())
+                return null;
+            }
+
+            var method = interfaceType.GetMethod(methodName);
+            if (method != null)
+            {
+                return method;
+            }
+            foreach (var parent in interfaceType.GetInterfaces())
+            {
+                method = parent.GetMethod(methodName);
+                if (method != null)
                 {
-                    method = parent.GetMethod(methodName);
-                    if (method != null) return method;
+                    return method;
                 }
             }
-            catch (NotSupportedException) { }
             return null;
         }
 
@@ -1076,6 +1018,8 @@ namespace Ngo.Compiler.Emit
                 MethodAttributes.Public | MethodAttributes.Virtual,
                 interfaceMethod.ReturnType,
                 paramTypes);
+            var wrapperTypeName = wrapperBuilder.AsType().FullName ?? wrapperBuilder.AsType().Name;
+            _ctx.Definitions.RegisterMethod(wrapperTypeName, methodName, paramTypes, wrapperMethod);
 
             // Try to delegate to the concrete type's method
             MethodInfo? concreteClrMethod = null;

@@ -26,7 +26,7 @@ namespace Ngo.Runtime
     /// Go slice: a view over a backing array with (array, offset, length, capacity).
     /// Value type — cheap to copy, shares the underlying array.
     /// </summary>
-    public readonly struct Slice<T> : IEnumerable<T>
+    public readonly struct Slice<T> : ISliceOps, IEnumerable<T>
     {
         private readonly T[]? _array;
         private readonly int _offset;

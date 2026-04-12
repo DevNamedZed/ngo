@@ -141,7 +141,7 @@ namespace Ngo.Compiler.Semantics
                 if (nr.Name != "_")
                 {
                     _context.Scope.TryDeclare(nr);
-                    _context.TrackLocal(nr, _context.SpanOf(syntax));
+                    nr.IsUsed = true;
                 }
             }
 
@@ -157,7 +157,7 @@ namespace Ngo.Compiler.Semantics
             _context.CurrentNamedReturns = previousNamedReturns;
             _context.PopScope();
 
-            return new FunctionLiteralExpression(parameters, returnTypes, body, funcType, span);
+            return new FunctionLiteralExpression(parameters, returnTypes, body, funcType, namedReturns, span);
         }
 
         private IReadOnlyList<LocalSymbol> ResolveNamedReturns(

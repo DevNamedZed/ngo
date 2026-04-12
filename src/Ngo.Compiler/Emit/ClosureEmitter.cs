@@ -133,10 +133,7 @@ namespace Ngo.Compiler.Emit
             else
             {
                 _body.EmitBlock(funcLit.Body);
-                if (funcLit.ReturnTypes.Count == 0)
-                {
-                    _ctx.IL.Emit(OpCodes.Ret);
-                }
+                EmitClosureTrailingReturn(funcLit);
             }
 
             _ctx.DeferStack = savedDeferStack;
@@ -163,7 +160,7 @@ namespace Ngo.Compiler.Emit
             }
             _ctx.IL.Emit(OpCodes.Ldnull);
             _ctx.IL.Emit(OpCodes.Ldftn, lambdaMethod.AsMethodInfo());
-            var delegateCtor = EmitContext.GetConstructorSafe(delegateType, new[] { typeof(object), typeof(IntPtr) });
+            var delegateCtor = _ctx.Definitions.GetConstructor(delegateType, new[] { typeof(object), typeof(IntPtr) });
             _ctx.IL.Emit(OpCodes.Newobj, delegateCtor);
         }
 
@@ -174,6 +171,15 @@ namespace Ngo.Compiler.Emit
             var closureBuilder = _ctx.Module.DefineType(
                 closureName,
                 TypeAttributes.Public | TypeAttributes.Sealed);
+            _ctx.Definitions.RegisterType(closureName, closureBuilder);
+
+            var closureConstructor = closureBuilder.DefineConstructor(
+                MethodAttributes.Public, CallingConventions.Standard, Type.EmptyTypes);
+            _ctx.Definitions.RegisterConstructor(closureName, Type.EmptyTypes, closureConstructor);
+            var constructorIl = closureConstructor.GetILWriter();
+            constructorIl.Emit(OpCodes.Ldarg_0);
+            constructorIl.Emit(OpCodes.Call, typeof(object).GetConstructor(Type.EmptyTypes)!);
+            constructorIl.Emit(OpCodes.Ret);
 
             // Propagate generic parameters from the enclosing function to the closure type.
             // Without this, parameter types like Func<E, bool> serialize as references to 'E'
@@ -195,14 +201,17 @@ namespace Ngo.Compiler.Emit
 
                 var innerType = _ctx.Mapper.Map(symType);
                 var fieldType = typeof(Box<>).MakeGenericType(innerType);
-                captureFields[sym] = closureBuilder.DefineField(
-                    sym.Name, fieldType, FieldAttributes.Public);
+                var captureField = closureBuilder.DefineField(sym.Name, fieldType, FieldAttributes.Public);
+                _ctx.Definitions.RegisterField(closureName, sym.Name, captureField);
+                captureFields[sym] = captureField;
             }
 
             // Instance method for the lambda body
             var paramTypes = new Type[funcLit.Parameters.Count];
             for (int i = 0; i < funcLit.Parameters.Count; i++)
+            {
                 paramTypes[i] = _ctx.Mapper.Map(funcLit.Parameters[i].Type);
+            }
 
             var returnType = _ctx.Mapper.MapReturnType(funcLit.ReturnTypes);
 
@@ -211,6 +220,7 @@ namespace Ngo.Compiler.Emit
                 MethodAttributes.Public,
                 returnType,
                 paramTypes);
+            _ctx.Definitions.RegisterMethod(closureName, "Invoke", paramTypes, invokeMethod);
 
             for (int i = 0; i < funcLit.Parameters.Count; i++)
                 invokeMethod.DefineParameter(i + 1, ParameterAttributes.None, funcLit.Parameters[i].Name);
@@ -221,6 +231,7 @@ namespace Ngo.Compiler.Emit
             var savedParams = new Dictionary<Symbol, int>(_ctx.Parameters);
             var savedCaptured2 = new HashSet<Symbol>(_ctx.CapturedSymbols);
             var savedReturnTypes = _body.CurrentReturnTypes;
+            var savedNamedReturns = _body.NamedReturns;
 
             // Emit the invoke method body
             _ctx.IL = invokeMethod.GetILWriter();
@@ -231,7 +242,9 @@ namespace Ngo.Compiler.Emit
 
             // Lambda params start at arg 1 (arg 0 is 'this')
             for (int i = 0; i < funcLit.Parameters.Count; i++)
+            {
                 _ctx.Parameters[funcLit.Parameters[i]] = i + 1;
+            }
 
             // Load captured Box<T> references from closure fields into locals
             foreach (var (sym, field) in captureFields)
@@ -247,8 +260,31 @@ namespace Ngo.Compiler.Emit
             // Pre-scan for nested closures that capture this closure's parameters
             var innerCaptures = CollectAllCaptures(funcLit.Body);
             foreach (var sym in innerCaptures)
+            {
                 _ctx.CapturedSymbols.Add(sym);
+            }
             _body.BoxCapturedParameters(funcLit.Parameters);
+
+            // Declare named return locals for the closure
+            _body.NamedReturns = funcLit.NamedReturns;
+            foreach (var namedReturn in funcLit.NamedReturns)
+            {
+                var clrType = _ctx.Mapper.Map(namedReturn.Type);
+                if (_ctx.CapturedSymbols.Contains(namedReturn))
+                {
+                    var boxType = typeof(Box<>).MakeGenericType(clrType);
+                    var local = _ctx.IL.DeclareLocal(boxType);
+                    var boxCtor = _ctx.Definitions.GetConstructor(boxType, Type.EmptyTypes);
+                    _ctx.IL.Emit(OpCodes.Newobj, boxCtor);
+                    _ctx.IL.Emit(OpCodes.Stloc, local);
+                    _ctx.Locals[namedReturn] = local;
+                }
+                else
+                {
+                    var local = _ctx.IL.DeclareLocal(clrType);
+                    _ctx.Locals[namedReturn] = local;
+                }
+            }
 
             var savedDeferStack2 = _ctx.DeferStack;
             var savedDeferReturnLocal2 = _ctx.DeferReturnLocal;
@@ -259,13 +295,12 @@ namespace Ngo.Compiler.Emit
             {
                 var closureIsVoid = funcLit.ReturnTypes.Count == 0;
                 var closureRetType = closureIsVoid ? null : _ctx.Mapper.MapReturnType(funcLit.ReturnTypes);
-                _body.EmitDeferWrappedBody(funcLit.Body, closureIsVoid, closureRetType);
+                _body.EmitDeferWrappedBody(funcLit.Body, closureIsVoid, closureRetType, _body.NamedReturns);
             }
             else
             {
                 _body.EmitBlock(funcLit.Body);
-                if (funcLit.ReturnTypes.Count == 0)
-                    _ctx.IL.Emit(OpCodes.Ret);
+                EmitClosureTrailingReturn(funcLit);
             }
 
             _ctx.DeferStack = savedDeferStack2;
@@ -274,30 +309,50 @@ namespace Ngo.Compiler.Emit
             // Restore method state
             _ctx.IL = savedIL;
             _ctx.Locals.Clear();
-            foreach (var kvp in savedLocals) _ctx.Locals[kvp.Key] = kvp.Value;
+            foreach (var kvp in savedLocals)
+            {
+                _ctx.Locals[kvp.Key] = kvp.Value;
+            }
             _ctx.Parameters.Clear();
-            foreach (var kvp in savedParams) _ctx.Parameters[kvp.Key] = kvp.Value;
+            foreach (var kvp in savedParams)
+            {
+                _ctx.Parameters[kvp.Key] = kvp.Value;
+            }
             _ctx.CapturedSymbols.Clear();
-            foreach (var sym in savedCaptured2) _ctx.CapturedSymbols.Add(sym);
+            foreach (var sym in savedCaptured2)
+            {
+                _ctx.CapturedSymbols.Add(sym);
+            }
             _body.CurrentReturnTypes = savedReturnTypes;
+            _body.NamedReturns = savedNamedReturns;
 
             // Finalize closure type
-            var closureType = closureBuilder.CreateType()!;
+            closureBuilder.CreateType();
+
+            // If the closure is generic, instantiate it with the enclosing method's type params
+            Type closureType;
+            if (closureGenericParams != null && _ctx.EnclosingGenericParamTypes.Length > 0)
+            {
+                closureType = closureBuilder.AsType().MakeGenericType(_ctx.EnclosingGenericParamTypes);
+            }
+            else
+            {
+                closureType = closureBuilder.AsType();
+            }
 
             // Create closure instance and populate captured fields
             var closureLocal = _ctx.IL.DeclareLocal(closureType);
-            var ctor = closureType.GetConstructor(Type.EmptyTypes)!;
-            _ctx.IL.Emit(OpCodes.Newobj, ctor);
+            var resolvedConstructor = _ctx.Definitions.GetConstructor(closureType, Type.EmptyTypes);
+            _ctx.IL.Emit(OpCodes.Newobj, resolvedConstructor!);
             _ctx.IL.Emit(OpCodes.Stloc, closureLocal);
 
             foreach (var sym in captures)
             {
-                var runtimeField = closureType.GetField(sym.Name)!;
+                var capturedField = _ctx.Definitions.GetField(closureType, sym.Name);
                 _ctx.IL.Emit(OpCodes.Ldloc, closureLocal);
-                // Load Box<T> reference directly (bypass EmitLoad which would unwrap .Value)
                 var captureLocal = ResolveLocal(sym);
                 _ctx.IL.Emit(OpCodes.Ldloc, captureLocal);
-                _ctx.IL.Emit(OpCodes.Stfld, runtimeField);
+                _ctx.IL.Emit(OpCodes.Stfld, capturedField!);
             }
 
             // Create delegate from closure instance + invoke method
@@ -307,19 +362,10 @@ namespace Ngo.Compiler.Emit
                 delegateType = funcLit.FunctionType.ReturnTypes.Count == 0
                     ? typeof(Action) : typeof(Func<object>);
             }
-            MethodInfo runtimeMethod;
-            if (closureType is TypeBuilder)
-            {
-                runtimeMethod = new Builder.NgoProxyMethodInfo(closureType, "Invoke");
-            }
-            else
-            {
-                runtimeMethod = closureType.GetMethod("Invoke")
-                    ?? new Builder.NgoProxyMethodInfo(closureType, "Invoke");
-            }
+            var closureInvokeMethod = _ctx.Definitions.GetMethod(closureType, "Invoke");
             _ctx.IL.Emit(OpCodes.Ldloc, closureLocal);
-            _ctx.IL.Emit(OpCodes.Ldftn, runtimeMethod);
-            var delegateCtor = EmitContext.GetConstructorSafe(delegateType, new[] { typeof(object), typeof(IntPtr) });
+            _ctx.IL.Emit(OpCodes.Ldftn, closureInvokeMethod!);
+            var delegateCtor = _ctx.Definitions.GetConstructor(delegateType, new[] { typeof(object), typeof(IntPtr) });
             _ctx.IL.Emit(OpCodes.Newobj, delegateCtor);
         }
 
@@ -341,14 +387,26 @@ namespace Ngo.Compiler.Emit
             var closureBuilder = _ctx.Module.DefineType(
                 closureName,
                 TypeAttributes.Public | TypeAttributes.Sealed);
+            _ctx.Definitions.RegisterType(closureName, closureBuilder);
+
+            var methodValConstructor = closureBuilder.DefineConstructor(
+                MethodAttributes.Public, CallingConventions.Standard, Type.EmptyTypes);
+            _ctx.Definitions.RegisterConstructor(closureName, Type.EmptyTypes, methodValConstructor);
+            var methodValCtorIl = methodValConstructor.GetILWriter();
+            methodValCtorIl.Emit(OpCodes.Ldarg_0);
+            methodValCtorIl.Emit(OpCodes.Call, typeof(object).GetConstructor(Type.EmptyTypes)!);
+            methodValCtorIl.Emit(OpCodes.Ret);
 
             var receiverField = closureBuilder.DefineField(
                 "_receiver", receiverClrType, FieldAttributes.Public);
+            _ctx.Definitions.RegisterField(closureName, "_receiver", receiverField);
 
             // Build Invoke method: same params as the method (without receiver), same return
             var paramTypes = new Type[mv.Method.Parameters.Count];
             for (int i = 0; i < mv.Method.Parameters.Count; i++)
+            {
                 paramTypes[i] = _ctx.Mapper.Map(mv.Method.Parameters[i].Type);
+            }
 
             var returnType = _ctx.Mapper.MapReturnType(mv.Method.ReturnTypes);
 
@@ -357,35 +415,39 @@ namespace Ngo.Compiler.Emit
                 MethodAttributes.Public,
                 returnType,
                 paramTypes);
+            _ctx.Definitions.RegisterMethod(closureName, "Invoke", paramTypes, invokeMethod);
 
             // Emit Invoke body: load receiver from field, load params, call target method
             var invokeIL = invokeMethod.GetILWriter();
             invokeIL.Emit(OpCodes.Ldarg_0);
             invokeIL.Emit(OpCodes.Ldfld, receiverField.AsFieldInfo());
             for (int i = 0; i < paramTypes.Length; i++)
+            {
                 invokeIL.Emit(OpCodes.Ldarg, i + 1);
+            }
             invokeIL.Emit(OpCodes.Call, targetMethod.AsMethodInfo());
             invokeIL.Emit(OpCodes.Ret);
 
-            var closureType = closureBuilder.CreateType()!;
+            closureBuilder.CreateType();
+            var closureType = closureBuilder.AsType();
 
             // Create closure instance, set receiver field
             var closureLocal = _ctx.IL.DeclareLocal(closureType);
-            var ctor = closureType.GetConstructor(Type.EmptyTypes)!;
-            _ctx.IL.Emit(OpCodes.Newobj, ctor);
+            var resolvedCtor = _ctx.Definitions.GetConstructor(closureType, Type.EmptyTypes)!;
+            _ctx.IL.Emit(OpCodes.Newobj, resolvedCtor);
             _ctx.IL.Emit(OpCodes.Stloc, closureLocal);
 
             _ctx.IL.Emit(OpCodes.Ldloc, closureLocal);
             _body.EmitExpression(mv.Receiver);
-            var runtimeField = closureType.GetField("_receiver")!;
-            _ctx.IL.Emit(OpCodes.Stfld, runtimeField);
+            var resolvedReceiverField = _ctx.Definitions.GetField(closureType, "_receiver")!;
+            _ctx.IL.Emit(OpCodes.Stfld, resolvedReceiverField);
 
             // Create delegate from closure + Invoke
             var delegateType = _ctx.Mapper.Map(mv.FunctionType);
-            var runtimeMethod = closureType.GetMethod("Invoke")!;
+            var resolvedInvoke = _ctx.Definitions.GetMethod(closureType, "Invoke")!;
             _ctx.IL.Emit(OpCodes.Ldloc, closureLocal);
-            _ctx.IL.Emit(OpCodes.Ldftn, runtimeMethod);
-            var delegateCtor = EmitContext.GetConstructorSafe(delegateType, new[] { typeof(object), typeof(IntPtr) });
+            _ctx.IL.Emit(OpCodes.Ldftn, resolvedInvoke);
+            var delegateCtor = _ctx.Definitions.GetConstructor(delegateType, new[] { typeof(object), typeof(IntPtr) });
             _ctx.IL.Emit(OpCodes.Newobj, delegateCtor);
         }
 
@@ -396,7 +458,7 @@ namespace Ngo.Compiler.Emit
             var delegateType = _ctx.Mapper.Map(mv.FunctionType);
             _ctx.IL.Emit(OpCodes.Ldnull);
             _ctx.IL.Emit(OpCodes.Ldftn, targetMethod.AsMethodInfo());
-            var delegateCtor = EmitContext.GetConstructorSafe(delegateType, new[] { typeof(object), typeof(IntPtr) });
+            var delegateCtor = _ctx.Definitions.GetConstructor(delegateType, new[] { typeof(object), typeof(IntPtr) });
             if (delegateCtor == null)
             {
                 throw new InvalidOperationException(
@@ -436,6 +498,39 @@ namespace Ngo.Compiler.Emit
             }
             throw new InvalidOperationException(
                 $"Cannot find local for captured symbol '{sym.Name}' ({sym.Kind})");
+        }
+
+        private void EmitClosureTrailingReturn(FunctionLiteralExpression funcLit)
+        {
+            if (funcLit.ReturnTypes.Count == 0)
+            {
+                _ctx.IL.Emit(OpCodes.Ret);
+                return;
+            }
+
+            // Non-void closure: emit trailing return as safety net.
+            // If all code paths return, this is unreachable, but it
+            // keeps the IL valid so the verifier sees balanced stacks.
+            if (funcLit.NamedReturns.Count > 0)
+            {
+                _body.EmitNamedReturnValues();
+            }
+            else
+            {
+                var closureRetType = _ctx.Mapper.MapReturnType(funcLit.ReturnTypes);
+                if (closureRetType.IsValueType)
+                {
+                    var defaultLocal = _ctx.IL.DeclareLocal(closureRetType);
+                    _ctx.IL.Emit(OpCodes.Ldloca, defaultLocal);
+                    _ctx.IL.Emit(OpCodes.Initobj, closureRetType);
+                    _ctx.IL.Emit(OpCodes.Ldloc, defaultLocal);
+                }
+                else
+                {
+                    _ctx.IL.Emit(OpCodes.Ldnull);
+                }
+            }
+            _ctx.IL.Emit(OpCodes.Ret);
         }
 
         public HashSet<Symbol> CollectAllCaptures(BlockStatement body)

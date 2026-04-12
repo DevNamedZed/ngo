@@ -55,34 +55,48 @@ namespace Ngo.Compiler.Archive
             using var peStream = File.OpenRead(fullPath);
             using var peReader = new PEReader(peStream);
 
-            var verificationResults = verifier.Verify(peReader);
-            foreach (var result in verificationResults)
+            var metadataReader = peReader.GetMetadataReader();
+
+            // Verify each type's methods individually so that a crash in one
+            // method doesn't prevent verification of the rest.
+            foreach (var typeHandle in metadataReader.TypeDefinitions)
             {
-                var methodInfo = "unknown";
-                var metadataReader = peReader.GetMetadataReader();
-                if (!result.Method.IsNil)
+                var typeDef = metadataReader.GetTypeDefinition(typeHandle);
+                var typeName = metadataReader.GetString(typeDef.Name);
+
+                foreach (var methodHandle in typeDef.GetMethods())
                 {
-                    var methodDef = metadataReader.GetMethodDefinition(result.Method);
+                    var methodDef = metadataReader.GetMethodDefinition(methodHandle);
                     var methodName = metadataReader.GetString(methodDef.Name);
-                    var declaringType = metadataReader.GetTypeDefinition(methodDef.GetDeclaringType());
-                    var typeName = metadataReader.GetString(declaringType.Name);
-                    methodInfo = $"{typeName}.{methodName}";
-                }
-                var details = $"[{methodInfo}] {result.Code}: {result.Message}";
-                if (result.ErrorArguments != null)
-                {
-                    foreach (var arg in result.ErrorArguments)
+                    var methodInfo = $"{typeName}.{methodName}";
+
+                    try
                     {
-                        details += $" [{arg.Name}={arg.Value}]";
+                        var methodResults = verifier.Verify(peReader, methodHandle);
+                        foreach (var result in methodResults)
+                        {
+                            var details = $"[{methodInfo}] {result.Code}: {result.Message}";
+                            if (result.ErrorArguments != null)
+                            {
+                                foreach (var arg in result.ErrorArguments)
+                                {
+                                    details += $" [{arg.Name}={arg.Value}]";
+                                }
+                            }
+                            errors.Add(details);
+                        }
+                    }
+                    catch (Exception methodException)
+                    {
+                        errors.Add($"[{methodInfo}] ILVerify crash: {methodException.GetType().Name}: {methodException.Message}");
                     }
                 }
-                errors.Add(details);
             }
 
             return errors;
         }
 
-        private sealed class AssemblyResolver : IResolver
+        private sealed class AssemblyResolver : IResolver, IDisposable
         {
             private readonly Dictionary<string, string> _assemblyPaths = new(StringComparer.OrdinalIgnoreCase);
             private readonly Dictionary<string, PEReader> _cache = new(StringComparer.OrdinalIgnoreCase);
@@ -142,6 +156,15 @@ namespace Ngo.Compiler.Archive
                 }
 
                 throw new FileNotFoundException($"Could not resolve assembly: {simpleName}");
+            }
+
+            public void Dispose()
+            {
+                foreach (var reader in _cache.Values)
+                {
+                    reader.Dispose();
+                }
+                _cache.Clear();
             }
         }
     }

@@ -54,7 +54,12 @@ namespace Ngo.Compiler.Archive
         public void Write(BinaryWriter writer)
         {
             writer.Write((byte)Kind);
-            DeclaringType!.Write(writer);
+            if (DeclaringType == null)
+            {
+                throw new InvalidOperationException(
+                    $"FieldToken.Write: DeclaringType is null for field '{FieldName}' (kind={Kind})");
+            }
+            DeclaringType.Write(writer);
             writer.Write(FieldName);
         }
 

@@ -90,12 +90,13 @@ namespace Ngo.Compiler.Archive
         // =====================================================================
 
         internal static Type ResolveType(string typeName, Dictionary<string, TypeBuilder>? typeBuilders = null,
-            Dictionary<string, Type>? genericParams = null,
-            IReadOnlyDictionary<(Type, int), Type>? inlineArrayTypes = null)
+            Dictionary<string, Type>? genericParams = null)
         {
             if (typeName == "$$null" || typeName == "$$error" || typeName == "?")
             {
-                return typeof(object);
+                throw new InvalidOperationException(
+                    $"ILSerializer.ResolveType: invalid sentinel type name '{typeName}' leaked into archive. " +
+                    "This indicates a bug in the semantic analyzer or emitter — the type was never resolved.");
             }
 
             if (genericParams != null && genericParams.TryGetValue(typeName, out var gp))
@@ -103,42 +104,9 @@ namespace Ngo.Compiler.Archive
                 return gp;
             }
 
-            if (typeName.Contains("GoArray_"))
-            {
-                if (inlineArrayTypes != null)
-                {
-                    foreach (var kvp in inlineArrayTypes)
-                    {
-                        if (kvp.Value.Name == typeName || kvp.Value.FullName == typeName)
-                        {
-                            return kvp.Value;
-                        }
-                    }
-                }
-            }
-
             if (typeBuilders != null && typeBuilders.TryGetValue(typeName, out var tb))
             {
                 return tb;
-            }
-
-            // Short name lookup: only for unqualified names that aren't generic params
-            if (typeBuilders != null && !typeName.Contains('.') && !typeName.Contains('`') && !typeName.Contains('['))
-            {
-                TypeBuilder? match = null;
-                int matchCount = 0;
-                foreach (var (key, builder) in typeBuilders)
-                {
-                    if (key.EndsWith("." + typeName))
-                    {
-                        match = builder;
-                        matchCount++;
-                    }
-                }
-                if (matchCount == 1 && match != null)
-                {
-                    return match;
-                }
             }
 
             if (typeName.EndsWith("[]"))
@@ -227,36 +195,6 @@ namespace Ngo.Compiler.Archive
                 {
                     return type;
                 }
-            }
-
-            // Try short name match in Ngo.Runtime
-            var runtimeAssembly = typeof(Ngo.Runtime.Slice<>).Assembly;
-            foreach (var runtimeCandidate in runtimeAssembly.GetTypes())
-            {
-                if (runtimeCandidate.Name == typeName || runtimeCandidate.Name.StartsWith(typeName + "`"))
-                {
-                    return runtimeCandidate;
-                }
-                var goPackageAttr = runtimeCandidate.GetCustomAttribute(typeof(Ngo.Runtime.Discovery.GoPackageAttribute)) as Ngo.Runtime.Discovery.GoPackageAttribute;
-                if (goPackageAttr != null)
-                {
-                    var goPath = goPackageAttr.ImportPath;
-                    var lastSlash = goPath.LastIndexOf('/');
-                    var shortName = lastSlash >= 0 ? goPath.Substring(lastSlash + 1) : goPath;
-                    if (shortName == typeName || goPath == typeName
-                        || goPath.Replace("/", ".") == typeName
-                        || typeName.Replace("/", ".") == goPath.Replace("/", "."))
-                    {
-                        return runtimeCandidate;
-                    }
-                }
-            }
-
-            // Generic parameter names that couldn't be resolved from context
-            if (genericParams != null && typeName.Length <= 2 && char.IsUpper(typeName[0]))
-            {
-                throw new InvalidOperationException(
-                    $"LinkIL: unresolved generic parameter '{typeName}' — not found in generic param context");
             }
 
             throw new InvalidOperationException($"LinkIL: failed to resolve type '{typeName}'");

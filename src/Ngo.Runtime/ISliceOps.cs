@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------
-// <copyright file="LiveConstructorBuilder.cs" company="Ziad">
+// <copyright file="ISliceOps.cs" company="Ziad">
 //  Copyright 2016 Ziad
 //
 //  Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,17 +16,15 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
-using System.Reflection.Emit;
-
-namespace Ngo.Compiler.Emit.Builder
+namespace Ngo.Runtime
 {
-    internal sealed class LiveConstructorBuilder : IConstructorBuilder
+    /// <summary>
+    /// Non-generic slice operations: element-type-independent methods like
+    /// Swap and Len that can be used polymorphically (e.g., by sort.Slice).
+    /// </summary>
+    public interface ISliceOps
     {
-        private readonly ConstructorBuilder _cb;
-
-        public LiveConstructorBuilder(ConstructorBuilder cb) => _cb = cb;
-
-        public ConstructorBuilder Inner => _cb;
-        public CilWriter GetILWriter() => new ILGeneratorWriter(_cb.GetILGenerator());
+        int Len { get; }
+        void Swap(int i, int j);
     }
 }

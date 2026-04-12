@@ -26,13 +26,15 @@ namespace Ngo.Compiler.Ast
     {
         public FunctionLiteralExpression(IReadOnlyList<ParameterSymbol> parameters,
             IReadOnlyList<TypeSymbol> returnTypes, BlockStatement body,
-            FunctionTypeSymbol functionType, TextSpan span)
+            FunctionTypeSymbol functionType, IReadOnlyList<LocalSymbol> namedReturns,
+            TextSpan span)
             : base(span)
         {
             Parameters = parameters;
             ReturnTypes = returnTypes;
             Body = body;
             FunctionType = functionType;
+            NamedReturns = namedReturns;
         }
 
         public IReadOnlyList<ParameterSymbol> Parameters { get; }
@@ -42,6 +44,8 @@ namespace Ngo.Compiler.Ast
         public BlockStatement Body { get; }
 
         public FunctionTypeSymbol FunctionType { get; }
+
+        public IReadOnlyList<LocalSymbol> NamedReturns { get; }
 
         public override TypeSymbol Type => FunctionType;
 

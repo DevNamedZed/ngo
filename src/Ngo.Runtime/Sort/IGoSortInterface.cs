@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------
-// <copyright file="LiveConstructorBuilder.cs" company="Ziad">
+// <copyright file="IGoSortInterface.cs" company="Ziad">
 //  Copyright 2016 Ziad
 //
 //  Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,17 +16,15 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
-using System.Reflection.Emit;
+using Ngo.Runtime.Discovery;
 
-namespace Ngo.Compiler.Emit.Builder
+namespace Ngo.Runtime.Sort
 {
-    internal sealed class LiveConstructorBuilder : IConstructorBuilder
+    [GoType("interface", Name = "Interface", Package = "sort")]
+    public interface IGoSortInterface
     {
-        private readonly ConstructorBuilder _cb;
-
-        public LiveConstructorBuilder(ConstructorBuilder cb) => _cb = cb;
-
-        public ConstructorBuilder Inner => _cb;
-        public CilWriter GetILWriter() => new ILGeneratorWriter(_cb.GetILGenerator());
+        long Len();
+        bool Less(long i, long j);
+        void Swap(long i, long j);
     }
 }

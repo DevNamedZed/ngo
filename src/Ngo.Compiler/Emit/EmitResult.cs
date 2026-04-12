@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------
-// <copyright file="LiveConstructorBuilder.cs" company="Ziad">
+// <copyright file="EmitResult.cs" company="Ziad">
 //  Copyright 2016 Ziad
 //
 //  Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,17 +16,23 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
-using System.Reflection.Emit;
+using System.Collections.Generic;
+using System.Reflection;
 
-namespace Ngo.Compiler.Emit.Builder
+namespace Ngo.Compiler.Emit
 {
-    internal sealed class LiveConstructorBuilder : IConstructorBuilder
+    /// <summary>
+    /// Result of assembly emission, including the assembly and any IL traces collected.
+    /// </summary>
+    public sealed class EmitResult
     {
-        private readonly ConstructorBuilder _cb;
+        public EmitResult(Assembly assembly, Dictionary<string, IReadOnlyList<string>> ilTraces)
+        {
+            Assembly = assembly;
+            ILTraces = ilTraces;
+        }
 
-        public LiveConstructorBuilder(ConstructorBuilder cb) => _cb = cb;
-
-        public ConstructorBuilder Inner => _cb;
-        public CilWriter GetILWriter() => new ILGeneratorWriter(_cb.GetILGenerator());
+        public Assembly Assembly { get; }
+        public Dictionary<string, IReadOnlyList<string>> ILTraces { get; }
     }
 }

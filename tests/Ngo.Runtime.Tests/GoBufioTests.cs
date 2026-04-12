@@ -119,7 +119,7 @@ public class GoBufioTests
     {
         public List<byte> Data { get; } = new();
 
-        public (int, string) Write(Slice<byte> p)
+        public (long, string) Write(Slice<byte> p)
         {
             for (int i = 0; i < p.Len; i++)
                 Data.Add(p[i]);

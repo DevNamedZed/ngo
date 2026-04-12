@@ -18,6 +18,7 @@
 
 using System;
 using System.IO;
+using System.Linq;
 using Ngo.Compiler.Emit;
 using Ngo.Compiler.Archive;
 using Ngo.Compiler.Language;
@@ -3986,6 +3987,20 @@ func main() {
     [TestMethod]
     public void Regexp_compile_call()
     {
+        GoRunner.Validate(@"
+package main
+import ""regexp""
+func main() {
+    re, err := regexp.Compile(""[0-9]+"")
+    if err != nil {
+        println(""error:"", err.Error())
+    } else {
+        println(""compiled ok"")
+    }
+    println(""calling MatchString"")
+    println(re.MatchString(""abc123""))
+}
+", TestProjectRoot);
         var output = Run(@"
 package main
 import ""regexp""
@@ -6544,6 +6559,52 @@ func main() {
         }
     }
 
+    [TestMethod]
+    public void Regexp_ilverify()
+    {
+        var source = @"
+package main
+
+import (
+    ""fmt""
+    ""regexp""
+)
+
+func main() {
+    re := regexp.MustCompile(""[0-9]+"")
+    fmt.Println(re.MatchString(""abc123""))
+}
+";
+        var tree = SyntaxTree.Parse(source);
+        var ctx = new CompilationContext(TestProjectRoot);
+        var result = SemanticAnalyzer.Analyze(tree, ctx);
+        Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
+
+        var tempDir = "/tmp/ngo_ilverify_regexp";
+        if (Directory.Exists(tempDir))
+        {
+            Directory.Delete(tempDir, recursive: true);
+        }
+        Directory.CreateDirectory(tempDir);
+
+        var outputPath = Path.Combine(tempDir, "test.dll");
+        AssemblyEmitter.EmitToFile(result, ctx, outputPath);
+
+        var runtimePath = typeof(Ngo.Runtime.BuiltIn).Assembly.Location;
+        File.Copy(runtimePath, Path.Combine(tempDir, "Ngo.Runtime.dll"), overwrite: true);
+
+        var errors = ILVerifier.Verify(outputPath);
+        File.WriteAllLines("/tmp/ilverify_all.txt", errors);
+        var nonStackTypeErrors = errors
+            .Where(e => !e.Contains("StackUnexpected"))
+            .ToList();
+        File.WriteAllLines("/tmp/ilverify_nonstack.txt", nonStackTypeErrors);
+
+        Assert.AreEqual(0, nonStackTypeErrors.Count,
+            $"IL errors (excluding StackUnexpected): {nonStackTypeErrors.Count}\n" +
+            string.Join("\n", nonStackTypeErrors.Take(200)));
+    }
+
     // ── Keyed slice/array literals ──
 
     [TestMethod]
@@ -7481,5 +7542,27 @@ func main() {
 }
 ");
         Assert.AreEqual("1\n2\n", output.Replace("\r\n", "\n"));
+    }
+
+    [TestMethod]
+    public void Inline_array_reslice_and_append()
+    {
+        var output = Run(@"
+package main
+
+import ""fmt""
+
+type Item struct {
+    Value int
+}
+
+func main() {
+    a := []*Item{&Item{1}, &Item{2}}
+    b := []*Item{&Item{3}}
+    c := append(a, b...)
+    fmt.Println(len(c))
+}
+");
+        Assert.IsTrue(output.Contains("3"), $"Got: {output}");
     }
 }

@@ -38,12 +38,14 @@ namespace Ngo.Compiler.Emit
             Mapper = mapper;
             Options = options ?? EmitOptions.Default;
             Log = log ?? NullLog.Instance;
+            Definitions = new DefinitionTable();
         }
 
         public IModuleBuilder Module { get; }
         public TypeMapper Mapper { get; }
         public EmitOptions Options { get; }
         public ICompilerLog Log { get; }
+        public DefinitionTable Definitions { get; }
         public ITypeBuilder PackageType { get; set; } = null!;
 
         // Track types that have been finalized (CreateType called) across packages
@@ -54,10 +56,6 @@ namespace Ngo.Compiler.Emit
 
         // InlineArray types shared across all TypeMapper instances in this compilation
         public Dictionary<(Type elementType, int length), Type> InlineArrayTypes { get; } = new();
-
-        // InlineArray TypeBuilders whose element type was a TypeBuilder at creation time.
-        // These must be CreateType'd after their element types are finalized.
-        public List<(TypeBuilder Builder, int Length)> PendingInlineArrayTypes { get; } = new();
 
         public DeclarationEmitter? DeclEmitter { get; set; }
 
@@ -72,6 +70,7 @@ namespace Ngo.Compiler.Emit
         // Generic parameters of the current enclosing function (for closure/lambda propagation)
         public string[] EnclosingGenericParamNames { get; set; } = Array.Empty<string>();
         public Symbols.TypeParameterSymbol[] EnclosingGenericParamSymbols { get; set; } = Array.Empty<Symbols.TypeParameterSymbol>();
+        public Type[] EnclosingGenericParamTypes { get; set; } = Array.Empty<Type>();
 
         // Current package import path (set during dependency emit for external type detection)
         public string? CurrentPackagePath { get; set; }
@@ -90,9 +89,6 @@ namespace Ngo.Compiler.Emit
 
         // All linked field builders across all archives (for cross-package variable access)
         public Dictionary<string, FieldBuilder> LinkedFields { get; } = new();
-
-        // Generic method metadata for instantiation during IL replay
-        public Dictionary<string, (string[] GenericParamNames, string[] ParamTypeNames)> MethodGenericInfo { get; } = new();
 
         private readonly Dictionary<string, MethodInfo> _crossPkgMethodCache = new();
 
@@ -130,6 +126,13 @@ namespace Ngo.Compiler.Emit
         // Whether we're emitting a dependency package (errors are recoverable)
         public bool IsDependencyEmit { get; set; }
 
+        // IL tracing: set of method names to trace (e.g. "parse"). When non-null,
+        // GetILWriter results for matching methods are wrapped in TracingCilWriter.
+        public HashSet<string>? TracedMethodNames { get; set; }
+
+        // Collected IL traces keyed by method name
+        public Dictionary<string, IReadOnlyList<string>> ILTraces { get; } = new();
+
         // Track package types already defined to avoid duplicates across dependencies
         public Dictionary<string, ITypeBuilder> PackageTypes { get; } = new();
 
@@ -156,6 +159,10 @@ namespace Ngo.Compiler.Emit
 
         // Wrapper types for interface satisfaction: (concrete, interface) → WrapperTypeInfo
         public Dictionary<WrapperTypeKey, WrapperTypeInfo> WrapperTypes { get; } = new();
+
+        // Slice-element pointer tracking: symbol → (slice local, index local)
+        // for variables assigned &slice[i] on value-type elements.
+        public Dictionary<Symbol, SliceElementPointer> SliceElementPointers { get; } = new();
 
         // Defer stack local for the current method (null if no defer statements)
         public LocalBuilder? DeferStack { get; set; }
@@ -201,24 +208,11 @@ namespace Ngo.Compiler.Emit
 
             if (typeHasTBArgs)
             {
-                var genericDef = type.GetGenericTypeDefinition();
-                if (!paramsHaveTB)
-                {
-                    var baseCtor = genericDef.GetConstructor(paramTypes);
-                    if (baseCtor != null)
-                    {
-                        try { return TypeBuilder.GetConstructor(type, baseCtor); }
-                        catch (NotSupportedException) { return new Builder.NgoProxyConstructorInfo(type, paramTypes); }
-                    }
-                }
-                foreach (var ctor in genericDef.GetConstructors())
-                {
-                    if (ctor.GetParameters().Length == paramTypes.Length)
-                    {
-                        try { return TypeBuilder.GetConstructor(type, ctor); }
-                        catch (NotSupportedException) { return new Builder.NgoProxyConstructorInfo(type, paramTypes); }
-                    }
-                }
+                // When the type has TypeBuilder generic arguments (e.g., Slice<MyStructBuilder>),
+                // always use NgoProxyConstructorInfo. The ConstructorInfo from TypeBuilder.GetConstructor
+                // has broken GetParameters() that returns generic type params like 'T' instead of
+                // the actual instantiated types, which breaks NgoWriter serialization.
+                return new Builder.NgoProxyConstructorInfo(type, paramTypes);
             }
 
             if (paramsHaveTB)
@@ -282,17 +276,47 @@ namespace Ngo.Compiler.Emit
                     baseMethod = genericDef.GetMethod(name, paramTypes);
                 }
 
-                // Param types contain TypeBuilders or exact match failed — find by name + count
+                // Param types contain TypeBuilders or exact match failed — find by name + count.
+                // When multiple overloads share the same name and arity (e.g. Slice<T>.Append
+                // has both (Slice<T>, T[]) and (Slice<T>, Slice<T>)), compare the generic shape
+                // of each parameter to disambiguate.
                 if (baseMethod == null)
                 {
+                    var typeGenericArgs = type.GetGenericArguments();
+                    MethodInfo? fallback = null;
                     foreach (var m in genericDef.GetMethods())
                     {
-                        if (m.Name == name && (paramTypes == null || m.GetParameters().Length == paramTypes.Length))
+                        if (m.Name != name || (paramTypes != null && m.GetParameters().Length != paramTypes.Length))
+                        {
+                            continue;
+                        }
+                        if (paramTypes != null)
+                        {
+                            var methodParams = m.GetParameters();
+                            bool shapesMatch = true;
+                            for (int pi = 0; pi < paramTypes.Length; pi++)
+                            {
+                                if (!GenericShapeMatches(methodParams[pi].ParameterType, paramTypes[pi], typeGenericArgs))
+                                {
+                                    shapesMatch = false;
+                                    break;
+                                }
+                            }
+                            if (shapesMatch)
+                            {
+                                baseMethod = m;
+                                break;
+                            }
+                            // Keep the first name+count match as fallback
+                            fallback ??= m;
+                        }
+                        else
                         {
                             baseMethod = m;
                             break;
                         }
                     }
+                    baseMethod ??= fallback;
                 }
 
                 if (baseMethod == null && paramTypes == null)
@@ -447,6 +471,41 @@ namespace Ngo.Compiler.Emit
                 || type is Builder.NgoProxyType;
         }
 
+        /// <summary>
+        /// Checks whether a generic definition parameter type (e.g. Slice&lt;!0&gt; or !0[])
+        /// structurally matches a concrete caller type (e.g. Slice&lt;Ptr&lt;Regexp&gt;&gt;).
+        /// This is used to disambiguate overloads when TypeBuilder args prevent exact matching.
+        /// </summary>
+        private static bool GenericShapeMatches(Type definitionParamType, Type callerParamType, Type[] typeGenericArgs)
+        {
+            // Generic parameter (!0, !1, etc.) — matches any caller type that corresponds to the
+            // type argument at that position. Since we can't easily compare substituted types
+            // across TypeBuilder boundaries, treat generic parameters as matching any type.
+            if (definitionParamType.IsGenericParameter)
+            {
+                return true;
+            }
+
+            // Array type (!0[]) — caller must also be an array
+            if (definitionParamType.IsArray)
+            {
+                return callerParamType.IsArray;
+            }
+
+            // Generic type (Slice<!0>) — caller must be a generic type with the same definition
+            if (definitionParamType.IsGenericType)
+            {
+                if (!callerParamType.IsGenericType)
+                {
+                    return false;
+                }
+                return definitionParamType.GetGenericTypeDefinition() == callerParamType.GetGenericTypeDefinition();
+            }
+
+            // Non-generic, non-array, non-parameter: compare directly (e.g. int, string)
+            return definitionParamType == callerParamType;
+        }
+
         private static bool HasAnyTypeBuilder(Type[] types)
         {
             foreach (var t in types)
@@ -489,6 +548,7 @@ namespace Ngo.Compiler.Emit
             GotoLabels.Clear();
             LoopLabels.Clear();
             CapturedSymbols.Clear();
+            SliceElementPointers.Clear();
             DeferStack = null;
             DeferReturnLocal = null;
         }

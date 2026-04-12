@@ -31,6 +31,10 @@ namespace Ngo.Compiler.Emit.Builder
         private readonly List<NgoProxyMethodInfo> _definedMethods = new();
         private int _genericParamCount;
         private Type[]? _genericTypeArgs;
+        private readonly Type? _elementType;
+        private readonly bool _isArray;
+        private readonly bool _isPointer;
+        private readonly bool _isByRef;
 
         // Generic parameter tracking for archive serialization
         internal bool IsGenericParam { get; }
@@ -54,6 +58,18 @@ namespace Ngo.Compiler.Emit.Builder
             IsGenericParam = true;
             GenericParamIndex = genericParamIndex;
             IsMethodGenericParam = isMethodGenericParam;
+        }
+
+        private NgoProxyType(string fullName, Type elementType, bool isArray, bool isPointer, bool isByRef)
+            : base(typeof(object))
+        {
+            _fullName = fullName;
+            var dot = fullName.LastIndexOf('.');
+            _name = dot >= 0 ? fullName.Substring(dot + 1) : fullName;
+            _elementType = elementType;
+            _isArray = isArray;
+            _isPointer = isPointer;
+            _isByRef = isByRef;
         }
 
         internal void SetGenericParamCount(int count)
@@ -113,10 +129,10 @@ namespace Ngo.Compiler.Emit.Builder
         public override bool Equals(Type? o) => o is NgoProxyType other && other._fullName == _fullName;
         public override string ToString() => _fullName;
 
-        public override Type MakeArrayType() => new NgoProxyType(_fullName + "[]");
-        public override Type MakeArrayType(int rank) => new NgoProxyType(_fullName + $"[{new string(',', rank - 1)}]");
-        public override Type MakeByRefType() => new NgoProxyType(_fullName + "&");
-        public override Type MakePointerType() => new NgoProxyType(_fullName + "*");
+        public override Type MakeArrayType() => new NgoProxyType(_fullName + "[]", this, isArray: true, isPointer: false, isByRef: false);
+        public override Type MakeArrayType(int rank) => new NgoProxyType(_fullName + $"[{new string(',', rank - 1)}]", this, isArray: true, isPointer: false, isByRef: false);
+        public override Type MakeByRefType() => new NgoProxyType(_fullName + "&", this, isArray: false, isPointer: false, isByRef: true);
+        public override Type MakePointerType() => new NgoProxyType(_fullName + "*", this, isArray: false, isPointer: true, isByRef: false);
         public override Type MakeGenericType(params Type[] typeArguments)
         {
             var argNames = new string[typeArguments.Length];
@@ -128,9 +144,13 @@ namespace Ngo.Compiler.Emit.Builder
             result._genericTypeArgs = typeArguments;
             return result;
         }
+        protected override bool IsArrayImpl() => _isArray;
+        protected override bool IsPointerImpl() => _isPointer;
+        protected override bool IsByRefImpl() => _isByRef;
+        protected override bool HasElementTypeImpl() => _elementType != null;
+        public override Type? GetElementType() => _elementType;
         public override bool IsGenericType => _genericParamCount > 0 || (_fullName.Contains('[') && !_fullName.EndsWith("[]"));
         public override bool IsGenericTypeDefinition => _genericParamCount > 0;
-        public new bool IsArray => _fullName.EndsWith("[]");
         public override Type GetGenericTypeDefinition()
         {
             // Extract the base name before [...]

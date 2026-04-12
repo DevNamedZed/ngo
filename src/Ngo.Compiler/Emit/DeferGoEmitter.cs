@@ -164,7 +164,7 @@ namespace Ngo.Compiler.Emit
             _body.EmitExpression(send.Channel);
             _body.EmitExpression(send.Value);
 
-            var sendMethod = EmitContext.GetMethodSafe(chanClrType, "Send", new[] { elemClrType });
+            var sendMethod = _ctx.Definitions.GetMethod(chanClrType, "Send", new[] { elemClrType });
             _ctx.IL.Emit(OpCodes.Call, sendMethod);
         }
 
@@ -177,7 +177,7 @@ namespace Ngo.Compiler.Emit
             _body.EmitExpression(recv.Channel);
 
             // Channel<T>.Receive() returns (T value, bool ok)
-            var receiveMethod = EmitContext.GetMethodSafe(chanClrType, "Receive");
+            var receiveMethod = _ctx.Definitions.GetMethod(chanClrType, "Receive");
             _ctx.IL.Emit(OpCodes.Call, receiveMethod);
 
             if (recv.IsCommaOk)
@@ -191,7 +191,7 @@ namespace Ngo.Compiler.Emit
             var tupleLocal = _ctx.IL.DeclareLocal(tupleType);
             _ctx.IL.Emit(OpCodes.Stloc, tupleLocal);
             _ctx.IL.Emit(OpCodes.Ldloca, tupleLocal);
-            _ctx.IL.Emit(OpCodes.Ldfld, EmitContext.GetFieldSafe(tupleType, "Item1"));
+            _ctx.IL.Emit(OpCodes.Ldfld, _ctx.Definitions.GetField(tupleType, "Item1"));
         }
 
         public void EmitSelectStatement(SelectStatement select)
@@ -260,7 +260,7 @@ namespace Ngo.Compiler.Emit
                     // TrySend(value) → bool
                     _ctx.IL.Emit(OpCodes.Ldloc, chanLocals[i]!);
                     _ctx.IL.Emit(OpCodes.Ldloc, sendValLocals[i]!);
-                    var trySendMethod = EmitContext.GetMethodSafe(chanClrType, "TrySend", new[] { elemClrType });
+                    var trySendMethod = _ctx.Definitions.GetMethod(chanClrType, "TrySend", new[] { elemClrType });
                     _ctx.IL.Emit(OpCodes.Call, trySendMethod);
                     _ctx.IL.Emit(OpCodes.Brtrue, bodyLabels[i]);
                 }
@@ -268,7 +268,7 @@ namespace Ngo.Compiler.Emit
                 {
                     // TryReceive() → (T value, bool ok, bool completed)
                     _ctx.IL.Emit(OpCodes.Ldloc, chanLocals[i]!);
-                    var tryRecvMethod = EmitContext.GetMethodSafe(chanClrType, "TryReceive", Type.EmptyTypes);
+                    var tryRecvMethod = _ctx.Definitions.GetMethod(chanClrType, "TryReceive", Type.EmptyTypes);
                     _ctx.IL.Emit(OpCodes.Call, tryRecvMethod);
 
                     var tripleType = typeof(ValueTuple<,,>).MakeGenericType(elemClrType, typeof(bool), typeof(bool));
@@ -277,7 +277,7 @@ namespace Ngo.Compiler.Emit
 
                     // Check Item3 (completed)
                     _ctx.IL.Emit(OpCodes.Ldloca, tripleLocal);
-                    _ctx.IL.Emit(OpCodes.Ldfld, EmitContext.GetFieldSafe(tripleType, "Item3"));
+                    _ctx.IL.Emit(OpCodes.Ldfld, _ctx.Definitions.GetField(tripleType, "Item3"));
                     var notCompletedLabel = _ctx.IL.DefineLabel();
                     _ctx.IL.Emit(OpCodes.Brfalse, notCompletedLabel);
 
@@ -287,7 +287,7 @@ namespace Ngo.Compiler.Emit
                         var valueIlLocal = _ctx.IL.DeclareLocal(elemClrType);
                         _ctx.Locals[sc.ValueLocal] = valueIlLocal;
                         _ctx.IL.Emit(OpCodes.Ldloca, tripleLocal);
-                        _ctx.IL.Emit(OpCodes.Ldfld, EmitContext.GetFieldSafe(tripleType, "Item1"));
+                        _ctx.IL.Emit(OpCodes.Ldfld, _ctx.Definitions.GetField(tripleType, "Item1"));
                         _ctx.IL.Emit(OpCodes.Stloc, valueIlLocal);
                     }
 
@@ -296,7 +296,7 @@ namespace Ngo.Compiler.Emit
                         var okIlLocal = _ctx.IL.DeclareLocal(typeof(bool));
                         _ctx.Locals[sc.OkLocal] = okIlLocal;
                         _ctx.IL.Emit(OpCodes.Ldloca, tripleLocal);
-                        _ctx.IL.Emit(OpCodes.Ldfld, EmitContext.GetFieldSafe(tripleType, "Item2"));
+                        _ctx.IL.Emit(OpCodes.Ldfld, _ctx.Definitions.GetField(tripleType, "Item2"));
                         _ctx.IL.Emit(OpCodes.Stloc, okIlLocal);
                     }
 
@@ -388,7 +388,7 @@ namespace Ngo.Compiler.Emit
                                 new[] { funcType });
                             var wIL = wrapperMethod.GetILWriter();
                             wIL.Emit(OpCodes.Ldarg_0);
-                            wIL.Emit(OpCodes.Callvirt, EmitContext.GetMethodSafe(funcType, "Invoke"));
+                            wIL.Emit(OpCodes.Callvirt, _ctx.Definitions.GetMethod(funcType, "Invoke"));
                             wIL.Emit(OpCodes.Pop);
                             wIL.Emit(OpCodes.Ret);
 
@@ -435,7 +435,7 @@ namespace Ngo.Compiler.Emit
                     // Function variable call: defer cleanup() where cleanup is a local var
                     // Capture the function value and invoke it in the lambda
                     var funcType = _ctx.Mapper.Map(call.CallTarget.Type);
-                    var invokeMethod = EmitContext.GetMethodSafe(funcType, "Invoke");
+                    var invokeMethod = _ctx.Definitions.GetMethod(funcType, "Invoke");
 
                     // Add function value as first parameter to the lambda
                     var newParamTypes = new Type[paramTypes.Length + 1];
@@ -574,16 +574,19 @@ namespace Ngo.Compiler.Emit
         {
             // Create a closure class with instance fields to capture arg values.
             // Each call site gets its own instance, so defer in loops works correctly.
-            var closureName = $"__defer_closure_{_body.LambdaCounter++}";
+            var closureName = _ctx.QualifyWithPackage($"__defer_closure_{_body.LambdaCounter++}");
             var closureBuilder = _ctx.Module.DefineType(
                 closureName,
                 TypeAttributes.Public | TypeAttributes.Sealed);
+            _ctx.Definitions.RegisterType(closureName, closureBuilder);
 
             var argFields = new List<IFieldBuilder>();
             for (int i = 0; i < argLocals.Count; i++)
             {
-                argFields.Add(closureBuilder.DefineField(
-                    $"_a{i}", argLocals[i].Type, FieldAttributes.Public));
+                var argField = closureBuilder.DefineField(
+                    $"_a{i}", argLocals[i].Type, FieldAttributes.Public);
+                _ctx.Definitions.RegisterField(closureName, $"_a{i}", argField);
+                argFields.Add(argField);
             }
 
             // Invoke(): loads captured args and calls the lambda
@@ -592,6 +595,7 @@ namespace Ngo.Compiler.Emit
                 MethodAttributes.Public,
                 typeof(void),
                 Type.EmptyTypes);
+            _ctx.Definitions.RegisterMethod(closureName, "Invoke", Type.EmptyTypes, invokeMethod);
 
             var invokeIL = invokeMethod.GetILWriter();
             for (int i = 0; i < argFields.Count; i++)
@@ -646,17 +650,21 @@ namespace Ngo.Compiler.Emit
             _ctx.IL.Emit(OpCodes.Stloc, delegateLocal);
 
             // Build a wrapper closure class holding the delegate + eager arg values
-            var wrapperName = $"__go_wrap_{_body.LambdaCounter++}";
+            var wrapperName = _ctx.QualifyWithPackage($"__go_wrap_{_body.LambdaCounter++}");
             var wrapperBuilder = _ctx.Module.DefineType(
                 wrapperName,
                 TypeAttributes.Public | TypeAttributes.Sealed);
+            _ctx.Definitions.RegisterType(wrapperName, wrapperBuilder);
 
             var fnField = wrapperBuilder.DefineField("_fn", delegateType, FieldAttributes.Public);
+            _ctx.Definitions.RegisterField(wrapperName, "_fn", fnField);
             var argFields = new List<IFieldBuilder>();
             for (int i = 0; i < eagerLocals.Count; i++)
             {
-                argFields.Add(wrapperBuilder.DefineField(
-                    $"_a{i}", eagerLocals[i].Type, FieldAttributes.Public));
+                var argField = wrapperBuilder.DefineField(
+                    $"_a{i}", eagerLocals[i].Type, FieldAttributes.Public);
+                _ctx.Definitions.RegisterField(wrapperName, $"_a{i}", argField);
+                argFields.Add(argField);
             }
 
             // Invoke(): calls _fn.Invoke(_a0, _a1, ...)
@@ -665,6 +673,7 @@ namespace Ngo.Compiler.Emit
                 MethodAttributes.Public,
                 typeof(void),
                 Type.EmptyTypes);
+            _ctx.Definitions.RegisterMethod(wrapperName, "Invoke", Type.EmptyTypes, invokeMethod);
             var wIL = invokeMethod.GetILWriter();
             wIL.Emit(OpCodes.Ldarg_0);
             wIL.Emit(OpCodes.Ldfld, fnField.AsFieldInfo());
@@ -673,7 +682,7 @@ namespace Ngo.Compiler.Emit
                 wIL.Emit(OpCodes.Ldarg_0);
                 wIL.Emit(OpCodes.Ldfld, argFields[i].AsFieldInfo());
             }
-            wIL.Emit(OpCodes.Callvirt, EmitContext.GetMethodSafe(delegateType, "Invoke"));
+            wIL.Emit(OpCodes.Callvirt, _ctx.Definitions.GetMethod(delegateType, "Invoke"));
             if (funcLit.ReturnTypes.Count > 0)
             {
                 wIL.Emit(OpCodes.Pop);

@@ -1,106 +1,166 @@
 using System;
 using Ngo.Runtime.Discovery;
+using Ngo.Runtime.Io;
 
 namespace Ngo.Runtime.Strings
 {
     [GoType("struct", Name = "Reader", Package = "strings")]
-    public sealed class Reader
+    public sealed class Reader : IGoReader, IGoReaderAt, IGoSeeker, IGoByteReader
     {
-        private string _s;
-        private int _i;
+        private byte[] _data;
+        private int _pos;
 
-        public Reader(string s) { _s = s; _i = 0; }
-
-        [GoMethod]
-        [return: GoReturn("int", "error")]
-        public (long, object?) Read([GoParam("[]byte")] Slice<byte> p)
+        public Reader(string s)
         {
-            if (_i >= _s.Length) return (0, "EOF");
-            int n = global::System.Math.Min(p.Len, _s.Length - _i);
-            for (int j = 0; j < n; j++)
-                p[j] = (byte)_s[_i + j];
-            _i += n;
-            return (n, null);
+            _data = global::System.Text.Encoding.UTF8.GetBytes(s ?? "");
+            _pos = 0;
         }
 
         [GoMethod]
         [return: GoReturn("int", "error")]
-        public (long, object?) ReadAt([GoParam("[]byte")] Slice<byte> p, long off)
+        public (long, string) Read([GoParam("[]byte")] Slice<byte> p)
         {
-            if (off >= _s.Length) return (0, "EOF");
-            int n = global::System.Math.Min(p.Len, _s.Length - (int)off);
+            if (_pos >= _data.Length)
+            {
+                return (0, GoIo.EOF);
+            }
+            int n = global::System.Math.Min(p.Len, _data.Length - _pos);
+            for (int i = 0; i < n; i++)
+            {
+                p[i] = _data[_pos + i];
+            }
+            _pos += n;
+            return (n, "");
+        }
+
+        [GoMethod]
+        [return: GoReturn("int", "error")]
+        public (long, string) ReadAt([GoParam("[]byte")] Slice<byte> p, long off)
+        {
+            if (off >= _data.Length)
+            {
+                return (0, GoIo.EOF);
+            }
+            int start = (int)off;
+            int n = global::System.Math.Min(p.Len, _data.Length - start);
             for (int j = 0; j < n; j++)
-                p[j] = (byte)_s[(int)off + j];
-            return (n, n < p.Len ? (object)"EOF" : null);
+            {
+                p[j] = _data[start + j];
+            }
+            return (n, n < p.Len ? GoIo.EOF : "");
         }
 
         [GoMethod]
         [return: GoReturn("byte", "error")]
-        public (byte, object?) ReadByte()
+        public (byte, string) ReadByte()
         {
-            if (_i >= _s.Length) return (0, "EOF");
-            return ((byte)_s[_i++], null);
+            if (_pos >= _data.Length)
+            {
+                return (0, GoIo.EOF);
+            }
+            byte b = _data[_pos];
+            _pos++;
+            return (b, "");
         }
 
         [GoMethod]
         [return: GoReturn("error")]
-        public object? UnreadByte()
+        public string UnreadByte()
         {
-            if (_i <= 0) return "strings.Reader.UnreadByte: at beginning of string";
-            _i--;
-            return null;
+            if (_pos <= 0)
+            {
+                return "strings.Reader.UnreadByte: at beginning of string";
+            }
+            _pos--;
+            return "";
         }
 
         [GoMethod]
         [return: GoReturn("rune", "int", "error")]
-        public (long, long, object?) ReadRune()
+        public (long, long, string) ReadRune()
         {
-            if (_i >= _s.Length) return (0, 0, "EOF");
-            var c = _s[_i];
-            _i++;
-            return ((long)c, 1, null);
+            if (_pos >= _data.Length)
+            {
+                return (0, 0, GoIo.EOF);
+            }
+            byte b = _data[_pos];
+            if (b < 0x80)
+            {
+                _pos++;
+                return ((long)b, 1, "");
+            }
+            var remaining = _data.AsSpan(_pos);
+            var status = System.Text.Rune.DecodeFromUtf8(remaining, out var rune, out int bytesConsumed);
+            if (status != System.Buffers.OperationStatus.Done)
+            {
+                _pos++;
+                return (0xFFFD, 1, "");
+            }
+            _pos += bytesConsumed;
+            return (rune.Value, bytesConsumed, "");
         }
 
         [GoMethod]
         [return: GoReturn("error")]
-        public object? UnreadRune()
+        public string UnreadRune()
         {
-            if (_i <= 0) return "strings.Reader.UnreadRune: at beginning of string";
-            _i--;
-            return null;
+            if (_pos <= 0)
+            {
+                return "strings.Reader.UnreadRune: at beginning of string";
+            }
+            _pos--;
+            while (_pos > 0 && (_data[_pos] & 0xC0) == 0x80)
+            {
+                _pos--;
+            }
+            return "";
         }
 
         [GoMethod]
         [return: GoReturn("int64", "error")]
-        public (long, object?) Seek(long offset, long whence)
+        public (long, string) Seek(long offset, long whence)
         {
             long abs;
             switch (whence)
             {
                 case 0: abs = offset; break;
-                case 1: abs = _i + offset; break;
-                case 2: abs = _s.Length + offset; break;
+                case 1: abs = _pos + offset; break;
+                case 2: abs = _data.Length + offset; break;
                 default: return (0, "strings.Reader.Seek: invalid whence");
             }
-            if (abs < 0) return (0, "strings.Reader.Seek: negative position");
-            _i = (int)abs;
-            return (abs, null);
+            if (abs < 0)
+            {
+                return (0, "strings.Reader.Seek: negative position");
+            }
+            _pos = (int)abs;
+            return (abs, "");
         }
 
         [GoMethod]
         [return: GoReturn("int64", "error")]
-        public (long, object?) WriteTo([GoParam("io.Writer")] object w)
+        public (long, string) WriteTo([GoParam("io.Writer")] object w)
         {
-            return (_s.Length - _i, null);
+            if (w is IGoWriter writer && _pos < _data.Length)
+            {
+                var remaining = new Slice<byte>(_data, _pos, _data.Length - _pos);
+                var (n, err) = writer.Write(remaining);
+                _pos += (int)n;
+                return (n, err);
+            }
+            return (_data.Length - _pos, "");
         }
 
         [GoMethod]
-        public long Len() => _s.Length - _i;
+        public long Len() => _data.Length - _pos;
 
         [GoMethod]
-        public long Size() => _s.Length;
+        public long Size() => _data.Length;
 
         [GoMethod]
-        public void Reset(string s) { _s = s; _i = 0; }
+        public void Reset(string s)
+        {
+            _data = global::System.Text.Encoding.UTF8.GetBytes(s ?? "");
+            _pos = 0;
+        }
     }
 }

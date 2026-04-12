@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------
-// <copyright file="SerializedMethodOverride.cs" company="Ziad">
+// <copyright file="SerializedFieldInfo.cs" company="Ziad">
 //  Copyright 2016 Ziad
 //
 //  Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,24 +16,30 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
+using System.Reflection;
+
 namespace Ngo.Compiler.Archive
 {
-    /// <summary>
-    /// A serialized method override mapping: body method → declaration method on a base/interface type.
-    /// </summary>
-    public sealed class SerializedMethodOverride
+    internal sealed class SerializedFieldInfo
     {
-        public SerializedMethodOverride(string bodyMethodName, string declarationTypeName, string declarationMethodName)
+        public SerializedFieldInfo(string name, FieldAttributes attributes, string typeName,
+            int goArrayLength, string elementTypeName)
         {
-            BodyMethodName = bodyMethodName;
-            DeclarationTypeName = declarationTypeName;
-            DeclarationMethodName = declarationMethodName;
+            Name = name;
+            Attributes = attributes;
+            TypeName = typeName;
+            GoArrayLength = goArrayLength;
+            ElementTypeName = elementTypeName;
         }
 
-        public string BodyMethodName { get; }
+        public string Name { get; }
 
-        public string DeclarationTypeName { get; }
+        public FieldAttributes Attributes { get; }
 
-        public string DeclarationMethodName { get; }
+        public string TypeName { get; }
+
+        public int GoArrayLength { get; }
+
+        public string ElementTypeName { get; }
     }
 }

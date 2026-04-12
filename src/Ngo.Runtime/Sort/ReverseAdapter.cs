@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------
-// <copyright file="TokenKind.cs" company="Ziad">
+// <copyright file="ReverseAdapter.cs" company="Ziad">
 //  Copyright 2016 Ziad
 //
 //  Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,16 +16,25 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
-namespace Ngo.Compiler.Archive
+namespace Ngo.Runtime.Sort
 {
     /// <summary>
-    /// Token kinds for IL metadata token references in .ngo archives.
+    /// Wraps an IGoSortInterface and reverses the Less comparison,
+    /// implementing Go's sort.Reverse(data).
     /// </summary>
-    public static class TokenKind
+    internal sealed class ReverseAdapter : IGoSortInterface
     {
-        public const byte Type = 0;
-        public const byte Method = 1;
-        public const byte Field = 2;
-        public const byte String = 3;
+        private readonly IGoSortInterface _inner;
+
+        public ReverseAdapter(IGoSortInterface inner)
+        {
+            _inner = inner;
+        }
+
+        public long Len() => _inner.Len();
+
+        public bool Less(long i, long j) => _inner.Less(j, i);
+
+        public void Swap(long i, long j) => _inner.Swap(i, j);
     }
 }

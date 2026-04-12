@@ -77,16 +77,8 @@ namespace Ngo.Compiler.Archive
             switch (Kind)
             {
                 case MethodTokenKind.MethodDef:
-                    DeclaringType!.Write(writer);
-                    writer.Write(MethodName);
-                    writer.Write(ParameterTypes.Length);
-                    foreach (var paramType in ParameterTypes)
-                    {
-                        paramType.Write(writer);
-                    }
-                    ReturnType!.Write(writer);
-                    break;
                 case MethodTokenKind.MemberRef:
+                    // Both kinds share identical wire format: declaring type, name, params, return.
                     DeclaringType!.Write(writer);
                     writer.Write(MethodName);
                     writer.Write(ParameterTypes.Length);

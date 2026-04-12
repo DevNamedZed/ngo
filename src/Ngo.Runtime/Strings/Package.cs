@@ -371,6 +371,7 @@ namespace Ngo.Runtime.Strings
         [return: GoReturn("*Reader")]
         public static Reader NewReader(string s)
         {
+            Console.Error.WriteLine($"[TRACE] strings.NewReader called, s='{s}'");
             return new Reader(s);
         }
 

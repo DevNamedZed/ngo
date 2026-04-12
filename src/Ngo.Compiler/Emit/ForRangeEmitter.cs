@@ -125,7 +125,7 @@ namespace Ngo.Compiler.Emit
             else
             {
                 _ctx.IL.Emit(OpCodes.Ldloca, sliceLocal);
-                var lenGetter = EmitContext.GetPropertyGetterSafe(sliceClrType, "Len");
+                var lenGetter = _ctx.Definitions.GetPropertyGetter(sliceClrType, "Len");
                 _ctx.IL.Emit(OpCodes.Call, lenGetter);
             }
             _ctx.IL.Emit(OpCodes.Clt);
@@ -157,7 +157,7 @@ namespace Ngo.Compiler.Emit
                 {
                     _ctx.IL.Emit(OpCodes.Ldloca, sliceLocal);
                     _ctx.IL.Emit(OpCodes.Ldloc, indexLocal);
-                    var indexerGetter = EmitContext.GetPropertyGetterSafe(sliceClrType, "Item");
+                    var indexerGetter = _ctx.Definitions.GetPropertyGetter(sliceClrType, "Item");
                     _ctx.IL.Emit(OpCodes.Call, indexerGetter);
                     // Slice<T>.Item returns ref T — load the value
                     if (elemClrType.IsValueType)
@@ -272,11 +272,11 @@ namespace Ngo.Compiler.Emit
 
             _body.EmitExpression(forRange.Iterable);
             var mapClrType = _ctx.Mapper.Map(forRange.Iterable.Type);
-            var rangeMethod = EmitContext.GetMethodSafe(mapClrType, "Range");
+            var rangeMethod = _ctx.Definitions.GetMethod(mapClrType, "Range");
             _ctx.IL.Emit(OpCodes.Call, rangeMethod);
 
             var enumerableType = typeof(System.Collections.Generic.IEnumerable<>).MakeGenericType(tupleType);
-            var getEnumerator = EmitContext.GetMethodSafe(enumerableType, "GetEnumerator");
+            var getEnumerator = _ctx.Definitions.GetMethod(enumerableType, "GetEnumerator");
             _ctx.IL.Emit(OpCodes.Callvirt, getEnumerator);
 
             var enumeratorType = typeof(System.Collections.Generic.IEnumerator<>).MakeGenericType(tupleType);
@@ -290,7 +290,7 @@ namespace Ngo.Compiler.Emit
             _ctx.IL.Emit(OpCodes.Brfalse, endLabel);
 
             _ctx.IL.Emit(OpCodes.Ldloc, enumLocal);
-            var getCurrent = EmitContext.GetPropertyGetterSafe(enumeratorType, "Current");
+            var getCurrent = _ctx.Definitions.GetPropertyGetter(enumeratorType, "Current");
             _ctx.IL.Emit(OpCodes.Callvirt, getCurrent);
             var tupleLocal = _ctx.IL.DeclareLocal(tupleType);
             _ctx.IL.Emit(OpCodes.Stloc, tupleLocal);
@@ -300,7 +300,7 @@ namespace Ngo.Compiler.Emit
                 var keyLocal = _ctx.IL.DeclareLocal(keyClrType);
                 _ctx.Locals[forRange.Key] = keyLocal;
                 _ctx.IL.Emit(OpCodes.Ldloca, tupleLocal);
-                _ctx.IL.Emit(OpCodes.Ldfld, EmitContext.GetFieldSafe(tupleType, "Item1"));
+                _ctx.IL.Emit(OpCodes.Ldfld, _ctx.Definitions.GetField(tupleType, "Item1"));
                 _ctx.IL.Emit(OpCodes.Stloc, keyLocal);
             }
 
@@ -309,7 +309,7 @@ namespace Ngo.Compiler.Emit
                 var valueLocal = _ctx.IL.DeclareLocal(valClrType);
                 _ctx.Locals[forRange.Value] = valueLocal;
                 _ctx.IL.Emit(OpCodes.Ldloca, tupleLocal);
-                _ctx.IL.Emit(OpCodes.Ldfld, EmitContext.GetFieldSafe(tupleType, "Item2"));
+                _ctx.IL.Emit(OpCodes.Ldfld, _ctx.Definitions.GetField(tupleType, "Item2"));
                 _ctx.IL.Emit(OpCodes.Stloc, valueLocal);
             }
 
@@ -350,7 +350,7 @@ namespace Ngo.Compiler.Emit
             // Receive returns ValueTuple<T, bool>
             var tupleType = typeof(ValueTuple<,>).MakeGenericType(elemClrType, typeof(bool));
             var tupleLocal = _ctx.IL.DeclareLocal(tupleType);
-            var receiveMethod = EmitContext.GetMethodSafe(chanClrType, "Receive");
+            var receiveMethod = _ctx.Definitions.GetMethod(chanClrType, "Receive");
 
             _ctx.IL.MarkLabel(loopLabel);
 
@@ -361,7 +361,7 @@ namespace Ngo.Compiler.Emit
 
             // if !ok → break
             _ctx.IL.Emit(OpCodes.Ldloca, tupleLocal);
-            _ctx.IL.Emit(OpCodes.Ldfld, EmitContext.GetFieldSafe(tupleType, "Item2"));
+            _ctx.IL.Emit(OpCodes.Ldfld, _ctx.Definitions.GetField(tupleType, "Item2"));
             _ctx.IL.Emit(OpCodes.Brfalse, endLabel);
 
             // Store received value in the iteration variable (Key holds the value for channels)
@@ -370,7 +370,7 @@ namespace Ngo.Compiler.Emit
                 var valueLocal = _ctx.IL.DeclareLocal(elemClrType);
                 _ctx.Locals[forRange.Key] = valueLocal;
                 _ctx.IL.Emit(OpCodes.Ldloca, tupleLocal);
-                _ctx.IL.Emit(OpCodes.Ldfld, EmitContext.GetFieldSafe(tupleType, "Item1"));
+                _ctx.IL.Emit(OpCodes.Ldfld, _ctx.Definitions.GetField(tupleType, "Item1"));
                 _ctx.IL.Emit(OpCodes.Stloc, valueLocal);
             }
 
@@ -464,11 +464,14 @@ namespace Ngo.Compiler.Emit
 
             // Create the yield method: func(k K, v V) bool { body; return true }
             var yieldName = $"__range_yield_{_body.LambdaCounter++}";
+            var yieldParamTypeArray = yieldParamTypes.ToArray();
             var yieldMethod = _ctx.PackageType.DefineMethod(
                 yieldName,
                 System.Reflection.MethodAttributes.Private | System.Reflection.MethodAttributes.Static,
                 typeof(bool),
-                yieldParamTypes.ToArray());
+                yieldParamTypeArray);
+            var pkgTypeName = _ctx.PackageType.AsType().FullName ?? _ctx.PackageType.AsType().Name;
+            _ctx.Definitions.RegisterMethod(pkgTypeName, yieldName, yieldParamTypeArray, yieldMethod);
 
             // Define parameter names
             int paramIndex = 0;
@@ -556,7 +559,7 @@ namespace Ngo.Compiler.Emit
             // Create the delegate: new Func<K,V,bool>(null, &yieldMethod)
             _ctx.IL.Emit(OpCodes.Ldnull);
             _ctx.IL.Emit(OpCodes.Ldftn, yieldMethod.AsMethodInfo());
-            var delegateCtor = EmitContext.GetConstructorSafe(delegateType, new[] { typeof(object), typeof(System.IntPtr) });
+            var delegateCtor = _ctx.Definitions.GetConstructor(delegateType, new[] { typeof(object), typeof(System.IntPtr) });
             _ctx.IL.Emit(OpCodes.Newobj, delegateCtor);
 
             // Build the iterator delegate type: Action<Func<K,V,bool>>
@@ -590,7 +593,7 @@ namespace Ngo.Compiler.Emit
             {
                 // Wrap in a new Box<T> each iteration
                 var boxType = typeof(Box<>).MakeGenericType(clrType);
-                var boxCtor = EmitContext.GetConstructorSafe(boxType, new[] { clrType });
+                var boxCtor = _ctx.Definitions.GetConstructor(boxType, new[] { clrType });
                 _ctx.IL.Emit(OpCodes.Newobj, boxCtor);
                 var boxLocal = _ctx.IL.DeclareLocal(boxType);
                 _ctx.IL.Emit(OpCodes.Stloc, boxLocal);

@@ -39,9 +39,14 @@ namespace Ngo.Compiler.Archive
         private readonly Dictionary<int, int> _labelOffsets = new();
         private readonly List<BranchFixup> _branchFixups = new();
 
+        private int _currentStackDepth = 0;
+        private int _maxStackDepth = 0;
+
         private readonly Stack<int> _tryStartOffsets = new();
-        private int _currentTryStart = -1;
-        private int _currentTryLength;
+        // Maps each try-block start offset to the try-length captured when the first handler began.
+        // Keyed on try-start offset so nested blocks and multiple handlers on the same block
+        // all get the correct TryLength regardless of order.
+        private readonly Dictionary<int, int> _tryLengths = new();
         private int _currentHandlerStart = -1;
 
         private ILGenerator _labelFactory;
@@ -91,35 +96,41 @@ namespace Ngo.Compiler.Archive
 
         public override void Emit(OpCode op)
         {
+            TrackStack(op);
             WriteOpCode(op);
         }
 
         public override void Emit(OpCode op, int arg)
         {
+            TrackStack(op);
             WriteOpCode(op);
             WriteInt32(arg);
         }
 
         public override void Emit(OpCode op, long arg)
         {
+            TrackStack(op);
             WriteOpCode(op);
             WriteInt64(arg);
         }
 
         public override void Emit(OpCode op, float arg)
         {
+            TrackStack(op);
             WriteOpCode(op);
             WriteSingle(arg);
         }
 
         public override void Emit(OpCode op, double arg)
         {
+            TrackStack(op);
             WriteOpCode(op);
             WriteDouble(arg);
         }
 
         public override void Emit(OpCode op, string arg)
         {
+            TrackStack(op);
             WriteOpCode(op);
             var offset = (int)_code.Position;
             _tokens.Add(ILTokenEntry.CreateString(offset, arg));
@@ -128,12 +139,14 @@ namespace Ngo.Compiler.Archive
 
         public override void Emit(OpCode op, byte arg)
         {
+            TrackStack(op);
             WriteOpCode(op);
             _code.WriteByte(arg);
         }
 
         public override void Emit(OpCode op, Type type)
         {
+            TrackStack(op);
             WriteOpCode(op);
             var offset = (int)_code.Position;
             _tokens.Add(ILTokenEntry.CreateType(offset, BuildTypeToken(type)));
@@ -142,6 +155,15 @@ namespace Ngo.Compiler.Archive
 
         public override void Emit(OpCode op, MethodInfo method)
         {
+            // For call/callvirt the stack effect depends on the method signature:
+            // push 1 if non-void return, pop N args + 1 if instance call.
+            int push = method.ReturnType != typeof(void) ? 1 : 0;
+            int pop = method.GetParameters().Length;
+            // Use Attributes flag instead of IsStatic property — MethodBuilder throws
+            // NotSupportedException from IsStatic before the type is created.
+            bool isStatic = (method.Attributes & MethodAttributes.Static) != 0;
+            if (!isStatic) pop += 1; // 'this'
+            TrackStack(op, extraPush: push, extraPop: pop);
             WriteOpCode(op);
             var offset = (int)_code.Position;
             _tokens.Add(ILTokenEntry.CreateMethod(offset, BuildMethodToken(method)));
@@ -150,6 +172,11 @@ namespace Ngo.Compiler.Archive
 
         public override void Emit(OpCode op, ConstructorInfo constructor)
         {
+            // newobj pushes 1 (the new object), pops N args (no 'this' for newobj).
+            // call .ctor pops N args + 'this', pushes nothing.
+            int push = op == OpCodes.Newobj ? 1 : 0;
+            int pop = constructor.GetParameters().Length + (op == OpCodes.Newobj ? 0 : 1);
+            TrackStack(op, extraPush: push, extraPop: pop);
             WriteOpCode(op);
             var offset = (int)_code.Position;
             _tokens.Add(ILTokenEntry.CreateMethod(offset, BuildConstructorToken(constructor)));
@@ -158,6 +185,7 @@ namespace Ngo.Compiler.Archive
 
         public override void Emit(OpCode op, FieldInfo field)
         {
+            TrackStack(op);
             WriteOpCode(op);
             var offset = (int)_code.Position;
             _tokens.Add(ILTokenEntry.CreateField(offset, BuildFieldToken(field)));
@@ -166,6 +194,7 @@ namespace Ngo.Compiler.Archive
 
         public override void Emit(OpCode op, Label label)
         {
+            TrackStack(op);
             WriteOpCode(op);
             var fixupOffset = (int)_code.Position;
             var labelId = GetLabelId(label);
@@ -184,6 +213,7 @@ namespace Ngo.Compiler.Archive
 
         public override void Emit(OpCode op, Label[] labels)
         {
+            TrackStack(op);
             WriteOpCode(op);
             WriteInt32(labels.Length);
             int baseOffset = (int)_code.Position + labels.Length * 4;
@@ -198,6 +228,7 @@ namespace Ngo.Compiler.Archive
 
         public override void Emit(OpCode op, LocalBuilder local)
         {
+            TrackStack(op);
             WriteOpCode(op);
             var operandType = op.OperandType;
             if (operandType == OperandType.ShortInlineVar)
@@ -215,13 +246,16 @@ namespace Ngo.Compiler.Archive
         public override LocalBuilder DeclareLocal(Type type)
         {
             _locals.Add(GetTypeNameStatic(type));
-            var safeType = type is TypeDelegator ? typeof(object) : type;
+
+            var declaredType = type is TypeDelegator ? typeof(object) : type;
             try
             {
-                return _localFactory.DeclareLocal(safeType);
+                return _localFactory.DeclareLocal(declaredType);
             }
             catch (ArgumentException)
             {
+                // Some proxy / delegating types cannot be declared directly on the scratch ILGenerator.
+                // Keep the serialized local type name intact, but use object for the temporary builder slot.
                 return _localFactory.DeclareLocal(typeof(object));
             }
         }
@@ -248,24 +282,29 @@ namespace Ngo.Compiler.Archive
 
         public override void BeginCatchBlock(Type type)
         {
-            if (_tryStartOffsets.Count > 0)
+            int tryStart = _tryStartOffsets.Count > 0 ? _tryStartOffsets.Peek() : -1;
+
+            // Capture the try-length exactly once per try-block (when the first handler fires).
+            // Subsequent catch blocks on the same try must reuse the same length so that all
+            // ExceptionClause entries for a given try share a consistent TryOffset/TryLength pair.
+            if (tryStart >= 0 && !_tryLengths.ContainsKey(tryStart))
             {
-                int tryStart = _tryStartOffsets.Peek();
-                bool isFirstHandler = _currentTryStart != tryStart
-                    || !_exceptionClauses.Any(c => c.TryOffset == tryStart);
-                if (isFirstHandler)
-                {
-                    _currentTryStart = tryStart;
-                    _currentTryLength = (int)_code.Position - _currentTryStart;
-                }
+                _tryLengths[tryStart] = (int)_code.Position - tryStart;
             }
+
+            int tryLength = tryStart >= 0 && _tryLengths.TryGetValue(tryStart, out var len) ? len : 0;
             _currentHandlerStart = (int)_code.Position;
+
+            // The CLR places the caught exception object on the stack at handler entry.
+            // Reset depth to 1 so subsequent tracking starts from the correct baseline.
+            _currentStackDepth = 1;
+            if (_currentStackDepth > _maxStackDepth) _maxStackDepth = _currentStackDepth;
 
             _exceptionClauses.Add(new ExceptionClause
             {
                 Kind = 0,
-                TryOffset = _currentTryStart,
-                TryLength = _currentTryLength,
+                TryOffset = tryStart,
+                TryLength = tryLength,
                 HandlerOffset = _currentHandlerStart,
                 CatchTypeName = GetTypeNameStatic(type),
             });
@@ -273,17 +312,97 @@ namespace Ngo.Compiler.Archive
 
         public override void EndExceptionBlock()
         {
+            int tryStart = -1;
             if (_tryStartOffsets.Count > 0)
             {
-                _tryStartOffsets.Pop();
+                tryStart = _tryStartOffsets.Pop();
             }
 
-            if (_exceptionClauses.Count > 0)
+            // Patch the HandlerLength of every clause that belongs to this try-block.
+            // (All handlers for a given try share the same TryOffset.)
+            int endOffset = (int)_code.Position;
+            for (int i = 0; i < _exceptionClauses.Count; i++)
             {
-                var last = _exceptionClauses[_exceptionClauses.Count - 1];
-                last.HandlerLength = (int)_code.Position - last.HandlerOffset;
-                _exceptionClauses[_exceptionClauses.Count - 1] = last;
+                var clause = _exceptionClauses[i];
+                if (clause.TryOffset == tryStart && clause.HandlerLength == 0)
+                {
+                    clause.HandlerLength = endOffset - clause.HandlerOffset;
+                    _exceptionClauses[i] = clause;
+                }
             }
+
+            // Release the cached try-length so the key doesn't linger for nested/re-used offsets.
+            if (tryStart >= 0)
+            {
+                _tryLengths.Remove(tryStart);
+            }
+        }
+
+        public override void BeginFinallyBlock()
+        {
+            int tryStart = _tryStartOffsets.Count > 0 ? _tryStartOffsets.Peek() : -1;
+            if (tryStart >= 0 && !_tryLengths.ContainsKey(tryStart))
+            {
+                _tryLengths[tryStart] = (int)_code.Position - tryStart;
+            }
+            int tryLength = tryStart >= 0 && _tryLengths.TryGetValue(tryStart, out var len) ? len : 0;
+            _currentHandlerStart = (int)_code.Position;
+            // Finally blocks execute with an empty stack (no exception object).
+            _currentStackDepth = 0;
+
+            _exceptionClauses.Add(new ExceptionClause
+            {
+                Kind = 2, // Finally = 2 in ExceptionRegionKind
+                TryOffset = tryStart,
+                TryLength = tryLength,
+                HandlerOffset = _currentHandlerStart,
+                CatchTypeName = null,
+            });
+        }
+
+        public override void BeginFaultBlock()
+        {
+            int tryStart = _tryStartOffsets.Count > 0 ? _tryStartOffsets.Peek() : -1;
+            if (tryStart >= 0 && !_tryLengths.ContainsKey(tryStart))
+            {
+                _tryLengths[tryStart] = (int)_code.Position - tryStart;
+            }
+            int tryLength = tryStart >= 0 && _tryLengths.TryGetValue(tryStart, out var len) ? len : 0;
+            _currentHandlerStart = (int)_code.Position;
+            _currentStackDepth = 0;
+
+            _exceptionClauses.Add(new ExceptionClause
+            {
+                Kind = 4, // Fault = 4 in ExceptionRegionKind
+                TryOffset = tryStart,
+                TryLength = tryLength,
+                HandlerOffset = _currentHandlerStart,
+                CatchTypeName = null,
+            });
+        }
+
+        public override void BeginExceptFilterBlock()
+        {
+            int tryStart = _tryStartOffsets.Count > 0 ? _tryStartOffsets.Peek() : -1;
+            if (tryStart >= 0 && !_tryLengths.ContainsKey(tryStart))
+            {
+                _tryLengths[tryStart] = (int)_code.Position - tryStart;
+            }
+            int tryLength = tryStart >= 0 && _tryLengths.TryGetValue(tryStart, out var len) ? len : 0;
+            _currentHandlerStart = (int)_code.Position;
+            // Filter blocks start with the exception object on the stack.
+            _currentStackDepth = 1;
+            if (_currentStackDepth > _maxStackDepth) _maxStackDepth = _currentStackDepth;
+
+            _exceptionClauses.Add(new ExceptionClause
+            {
+                Kind = 1, // Filter = 1 in ExceptionRegionKind
+                TryOffset = tryStart,
+                TryLength = tryLength,
+                HandlerOffset = _currentHandlerStart,
+                FilterOffset = (int)_code.Position,
+                CatchTypeName = null,
+            });
         }
 
         // ----- Serialization to Section 3 format -----
@@ -292,7 +411,7 @@ namespace Ngo.Compiler.Archive
         {
             var ilBytes = GetILBytes();
 
-            writer.Write(8);
+            writer.Write(_maxStackDepth > 0 ? _maxStackDepth : 8); // actual tracked max stack
 
             writer.Write(_locals.Count);
             foreach (var local in _locals)
@@ -322,73 +441,80 @@ namespace Ngo.Compiler.Archive
             }
         }
 
-        public void Reset()
-        {
-            _code.SetLength(0);
-            _code.Position = 0;
-            _tokens.Clear();
-            _locals.Clear();
-            _exceptionClauses.Clear();
-            _labelOffsets.Clear();
-            _branchFixups.Clear();
-            _nextLabelId = 0;
-            _tryStartOffsets.Clear();
-            _currentTryStart = -1;
-            _currentHandlerStart = -1;
-            _labelFactory = CreateFactory();
-            _localFactory = CreateFactory();
-        }
-
-        // ----- Structured token builders -----
-
-        [ThreadStatic] private static HashSet<Type>? _typeTokenInProgress;
-
         private TypeToken BuildTypeToken(Type type)
         {
-            _typeTokenInProgress ??= new HashSet<Type>(ReferenceEqualityComparer.Instance);
-            if (!_typeTokenInProgress.Add(type))
+            return BuildTypeToken(type, new HashSet<Type>(ReferenceEqualityComparer.Instance));
+        }
+
+        private TypeToken BuildTypeToken(Type type, HashSet<Type> inProgress)
+        {
+            if (!inProgress.Add(type))
             {
                 return TypeToken.CreateTypeDef(type.FullName ?? type.Name);
             }
+
             try
             {
-                return BuildTypeTokenCore(type);
+                return BuildTypeTokenCore(type, inProgress);
             }
             finally
             {
-                _typeTokenInProgress.Remove(type);
+                inProgress.Remove(type);
             }
         }
 
-        private TypeToken BuildTypeTokenCore(Type type)
+        private bool TryBuildScopedGenericParameterToken(Type type, out TypeToken token)
         {
-            // Check if this type is a generic parameter that belongs to the current context.
-            // This handles both NgoProxyType params and runtime GenericTypeParameterBuilder.
             int methodIndex = _serializationContext.FindMethodGenericParamIndex(type);
             if (methodIndex >= 0)
             {
-                return TypeToken.CreateGenericMethodParam(methodIndex);
+                token = TypeToken.CreateGenericMethodParam(methodIndex);
+                return true;
             }
 
             int typeIndex = _serializationContext.FindTypeGenericParamIndex(type);
             if (typeIndex >= 0)
             {
-                return TypeToken.CreateGenericTypeParam(typeIndex);
+                token = TypeToken.CreateGenericTypeParam(typeIndex);
+                return true;
+            }
+
+            token = null!;
+            return false;
+        }
+
+        private static Type GetRequiredElementType(Type type)
+        {
+            return type.GetElementType()
+                ?? throw new InvalidOperationException($"NgoWriter: '{type}' is missing an element type");
+        }
+
+        private static InvalidOperationException CreateMissingGenericParameterException(Type type)
+        {
+            return new InvalidOperationException(
+                $"NgoWriter: generic parameter '{type.Name}' was not found in the current serialization context");
+        }
+
+        private TypeToken BuildTypeTokenCore(Type type, HashSet<Type> inProgress)
+        {
+            if (TryBuildScopedGenericParameterToken(type, out var scopedGenericToken))
+            {
+                return scopedGenericToken;
             }
 
             if (type is NgoProxyType proxyType)
             {
                 if (proxyType.IsGenericParam)
                 {
-                    return TypeToken.CreatePrimitive(PrimitiveTypeKind.Object);
+                    throw CreateMissingGenericParameterException(type);
                 }
 
                 if (type.IsGenericType && !type.IsGenericTypeDefinition)
                 {
                     var genericDefinition = type.GetGenericTypeDefinition();
                     var genericArguments = type.GetGenericArguments();
-                    var argumentTokens = genericArguments.Select(BuildTypeToken).ToArray();
-                    return TypeToken.CreateGenericInst(BuildTypeToken(genericDefinition), argumentTokens);
+                    var argumentTokens = genericArguments.Select(arg => BuildTypeToken(arg, inProgress)).ToArray();
+                    return TypeToken.CreateGenericInst(BuildTypeToken(genericDefinition, inProgress), argumentTokens);
                 }
 
                 return TypeToken.CreateTypeDef(type.FullName ?? type.Name);
@@ -401,22 +527,22 @@ namespace Ngo.Compiler.Archive
 
             if (type.IsGenericParameter)
             {
-                return TypeToken.CreatePrimitive(PrimitiveTypeKind.Object);
+                throw CreateMissingGenericParameterException(type);
             }
 
             if (type.IsArray)
             {
-                return TypeToken.CreateArray(BuildTypeToken(type.GetElementType()!));
+                return TypeToken.CreateArray(BuildTypeToken(GetRequiredElementType(type), inProgress));
             }
 
             if (type.IsPointer)
             {
-                return TypeToken.CreatePointer(BuildTypeToken(type.GetElementType()!));
+                return TypeToken.CreatePointer(BuildTypeToken(GetRequiredElementType(type), inProgress));
             }
 
             if (type.IsByRef)
             {
-                return TypeToken.CreateByRef(BuildTypeToken(type.GetElementType()!));
+                return TypeToken.CreateByRef(BuildTypeToken(GetRequiredElementType(type), inProgress));
             }
 
             if (type.IsGenericType && !type.IsGenericTypeDefinition)
@@ -442,14 +568,14 @@ namespace Ngo.Compiler.Archive
                             var defName = instName.Substring(0, bracketStart);
                             var defToken = TypeToken.CreatePackageTypeRef(GetPackageImportPath(type), defName);
                             var argsStr = instName.Substring(bracketStart);
-                            var argTokens = ParseGenericArgumentsFromName(argsStr);
+                            var argTokens = ParseGenericArgumentsFromName(argsStr, inProgress);
                             return TypeToken.CreateGenericInst(defToken, argTokens);
                         }
                     }
                     return TypeToken.CreatePackageTypeRef(type.Namespace ?? "", type.Name);
                 }
-                var argumentTokens = genericArguments.Select(BuildTypeToken).ToArray();
-                return TypeToken.CreateGenericInst(BuildTypeToken(genericDefinition), argumentTokens);
+                var argumentTokens = genericArguments.Select(arg => BuildTypeToken(arg, inProgress)).ToArray();
+                return TypeToken.CreateGenericInst(BuildTypeToken(genericDefinition, inProgress), argumentTokens);
             }
 
             // Last-resort check for constructed generic types that bypassed the IsGenericType check
@@ -467,9 +593,9 @@ namespace Ngo.Compiler.Archive
                     var argumentTokens = new TypeToken[genericArguments.Length];
                     for (int i = 0; i < genericArguments.Length; i++)
                     {
-                        argumentTokens[i] = BuildTypeToken(genericArguments[i]);
+                        argumentTokens[i] = BuildTypeToken(genericArguments[i], inProgress);
                     }
-                    return TypeToken.CreateGenericInst(BuildTypeToken(genericDefinition), argumentTokens);
+                    return TypeToken.CreateGenericInst(BuildTypeToken(genericDefinition, inProgress), argumentTokens);
                 }
                 catch (NotSupportedException)
                 {
@@ -480,7 +606,7 @@ namespace Ngo.Compiler.Archive
 
                     // Parse type arguments from the FullName string
                     var argsStr = typeName.Substring(typeName.IndexOf('[', backtickIndex));
-                    var argTokens = ParseGenericArgumentsFromName(argsStr);
+                    var argTokens = ParseGenericArgumentsFromName(argsStr, inProgress);
                     return TypeToken.CreateGenericInst(defToken, argTokens);
                 }
             }
@@ -499,7 +625,7 @@ namespace Ngo.Compiler.Archive
             return TypeToken.CreatePackageTypeRef(packagePath, typeName);
         }
 
-        private TypeToken[] ParseGenericArgumentsFromName(string argsStr)
+        private TypeToken[] ParseGenericArgumentsFromName(string argsStr, HashSet<Type> inProgress)
         {
             // argsStr format: "[[FullName1, Assembly1],[FullName2, Assembly2]]"
             // or just "[FullName1,FullName2]" for simple names
@@ -532,7 +658,7 @@ namespace Ngo.Compiler.Archive
                         var argType = Type.GetType(argFullName) ?? RuntimeAssembly.GetType(argFullName);
                         if (argType != null)
                         {
-                            result.Add(BuildTypeToken(argType));
+                            result.Add(BuildTypeToken(argType, inProgress));
                         }
                         else
                         {
@@ -613,14 +739,24 @@ namespace Ngo.Compiler.Archive
             Type[]? declaringTypeDefParameters = null;
             if (declaringType != null && declaringType.IsGenericType && !declaringType.IsGenericTypeDefinition)
             {
-                declaringTypeArguments = declaringType.GetGenericArguments();
-                declaringTypeDefParameters = declaringType.GetGenericTypeDefinition().GetGenericArguments();
+                try
+                {
+                    declaringTypeArguments = declaringType.GetGenericArguments();
+                    declaringTypeDefParameters = declaringType.GetGenericTypeDefinition().GetGenericArguments();
+                }
+                catch (NotSupportedException)
+                {
+                    // TypeBuilderInstantiation may not support GetGenericTypeDefinition.
+                    // Try to extract type args directly from the type name or fall through.
+                }
             }
 
             var parameterTokens = new TypeToken[parameters.Length];
             for (int index = 0; index < parameters.Length; index++)
             {
                 var parameterType = parameters[index].ParameterType;
+
+                // Substitute generic parameters with their concrete type arguments
                 if (parameterType.IsGenericParameter && declaringTypeArguments != null && declaringTypeDefParameters != null)
                 {
                     for (int genericIndex = 0; genericIndex < declaringTypeDefParameters.Length; genericIndex++)
@@ -633,18 +769,28 @@ namespace Ngo.Compiler.Archive
                         }
                     }
                 }
+
+                // For generic parameters that weren't substituted (declaring type info unavailable),
+                // try to find the concrete type by matching the parameter name against the declaring
+                // type's actual generic arguments.
+                if (parameterType.IsGenericParameter && declaringType != null && declaringType.IsGenericType)
+                {
+                    // Try GenericTypeArguments property first (works for some instantiation types)
+                    var actualArgs = declaringType.GenericTypeArguments;
+                    if (actualArgs.Length > 0)
+                    {
+                        // The generic parameter index is stored in GenericParameterPosition
+                        int paramPosition = parameterType.GenericParameterPosition;
+                        if (paramPosition >= 0 && paramPosition < actualArgs.Length)
+                        {
+                            parameterType = actualArgs[paramPosition];
+                        }
+                    }
+                }
+
                 parameterTokens[index] = BuildTypeToken(parameterType);
             }
             return parameterTokens;
-        }
-
-        private static MethodInfo GetGenericMethodDefinition(MethodInfo method)
-        {
-            if (method is NgoProxyMethodInfo)
-            {
-                return method;
-            }
-            return method.GetGenericMethodDefinition();
         }
 
         private static string GetPackageImportPath(Type type)
@@ -683,26 +829,29 @@ namespace Ngo.Compiler.Archive
 
         internal static string GetTypeNameStatic(Type type) => GetTypeName(type);
 
-        [ThreadStatic] private static HashSet<Type>? _typeNameInProgress;
-
         private static string GetTypeName(Type type)
         {
-            _typeNameInProgress ??= new HashSet<Type>(ReferenceEqualityComparer.Instance);
-            if (!_typeNameInProgress.Add(type))
+            return GetTypeName(type, new HashSet<Type>(ReferenceEqualityComparer.Instance));
+        }
+
+        private static string GetTypeName(Type type, HashSet<Type> inProgress)
+        {
+            if (!inProgress.Add(type))
             {
                 return type.Name ?? "$$circular";
             }
+
             try
             {
-                return GetTypeNameCore(type);
+                return GetTypeNameCore(type, inProgress);
             }
             finally
             {
-                _typeNameInProgress.Remove(type);
+                inProgress.Remove(type);
             }
         }
 
-        private static string GetTypeNameCore(Type type)
+        private static string GetTypeNameCore(Type type, HashSet<Type> inProgress)
         {
             if (type == typeof(void)) { return "System.Void"; }
             if (type == typeof(object)) { return "System.Object"; }
@@ -729,25 +878,25 @@ namespace Ngo.Compiler.Archive
 
             if (type.IsArray)
             {
-                return GetTypeName(type.GetElementType()!) + "[]";
+                return GetTypeName(type.GetElementType()!, inProgress) + "[]";
             }
 
             if (type.IsByRef)
             {
-                return GetTypeName(type.GetElementType()!) + "&";
+                return GetTypeName(type.GetElementType()!, inProgress) + "&";
             }
 
             if (type.IsPointer)
             {
-                return GetTypeName(type.GetElementType()!) + "*";
+                return GetTypeName(type.GetElementType()!, inProgress) + "*";
             }
 
             if (type.IsGenericType && !type.IsGenericTypeDefinition)
             {
                 var genericDefinition = type.GetGenericTypeDefinition();
                 var arguments = type.GetGenericArguments();
-                var argumentNames = string.Join(",", Array.ConvertAll(arguments, GetTypeName));
-                return GetTypeName(genericDefinition) + "[" + argumentNames + "]";
+                var argumentNames = string.Join(",", Array.ConvertAll(arguments, arg => GetTypeName(arg, inProgress)));
+                return GetTypeName(genericDefinition, inProgress) + "[" + argumentNames + "]";
             }
 
             var result = type.FullName ?? type.Name;
@@ -785,6 +934,54 @@ namespace Ngo.Compiler.Archive
         private static int GetLabelId(Label label)
         {
             return label.GetHashCode();
+        }
+
+        private void TrackStack(OpCode op, int extraPush = 0, int extraPop = 0)
+        {
+            // StackBehaviourPush tells us how many values the opcode pushes.
+            int push = op.StackBehaviourPush switch
+            {
+                StackBehaviour.Push0 => 0,
+                StackBehaviour.Push1 => 1,
+                StackBehaviour.Push1_push1 => 2,
+                StackBehaviour.Pushi => 1,
+                StackBehaviour.Pushi8 => 1,
+                StackBehaviour.Pushr4 => 1,
+                StackBehaviour.Pushr8 => 1,
+                StackBehaviour.Pushref => 1,
+                StackBehaviour.Varpush => extraPush,   // call/callvirt: caller supplies via extraPush
+                _ => 0,
+            };
+
+            // StackBehaviourPop tells us how many values the opcode pops.
+            int pop = op.StackBehaviourPop switch
+            {
+                StackBehaviour.Pop0 => 0,
+                StackBehaviour.Pop1 => 1,
+                StackBehaviour.Pop1_pop1 => 2,
+                StackBehaviour.Popi => 1,
+                StackBehaviour.Popi_pop1 => 2,
+                StackBehaviour.Popi_popi => 2,
+                StackBehaviour.Popi_popi8 => 2,
+                StackBehaviour.Popi_popi_popi => 3,
+                StackBehaviour.Popi_popr4 => 2,
+                StackBehaviour.Popi_popr8 => 2,
+                StackBehaviour.Popref => 1,
+                StackBehaviour.Popref_pop1 => 2,
+                StackBehaviour.Popref_popi => 2,
+                StackBehaviour.Popref_popi_pop1 => 3,
+                StackBehaviour.Popref_popi_popi => 3,
+                StackBehaviour.Popref_popi_popi8 => 3,
+                StackBehaviour.Popref_popi_popr4 => 3,
+                StackBehaviour.Popref_popi_popr8 => 3,
+                StackBehaviour.Popref_popi_popref => 3,
+                StackBehaviour.Varpop => extraPop,     // call/callvirt/ret: caller supplies via extraPop
+                _ => 0,
+            };
+
+            _currentStackDepth += push - pop;
+            if (_currentStackDepth < 0) _currentStackDepth = 0; // guard against mis-tracking in dead code
+            if (_currentStackDepth > _maxStackDepth) _maxStackDepth = _currentStackDepth;
         }
 
         private void WriteOpCode(OpCode op)
@@ -836,12 +1033,18 @@ namespace Ngo.Compiler.Archive
 
         private void PatchBranches()
         {
+            // Use GetBuffer() for in-place patching — it returns the live backing array so
+            // writes are reflected in the MemoryStream. All fixup offsets are within [0, Length)
+            // because they were recorded as IL was emitted; the extra capacity beyond Length is
+            // never touched. This is safe as long as callers always use ToArray() (not GetBuffer())
+            // to obtain the final bytes, which GetILBytes() does.
             var buffer = _code.GetBuffer();
             foreach (var fixup in _branchFixups)
             {
                 if (!_labelOffsets.TryGetValue(fixup.LabelId, out var targetOffset))
                 {
-                    continue;
+                    throw new InvalidOperationException(
+                        $"NgoWriter: label {fixup.LabelId} referenced at IL offset {fixup.Offset} was never marked");
                 }
 
                 if (fixup.IsShort)

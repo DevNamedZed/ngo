@@ -113,7 +113,7 @@ public class GoIoTests
     {
         private readonly System.Collections.Generic.List<byte> _buf = new();
 
-        public (int, string) Write(Slice<byte> p)
+        public (long, string) Write(Slice<byte> p)
         {
             for (int i = 0; i < p.Len; i++)
                 _buf.Add(p[i]);

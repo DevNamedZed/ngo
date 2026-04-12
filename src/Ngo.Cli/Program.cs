@@ -27,6 +27,7 @@ using Ngo.Compiler.Symbols;
 using System.Text.Json;
 using System.Collections.Generic;
 using System.Linq;
+using Ngo.Compiler.Archive;
 
 namespace Ngo.Cli;
 

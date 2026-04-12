@@ -69,33 +69,6 @@ namespace Ngo.Compiler.Emit
             }
         }
 
-        private static bool ContainsTypeBuilder(Type type)
-        {
-            if (type is System.Reflection.Emit.TypeBuilder)
-            {
-                return true;
-            }
-            if (type.IsGenericType && !type.IsGenericTypeDefinition)
-            {
-                foreach (var arg in type.GetGenericArguments())
-                {
-                    if (ContainsTypeBuilder(arg))
-                    {
-                        return true;
-                    }
-                }
-            }
-            if (type.IsArray || type.IsByRef || type.IsPointer)
-            {
-                var elementType = type.GetElementType();
-                if (elementType != null)
-                {
-                    return ContainsTypeBuilder(elementType);
-                }
-            }
-            return false;
-        }
-
         private static bool ContainsGenericParameter(Type type)
         {
             if (type.IsGenericParameter)
@@ -136,14 +109,6 @@ namespace Ngo.Compiler.Emit
 
             if (_typeCache.TryGetValue(symbol, out var cached))
             {
-                // Ensure we never return a TypeBuilder that has been CreateType'd.
-                // After CreateType, the TypeBuilder and RuntimeType are different identities
-                // which causes MakeGenericType mismatches.
-                if (cached is System.Reflection.Emit.TypeBuilder cachedTb && cachedTb.IsCreated())
-                {
-                    cached = cachedTb.CreateType()!;
-                    _typeCache[symbol] = cached;
-                }
                 return cached;
             }
 
@@ -162,13 +127,7 @@ namespace Ngo.Compiler.Emit
                     throw new InvalidOperationException(
                         $"TypeMapper: failed to map type '{symbol.Name}' (kind={symbol.TypeKind})");
                 }
-                // Convert baked TypeBuilder to runtime type to avoid
-                // MakeGenericType identity mismatches
-                if (result is System.Reflection.Emit.TypeBuilder resultTb && resultTb.IsCreated())
-                {
-                    result = resultTb.CreateType()!;
-                }
-                if (!ContainsGenericParameter(result) && !ContainsTypeBuilder(result))
+                if (!ContainsGenericParameter(result))
                 {
                     _typeCache[symbol] = result;
                 }
@@ -488,6 +447,8 @@ namespace Ngo.Compiler.Emit
                             }
                         }
 
+                        _emitContext.Definitions.RegisterType(qualifiedName2, structBuilder);
+
                         foreach (var field in anonStruct.Fields)
                         {
                             var fieldType = Map(field.Type);
@@ -496,6 +457,7 @@ namespace Ngo.Compiler.Emit
                                 fieldType,
                                 System.Reflection.FieldAttributes.Public);
                             _emitContext.StructFields[field] = fieldBuilder;
+                            _emitContext.Definitions.RegisterField(qualifiedName2, field.Name, fieldBuilder);
                         }
                         structBuilder.CreateType();
                         return structBuilder.AsType();
@@ -548,16 +510,15 @@ namespace Ngo.Compiler.Emit
                         var ifaceName = !string.IsNullOrEmpty(ifaceType.Name)
                             ? $"I__{ifaceType.Name}"
                             : $"I__anon_{ifaceType.GetHashCode():X8}";
+                        var qualifiedIfaceName = _emitContext.QualifyName(ifaceName);
                         var ifaceBuilder = _emitContext.Module.DefineType(
-                            _emitContext.QualifyName(ifaceName),
+                            qualifiedIfaceName,
                             System.Reflection.TypeAttributes.Public
                             | System.Reflection.TypeAttributes.Interface
                             | System.Reflection.TypeAttributes.Abstract,
                             null!, // interfaces have no base type
                             System.Type.EmptyTypes);
-
-                        // Don't filter interfaces as external — they're dynamically generated
-                        // and only exist in this archive's IL context.
+                        _emitContext.Definitions.RegisterType(qualifiedIfaceName, ifaceBuilder);
 
                         foreach (var method in ifaceType.Methods)
                         {
@@ -567,12 +528,13 @@ namespace Ngo.Compiler.Emit
                                 paramTypes[idx] = Map(method.Parameters[idx].Type);
                             }
                             var returnType = MapReturnType(method.ReturnTypes);
-                            ifaceBuilder.DefineMethod(
+                            var ifaceMethod = ifaceBuilder.DefineMethod(
                                 method.Name,
                                 System.Reflection.MethodAttributes.Public
                                 | System.Reflection.MethodAttributes.Virtual
                                 | System.Reflection.MethodAttributes.Abstract,
                                 returnType, paramTypes);
+                            _emitContext.Definitions.RegisterMethod(qualifiedIfaceName, method.Name, paramTypes, ifaceMethod);
                         }
                         ifaceBuilder.CreateType();
                         return ifaceBuilder.AsType();
@@ -787,14 +749,27 @@ namespace Ngo.Compiler.Emit
                 moduleBuilder = _ngoInlineArrayModule;
             }
 
-            var typeName = $"GoArray_{elementType.FullName?.Replace('.', '_') ?? elementType.Name}_{length}";
+            // Use Name (not FullName) to avoid assembly-qualified names with brackets/commas
+            // that are invalid for DefineType
+            var elemName = elementType.Name.Replace('.', '_');
+            var typeName = $"GoArray_{elemName}_{length}";
 
-            // Check if already defined in this module (can happen with multiple TypeMapper instances)
-            var existingType = moduleBuilder.GetType(typeName);
-            if (existingType != null)
+            // Check if already defined in this module.
+            // PersistedAssemblyBuilder modules don't support GetType(), so use
+            // a try/catch to fall through gracefully.
+            try
             {
-                if (cache != null) cache[key] = existingType;
-                return existingType;
+                var existingType = moduleBuilder.GetType(typeName);
+                if (existingType != null)
+                {
+                    if (cache != null) cache[key] = existingType;
+                    return existingType;
+                }
+            }
+            catch (NotImplementedException)
+            {
+                // PersistedAssemblyBuilder modules don't support GetType.
+                // The cache check above already handles deduplication.
             }
 
             var typeBuilder = moduleBuilder.DefineType(typeName,
@@ -811,23 +786,14 @@ namespace Ngo.Compiler.Emit
             typeBuilder.DefineField("_element0", elementType,
                 System.Reflection.FieldAttributes.Private);
 
-            // When elementType is a TypeBuilder (not yet created), defer CreateType.
-            // The CLR needs the element type's layout to compute InlineArray size.
-            // Don't add to InlineArrayTypes cache — the TypeBuilder key's hash code
-            // will change after CreateType, breaking dictionary lookups.
-            // Track in PendingInlineArrayTypes for later finalization.
-            if (elementType is System.Reflection.Emit.TypeBuilder)
-            {
-                _emitContext?.PendingInlineArrayTypes.Add((typeBuilder, length));
-                return typeBuilder;
-            }
-
-            var created = typeBuilder.CreateType()!;
+            // Don't CreateType here — the element type may not be created yet.
+            // InlineArray types are CreateType'd in the topological sort after their
+            // element types. Return the TypeBuilder; it's valid for DefineField.
             if (cache != null)
             {
-                cache[key] = created;
+                cache[key] = typeBuilder;
             }
-            return created;
+            return typeBuilder;
         }
     }
 }

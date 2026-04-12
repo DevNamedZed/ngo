@@ -111,6 +111,7 @@ namespace Ngo.Compiler.Semantics
                 // Packages with complete C# runtime implementations.
                 // These MUST use C# types to avoid TypeBuilder/runtime type conflicts
                 // when other Go-source packages reference their interfaces.
+                "sort" => true,
                 "io" => true,
                 "io/fs" => true,
                 "fmt" => true,
@@ -125,8 +126,12 @@ namespace Ngo.Compiler.Semantics
                 "net" => true,
                 "iter" => true,
 
+                // Atomic operations — assembly stubs, no pure-Go fallback
+                "sync/atomic" => true,
+
                 // Internal packages WITH assembly that need C# bridges
                 "internal/bytealg" => true,
+                "internal/stringslite" => true,
                 "internal/cpu" => true,
                 "internal/chacha8rand" => true,
                 "internal/reflectlite" => true,
@@ -324,95 +329,86 @@ namespace Ngo.Compiler.Semantics
         {
             if (_isAnalyzingDag || _beingResolved.Contains(importPath))
             {
-                    return null;
+                return null;
             }
 
+            // Discover transitive imports — stores only directory paths, not parsed trees.
+            // Trees are parsed and discarded during discovery; re-parsed when compiling.
+            var pkgDirs = new Dictionary<string, string>();
+            var deps = new Dictionary<string, List<string>>();
+            var cachedArchives = new Dictionary<string, string>();
+            DiscoverDependencies(importPath, pkgDirs, deps, cachedArchives);
+
+            if (!pkgDirs.ContainsKey(importPath) && !cachedArchives.ContainsKey(importPath))
+            {
+                return null;
+            }
+
+            // Topological sort ALL discovered packages (both source and cached)
+            var allPkgs = new HashSet<string>(pkgDirs.Keys);
+            foreach (var k in cachedArchives.Keys)
+            {
+                allPkgs.Add(k);
+            }
+
+            var order = TopologicalSort(allPkgs, deps);
+
+            _beingResolved.Add(importPath);
+            _isAnalyzingDag = true;
             try
             {
-                // Discover transitive imports — stores only directory paths, not parsed trees.
-                // Trees are parsed and discarded during discovery; re-parsed when compiling.
-                var pkgDirs = new Dictionary<string, string>();
-                var deps = new Dictionary<string, List<string>>();
-                var cachedArchives = new Dictionary<string, string>();
-                DiscoverDependencies(importPath, pkgDirs, deps, cachedArchives);
-
-                if (!pkgDirs.ContainsKey(importPath) && !cachedArchives.ContainsKey(importPath))
+                // Process ALL packages in topological order.
+                // Read from .ngo cache if available, compile from source if not.
+                // Cross-package types are fully qualified (import_path:TypeName)
+                // so they resolve unambiguously regardless of load order.
+                foreach (var pkg in order)
                 {
-                    return null;
-                }
-
-                // Topological sort ALL discovered packages (both source and cached)
-                var allPkgs = new HashSet<string>(pkgDirs.Keys);
-                foreach (var k in cachedArchives.Keys)
-                {
-                    allPkgs.Add(k);
-                }
-                var order = TopologicalSort(allPkgs, deps);
-
-                _beingResolved.Add(importPath);
-                _isAnalyzingDag = true;
-                try
-                {
-                    // Process ALL packages in topological order.
-                    // Read from .ngo cache if available, compile from source if not.
-                    // Cross-package types are fully qualified (import_path:TypeName)
-                    // so they resolve unambiguously regardless of load order.
-                    foreach (var pkg in order)
+                    if (_resolvedPackages.ContainsKey(pkg))
                     {
-                        if (_resolvedPackages.ContainsKey(pkg))
-                        {
-                            continue;
-                        }
-                        if (RuntimePackageResolver.Instance.Resolve(pkg) != null
-                            && !PreferGoSource(pkg))
-                        {
-                                continue;
-                        }
-
-                        // Try reading from .ngo cache first
-                        if (cachedArchives.TryGetValue(pkg, out var archivePath))
-                        {
-                            var cachedPkg = NgoArchive.ReadGoMetadata(archivePath, CrossPkgResolver);
-                            if (cachedPkg != null)
-                            {
-                                _resolvedPackages[pkg] = cachedPkg;
-                                continue;
-                            }
-                        }
-
-                        // No cache — compile from source
-                        if (!pkgDirs.TryGetValue(pkg, out var dir))
-                        {
-                            continue;
-                        }
-
-                        var trees = ParseGoFilesInDir(dir);
-                        if (trees.Count == 0)
-                        {
-                            continue;
-                        }
-
-                        _resolvedDirs[pkg] = dir;
-                        AnalyzeAndCachePackage(pkg, trees);
+                        continue;
                     }
-                }
-                finally
-                {
-                    _isAnalyzingDag = false;
-                    _beingResolved.Remove(importPath);
-                }
 
-                _resolvedPackages.TryGetValue(importPath, out var result);
-                return result;
+                    if (RuntimePackageResolver.Instance.Resolve(pkg) != null
+                        && !PreferGoSource(pkg))
+                    {
+                        continue;
+                    }
+
+                    // Try reading from .ngo cache first
+                    if (cachedArchives.TryGetValue(pkg, out var archivePath))
+                    {
+                        var cachedPkg = NgoArchive.ReadGoMetadata(archivePath, CrossPkgResolver);
+                        if (cachedPkg != null)
+                        {
+                            _resolvedPackages[pkg] = cachedPkg;
+                            continue;
+                        }
+                    }
+
+                    // No cache — compile from source
+                    if (!pkgDirs.TryGetValue(pkg, out var dir))
+                    {
+                        continue;
+                    }
+
+                    var trees = ParseGoFilesInDir(dir);
+                    if (trees.Count == 0)
+                    {
+                        continue;
+                    }
+
+                    _resolvedDirs[pkg] = dir;
+                    AnalyzeAndCachePackage(pkg, trees);
+                }
             }
-            catch (OutOfMemoryException ex)
+            finally
             {
                 _isAnalyzingDag = false;
                 _beingResolved.Remove(importPath);
-                _ctx.Log.Error($"out of memory resolving '{importPath}': {ex.Message}");
-                GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
-                return null;
             }
+
+            _resolvedPackages.TryGetValue(importPath, out var result);
+            return result;
         }
 
         private void DiscoverDependencies(

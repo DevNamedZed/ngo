@@ -77,6 +77,10 @@ namespace Ngo.Compiler.Archive
         /// </summary>
         public static string GetCacheDir(string projectRoot)
         {
+            // projectRoot is accepted for API compatibility but the cache is intentionally
+            // global (per-user) so compiled packages are shared across projects.
+            // If a project-local cache is ever needed, derive it from projectRoot here.
+            _ = projectRoot;
             var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             return Path.Combine(home, ".ngo", "cache", "pkg");
         }
@@ -134,25 +138,18 @@ namespace Ngo.Compiler.Archive
                 return null;
             }
 
-            try
-            {
-                using var stream = new FileStream(path, FileMode.Open, FileAccess.Read);
-                using var zip = new ZipArchive(stream, ZipArchiveMode.Read);
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read);
+            using var zip = new ZipArchive(stream, ZipArchiveMode.Read);
 
-                var entry = zip.GetEntry(GoMetadataEntry);
-                if (entry == null)
-                {
-                    return null;
-                }
-
-                using var entryStream = entry.Open();
-                using var reader = new BinaryReader(entryStream);
-                return ReadGoMetadataSection(reader, crossPkgResolver);
-            }
-            catch
+            var entry = zip.GetEntry(GoMetadataEntry);
+            if (entry == null)
             {
                 return null;
             }
+
+            using var entryStream = entry.Open();
+            using var reader = new BinaryReader(entryStream);
+            return ReadGoMetadataSection(reader, crossPkgResolver);
         }
 
         /// <summary>
@@ -166,40 +163,33 @@ namespace Ngo.Compiler.Archive
                 return (null, null);
             }
 
-            try
-            {
-                using var stream = new FileStream(path, FileMode.Open, FileAccess.Read);
-                using var zip = new ZipArchive(stream, ZipArchiveMode.Read);
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read);
+            using var zip = new ZipArchive(stream, ZipArchiveMode.Read);
 
-                var metaEntry = zip.GetEntry(ILMetadataEntry);
-                var codeEntry = zip.GetEntry(ILCodeEntry);
-                if (metaEntry == null || codeEntry == null)
-                {
-                    return (null, null);
-                }
-
-                byte[] ilMeta;
-                using (var entryStream = metaEntry.Open())
-                using (var memStream = new MemoryStream())
-                {
-                    entryStream.CopyTo(memStream);
-                    ilMeta = memStream.ToArray();
-                }
-
-                byte[] ilCode;
-                using (var entryStream = codeEntry.Open())
-                using (var memStream = new MemoryStream())
-                {
-                    entryStream.CopyTo(memStream);
-                    ilCode = memStream.ToArray();
-                }
-
-                return (ilMeta, ilCode);
-            }
-            catch
+            var metaEntry = zip.GetEntry(ILMetadataEntry);
+            var codeEntry = zip.GetEntry(ILCodeEntry);
+            if (metaEntry == null || codeEntry == null)
             {
                 return (null, null);
             }
+
+            byte[] ilMeta;
+            using (var entryStream = metaEntry.Open())
+            using (var memStream = new MemoryStream())
+            {
+                entryStream.CopyTo(memStream);
+                ilMeta = memStream.ToArray();
+            }
+
+            byte[] ilCode;
+            using (var entryStream = codeEntry.Open())
+            using (var memStream = new MemoryStream())
+            {
+                entryStream.CopyTo(memStream);
+                ilCode = memStream.ToArray();
+            }
+
+            return (ilMeta, ilCode);
         }
 
         /// <summary>
@@ -213,31 +203,51 @@ namespace Ngo.Compiler.Archive
                 return;
             }
 
-            using var stream = new FileStream(path, FileMode.Open, FileAccess.ReadWrite);
-            using var zip = new ZipArchive(stream, ZipArchiveMode.Update);
-
-            // Add the static library
-            var libFileName = Path.GetFileName(nativeLibraryPath);
-            var libEntry = zip.CreateEntry(NativeDir + libFileName, CompressionLevel.Fastest);
-            using (var entryStream = libEntry.Open())
+            // Write to a temp file first, then atomically replace the target.
+            // This avoids leaving the archive in a corrupt state if serialization fails mid-write.
+            var tempPath = path + ".tmp";
+            try
             {
-                var libBytes = File.ReadAllBytes(nativeLibraryPath);
-                entryStream.Write(libBytes, 0, libBytes.Length);
-            }
+                File.Copy(path, tempPath, overwrite: true);
 
-            // Add probe results as JSON
-            if (probeResult != null)
-            {
-                var probeEntry = zip.CreateEntry(ProbeEntry, CompressionLevel.Fastest);
-                using var entryStream = probeEntry.Open();
-                using var writer = new StreamWriter(entryStream);
-                var probeData = new Dictionary<string, object>
+                using (var stream = new FileStream(tempPath, FileMode.Open, FileAccess.ReadWrite))
+                using (var zip = new ZipArchive(stream, ZipArchiveMode.Update))
                 {
-                    ["typeSizes"] = probeResult.TypeSizes,
-                    ["enumValues"] = probeResult.EnumValues,
-                };
-                writer.Write(System.Text.Json.JsonSerializer.Serialize(probeData,
-                    new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+                    // Add the static library
+                    var libFileName = Path.GetFileName(nativeLibraryPath);
+                    var libEntry = zip.CreateEntry(NativeDir + libFileName, CompressionLevel.Fastest);
+                    using (var entryStream = libEntry.Open())
+                    {
+                        var libBytes = File.ReadAllBytes(nativeLibraryPath);
+                        entryStream.Write(libBytes, 0, libBytes.Length);
+                    }
+
+                    // Add probe results as JSON
+                    if (probeResult != null)
+                    {
+                        var probeEntry = zip.CreateEntry(ProbeEntry, CompressionLevel.Fastest);
+                        using var entryStream = probeEntry.Open();
+                        using var writer = new StreamWriter(entryStream);
+                        var probeData = new Dictionary<string, object>
+                        {
+                            ["typeSizes"] = probeResult.TypeSizes,
+                            ["enumValues"] = probeResult.EnumValues,
+                        };
+                        writer.Write(System.Text.Json.JsonSerializer.Serialize(probeData,
+                            new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+                    }
+                }
+
+                File.Move(tempPath, path, overwrite: true);
+            }
+            catch
+            {
+                // Clean up the temp file if anything went wrong; original archive is untouched.
+                if (File.Exists(tempPath))
+                {
+                    File.Delete(tempPath);
+                }
+                throw;
             }
         }
 
@@ -252,31 +262,22 @@ namespace Ngo.Compiler.Archive
                 return null;
             }
 
-            try
-            {
-                using var stream = new FileStream(archivePath, FileMode.Open, FileAccess.Read);
-                using var zip = new ZipArchive(stream, ZipArchiveMode.Read);
+            using var stream = new FileStream(archivePath, FileMode.Open, FileAccess.Read);
+            using var zip = new ZipArchive(stream, ZipArchiveMode.Read);
 
-                foreach (var entry in zip.Entries)
-                {
-                    if (entry.FullName.StartsWith(NativeDir) && entry.FullName.EndsWith(".a"))
-                    {
-                        // Extract to temp directory
-                        var tempDir = Path.Combine(Path.GetTempPath(), "ngo", "native",
-                            Path.GetFileNameWithoutExtension(archivePath));
-                        Directory.CreateDirectory(tempDir);
-                        var extractPath = Path.Combine(tempDir, entry.Name);
-                        if (!File.Exists(extractPath))
-                        {
-                            entry.ExtractToFile(extractPath);
-                        }
-                        return extractPath;
-                    }
-                }
-            }
-            catch
+            foreach (var entry in zip.Entries)
             {
-                // Archive corrupt or unreadable
+                if (entry.FullName.StartsWith(NativeDir) && entry.FullName.EndsWith(".a"))
+                {
+                    var tempDir = Path.Combine(Path.GetTempPath(), "ngo", "native",
+                        Path.GetFileNameWithoutExtension(archivePath));
+                    Directory.CreateDirectory(tempDir);
+                    var extractPath = Path.Combine(tempDir, entry.Name);
+                    // Always overwrite: a stale cached library would be used silently otherwise,
+                    // e.g. after a recompile that produces a new .a with the same filename.
+                    entry.ExtractToFile(extractPath, overwrite: true);
+                    return extractPath;
+                }
             }
 
             return null;

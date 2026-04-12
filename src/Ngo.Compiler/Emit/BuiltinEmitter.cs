@@ -393,7 +393,7 @@ namespace Ngo.Compiler.Emit
                 case "NewReader":
                     _body.EmitExpression(call.Arguments[0]);
                     _ctx.IL.Emit(OpCodes.Newobj,
-                        typeof(Ngo.Runtime.Io.StringReader).GetConstructor(new[] { typeof(string) })!);
+                        typeof(Ngo.Runtime.Strings.Reader).GetConstructor(new[] { typeof(string) })!);
                     return true;
                 case "NewReplacer":
                     EmitVariadicStringArray(call, 0);
@@ -448,6 +448,11 @@ namespace Ngo.Compiler.Emit
                 _ctx.IL.Emit(OpCodes.Dup);
                 _ctx.IL.Emit(OpCodes.Ldc_I4, i);
                 _body.EmitExpression(call.Arguments[startIndex + i]);
+                var argClrType = _ctx.Mapper.Map(call.Arguments[startIndex + i].Type);
+                if (argClrType.IsValueType)
+                {
+                    _ctx.IL.Emit(OpCodes.Box, argClrType);
+                }
                 _ctx.IL.Emit(OpCodes.Castclass, ifaceType);
                 _ctx.IL.Emit(OpCodes.Stelem_Ref);
             }
@@ -570,7 +575,7 @@ namespace Ngo.Compiler.Emit
                     if (innerType.IsValueType)
                     {
                         var ptrType = typeof(Ptr<>).MakeGenericType(innerType);
-                        var ctor = EmitContext.GetConstructorSafe(ptrType, new[] { innerType });
+                        var ctor = _ctx.Definitions.GetConstructor(ptrType, new[] { innerType });
                         var ptrLocal = _ctx.IL.DeclareLocal(ptrType);
 
                         _body.EmitExpression(addrArg.Operand);
@@ -626,7 +631,21 @@ namespace Ngo.Compiler.Emit
                 for (int i = 0; i < call.Arguments.Count; i++)
                 {
                     EmitArgWithWriteback(call.Arguments[i], methodParams[i].ParameterType);
-                    EmitImplicitConv(paramTypes[i], methodParams[i].ParameterType);
+                    // Interface parameter: generate wrapper if source is a value type
+                    if (methodParams[i].ParameterType.IsInterface
+                        && paramTypes[i].IsValueType
+                        && i < call.Function.Parameters.Count
+                        && call.Function.Parameters[i].Type is InterfaceTypeSymbol)
+                    {
+                        _body.EmitInterfaceWrapIfNeeded(
+                            call.Arguments[i].Type,
+                            call.Function.Parameters[i].Type,
+                            methodParams[i].ParameterType);
+                    }
+                    else
+                    {
+                        EmitImplicitConv(paramTypes[i], methodParams[i].ParameterType);
+                    }
                 }
             }
 
@@ -636,7 +655,7 @@ namespace Ngo.Compiler.Emit
             foreach (var (symbol, ptrLocal, innerType) in writebacks)
             {
                 var ptrType = typeof(Ptr<>).MakeGenericType(innerType);
-                var valueField = EmitContext.GetFieldSafe(ptrType, "Value");
+                var valueField = _ctx.Definitions.GetField(ptrType, "Value");
                 _ctx.IL.Emit(OpCodes.Ldloc, ptrLocal);
                 _ctx.IL.Emit(OpCodes.Ldfld, valueField);
                 _body.EmitStore(symbol);
@@ -649,15 +668,23 @@ namespace Ngo.Compiler.Emit
         {
             if (source == target) return;
             if (target == typeof(object) && source.IsValueType)
+            {
                 _ctx.IL.Emit(OpCodes.Box, source);
-            else if (target == typeof(byte)) _ctx.IL.Emit(OpCodes.Conv_U1);
-            else if (target == typeof(short)) _ctx.IL.Emit(OpCodes.Conv_I2);
-            else if (target == typeof(int)) _ctx.IL.Emit(OpCodes.Conv_I4);
-            else if (target == typeof(long)) _ctx.IL.Emit(OpCodes.Conv_I8);
-            else if (target == typeof(float)) _ctx.IL.Emit(OpCodes.Conv_R4);
-            else if (target == typeof(double)) _ctx.IL.Emit(OpCodes.Conv_R8);
+            }
+            else if (source.IsValueType && target.IsInterface)
+            {
+                _ctx.IL.Emit(OpCodes.Box, source);
+            }
+            else if (target == typeof(byte)) { _ctx.IL.Emit(OpCodes.Conv_U1); }
+            else if (target == typeof(short)) { _ctx.IL.Emit(OpCodes.Conv_I2); }
+            else if (target == typeof(int)) { _ctx.IL.Emit(OpCodes.Conv_I4); }
+            else if (target == typeof(long)) { _ctx.IL.Emit(OpCodes.Conv_I8); }
+            else if (target == typeof(float)) { _ctx.IL.Emit(OpCodes.Conv_R4); }
+            else if (target == typeof(double)) { _ctx.IL.Emit(OpCodes.Conv_R8); }
             else if (target.IsInterface && !target.IsAssignableFrom(source))
+            {
                 _ctx.IL.Emit(OpCodes.Castclass, target);
+            }
         }
 
         // --- True builtins ---
@@ -699,7 +726,7 @@ namespace Ngo.Compiler.Emit
             {
                 var sliceClrType = _ctx.Mapper.Map(resolvedArgType is SliceTypeSymbol ? resolvedArgType : argType);
                 _body.EmitExpressionAddress(arg, sliceClrType);
-                var lenGetter = EmitContext.GetPropertyGetterSafe(sliceClrType, "Len");
+                var lenGetter = _ctx.Definitions.GetPropertyGetter(sliceClrType, "Len");
                 _ctx.IL.Emit(OpCodes.Call, lenGetter);
                 _ctx.IL.Emit(OpCodes.Conv_I8);
                 return true;
@@ -709,7 +736,7 @@ namespace Ngo.Compiler.Emit
             {
                 _body.EmitExpression(arg);
                 var mapClrType = _ctx.Mapper.Map(resolvedArgType is MapTypeSymbol ? resolvedArgType : argType);
-                var lenGetter = EmitContext.GetPropertyGetterSafe(mapClrType, "Len");
+                var lenGetter = _ctx.Definitions.GetPropertyGetter(mapClrType, "Len");
                 _ctx.IL.Emit(OpCodes.Call, lenGetter);
                 _ctx.IL.Emit(OpCodes.Conv_I8);
                 return true;
@@ -767,7 +794,7 @@ namespace Ngo.Compiler.Emit
             {
                 var sliceClrType = _ctx.Mapper.Map(resolvedArgType is SliceTypeSymbol ? resolvedArgType : argType);
                 _body.EmitExpressionAddress(arg, sliceClrType);
-                var capGetter = EmitContext.GetPropertyGetterSafe(sliceClrType, "Cap");
+                var capGetter = _ctx.Definitions.GetPropertyGetter(sliceClrType, "Cap");
                 _ctx.IL.Emit(OpCodes.Call, capGetter);
                 _ctx.IL.Emit(OpCodes.Conv_I8);
                 return true;
@@ -777,7 +804,7 @@ namespace Ngo.Compiler.Emit
             {
                 _body.EmitExpression(arg);
                 var chanClrType = _ctx.Mapper.Map(argType);
-                var capGetter = EmitContext.GetPropertyGetterSafe(chanClrType, "Capacity");
+                var capGetter = _ctx.Definitions.GetPropertyGetter(chanClrType, "Capacity");
                 _ctx.IL.Emit(OpCodes.Call, capGetter);
                 _ctx.IL.Emit(OpCodes.Conv_I8);
                 return true;
@@ -837,7 +864,7 @@ namespace Ngo.Compiler.Emit
                     var toBytesMethod = typeof(GoString).GetMethod("ToBytes", new[] { typeof(string) })!;
                     _ctx.IL.Emit(OpCodes.Call, toBytesMethod);
                 }
-                var appendSliceMethod = EmitContext.GetMethodSafe(appendSliceType, "Append", new[] { sliceClrType, sliceClrType });
+                var appendSliceMethod = _ctx.Definitions.GetMethod(appendSliceType, "Append", new[] { sliceClrType, sliceClrType });
                 _ctx.IL.Emit(OpCodes.Call, appendSliceMethod);
                 return true;
             }
@@ -869,7 +896,7 @@ namespace Ngo.Compiler.Emit
                 _body.EmitStelem(elemClrType);
             }
 
-            var appendMethod = EmitContext.GetMethodSafe(appendSliceType, "Append", new[] { sliceClrType, elemClrType.MakeArrayType() });
+            var appendMethod = _ctx.Definitions.GetMethod(appendSliceType, "Append", new[] { sliceClrType, elemClrType.MakeArrayType() });
             _ctx.IL.Emit(OpCodes.Call, appendMethod);
             return true;
         }
@@ -907,7 +934,7 @@ namespace Ngo.Compiler.Emit
                     _ctx.IL.Emit(OpCodes.Ldc_I4_M1);
                 }
 
-                var makeMethod = EmitContext.GetMethodSafe(sliceClrType, "Make", new[] { typeof(int), typeof(int) });
+                var makeMethod = _ctx.Definitions.GetMethod(sliceClrType, "Make", new[] { typeof(int), typeof(int) });
                 _ctx.IL.Emit(OpCodes.Call, makeMethod);
                 return true;
             }
@@ -915,7 +942,7 @@ namespace Ngo.Compiler.Emit
             if (returnType is MapTypeSymbol mapType)
             {
                 var mapClrType = _ctx.Mapper.Map(mapType);
-                var ctor = EmitContext.GetConstructorSafe(mapClrType, Type.EmptyTypes);
+                var ctor = _ctx.Definitions.GetConstructor(mapClrType, Type.EmptyTypes);
                 _ctx.IL.Emit(OpCodes.Newobj, ctor);
                 return true;
             }
@@ -928,12 +955,12 @@ namespace Ngo.Compiler.Emit
                 {
                     _body.EmitExpression(call.Arguments[0]);
                     _ctx.IL.Emit(OpCodes.Conv_I4);
-                    var ctor = EmitContext.GetConstructorSafe(chanClrType, new[] { typeof(int) });
+                    var ctor = _ctx.Definitions.GetConstructor(chanClrType, new[] { typeof(int) });
                     _ctx.IL.Emit(OpCodes.Newobj, ctor);
                 }
                 else
                 {
-                    var ctor = EmitContext.GetConstructorSafe(chanClrType, Type.EmptyTypes);
+                    var ctor = _ctx.Definitions.GetConstructor(chanClrType, Type.EmptyTypes);
                     _ctx.IL.Emit(OpCodes.Newobj, ctor);
                 }
 
@@ -948,7 +975,7 @@ namespace Ngo.Compiler.Emit
             _body.EmitExpression(call.Arguments[0]);
             _body.EmitExpression(call.Arguments[1]);
             var mapClrType = _ctx.Mapper.Map(call.Arguments[0].Type);
-            var deleteMethod = EmitContext.GetMethodSafe(mapClrType, "Delete");
+            var deleteMethod = _ctx.Definitions.GetMethod(mapClrType, "Delete");
             _ctx.IL.Emit(OpCodes.Call, deleteMethod);
             return true;
         }
@@ -1100,7 +1127,7 @@ namespace Ngo.Compiler.Emit
             _body.EmitExpression(call.Arguments[1]);
 
             var copySliceType = typeof(Slice<>).MakeGenericType(elemClrType);
-            var copyMethod2 = EmitContext.GetMethodSafe(copySliceType, "Copy", new[] { sliceClrType, sliceClrType });
+            var copyMethod2 = _ctx.Definitions.GetMethod(copySliceType, "Copy", new[] { sliceClrType, sliceClrType });
             _ctx.IL.Emit(OpCodes.Call, copyMethod2);
             _ctx.IL.Emit(OpCodes.Conv_I8);
             return true;
@@ -1115,7 +1142,7 @@ namespace Ngo.Compiler.Emit
         {
             _body.EmitExpression(call.Arguments[0]);
             var chanClrType = _ctx.Mapper.Map(call.Arguments[0].Type);
-            var closeMethod = EmitContext.GetMethodSafe(chanClrType, "Close");
+            var closeMethod = _ctx.Definitions.GetMethod(chanClrType, "Close");
             _ctx.IL.Emit(OpCodes.Call, closeMethod);
             return true;
         }
@@ -1165,8 +1192,13 @@ namespace Ngo.Compiler.Emit
                 else
                 {
                     var ptrClrType = typeof(Ptr<>).MakeGenericType(elemClrType);
-                    var ctor = EmitContext.GetConstructorSafe(ptrClrType, Type.EmptyTypes);
+                    var ctor = _ctx.Definitions.GetConstructor(ptrClrType, Type.EmptyTypes);
                     _ctx.IL.Emit(OpCodes.Newobj, ctor);
+                    if (!EmitContext.IsNonRuntimeType(elemClrType)
+                        && !EmitContext.HasTypeBuilderArgs(elemClrType))
+                    {
+                        EmitReferenceFieldInitialization(ptrClrType, elemClrType);
+                    }
                 }
             }
             else if (call.Arguments.Count > 0)
@@ -1283,7 +1315,7 @@ namespace Ngo.Compiler.Emit
             {
                 _body.EmitExpression(arg);
                 var mapClrType = _ctx.Mapper.Map(argType);
-                var clearMethod = EmitContext.GetMethodSafe(mapClrType, "Clear");
+                var clearMethod = _ctx.Definitions.GetMethod(mapClrType, "Clear");
                 if (clearMethod != null)
                 {
                     _ctx.IL.Emit(OpCodes.Call, clearMethod);
@@ -1310,13 +1342,13 @@ namespace Ngo.Compiler.Emit
                 _ctx.IL.MarkLabel(loopStart);
                 _ctx.IL.Emit(OpCodes.Ldloc, indexLocal);
                 _ctx.IL.Emit(OpCodes.Ldloca, sliceLocal);
-                _ctx.IL.Emit(OpCodes.Call, EmitContext.GetPropertyGetterSafe(sliceClrType, "Len"));
+                _ctx.IL.Emit(OpCodes.Call, _ctx.Definitions.GetPropertyGetter(sliceClrType, "Len"));
                 _ctx.IL.Emit(OpCodes.Bge, loopEnd);
 
                 _ctx.IL.Emit(OpCodes.Ldloca, sliceLocal);
                 _ctx.IL.Emit(OpCodes.Ldloc, indexLocal);
                 _ctx.IL.Emit(OpCodes.Conv_I8);
-                var indexerGetter = EmitContext.GetPropertyGetterSafe(sliceClrType, "Item");
+                var indexerGetter = _ctx.Definitions.GetPropertyGetter(sliceClrType, "Item");
                 _ctx.IL.Emit(OpCodes.Call, indexerGetter);
                 _ctx.IL.Emit(OpCodes.Initobj, elemClrType);
 
@@ -1428,6 +1460,44 @@ namespace Ngo.Compiler.Emit
                 _body.EmitExpression(call.Arguments[i]);
                 _body.EmitBoxIfNeeded(call.Arguments[i].Type);
                 _ctx.IL.Emit(OpCodes.Stelem_Ref);
+            }
+        }
+
+        /// <summary>
+        /// After creating a Ptr&lt;T&gt; for a value type T via new(T), initializes
+        /// any reference-type fields that need non-null zero values. Go structs
+        /// mapped to C# classes (e.g. sync.Mutex, sync.Pool) default to null in
+        /// a CLR value type but should be initialized to new T() for correct Go semantics.
+        /// Expects the Ptr&lt;T&gt; on top of the stack and leaves it there.
+        /// </summary>
+        private void EmitReferenceFieldInitialization(Type ptrClrType, Type elemClrType)
+        {
+            var fields = elemClrType.GetFields(
+                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+
+            var valueField = _ctx.Definitions.GetField(ptrClrType, "Value");
+
+            foreach (var field in fields)
+            {
+                var fieldType = field.FieldType;
+                if (fieldType.IsValueType || fieldType == typeof(string)
+                    || fieldType == typeof(object) || fieldType.IsInterface
+                    || fieldType.IsAbstract || fieldType.IsArray)
+                {
+                    continue;
+                }
+
+                var defaultCtor = fieldType.GetConstructor(Type.EmptyTypes);
+                if (defaultCtor == null)
+                {
+                    continue;
+                }
+
+                // Stack: Ptr<T>
+                _ctx.IL.Emit(OpCodes.Dup);
+                _ctx.IL.Emit(OpCodes.Ldflda, valueField);
+                _ctx.IL.Emit(OpCodes.Newobj, defaultCtor);
+                _ctx.IL.Emit(OpCodes.Stfld, field);
             }
         }
     }

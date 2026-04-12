@@ -27,5 +27,6 @@ namespace Ngo.Compiler.Emit
 
         public bool IsLibrary { get; init; }
         public string? Namespace { get; init; }
+        public System.Collections.Generic.HashSet<string>? TracedMethodNames { get; init; }
     }
 }
