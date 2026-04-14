@@ -44,6 +44,18 @@ namespace Ngo.Compiler.Semantics
         /// File-level go:linkname directives: localName → target (e.g., "runtime.nanotime1")
         /// </summary>
         public Dictionary<string, string>? FileLinknames { get; set; }
+
+        /// <summary>
+        /// Maps each <see cref="SourceFileSyntax"/> to the absolute path of
+        /// the file it was parsed from. Populated by
+        /// <see cref="SemanticAnalyzer.Analyze(IReadOnlyList{SyntaxTree}, CompilationContext, bool)"/>
+        /// from each <c>SyntaxTree.SourcePath</c>. Used by cgo preamble
+        /// extraction to compute the package directory so the probe
+        /// compiler receives <c>-I &lt;dir&gt;</c> and can resolve headers
+        /// referenced as <c>#include "foo.h"</c>. Files without a known
+        /// on-disk path (synthetic test inputs) map to the empty string.
+        /// </summary>
+        public Dictionary<SourceFileSyntax, string> SourcePaths { get; } = new();
         public Dictionary<string, int> PendingConstStringLens { get; } = new();
         public Dictionary<string, int> PendingVarArrayLens { get; } = new();
 

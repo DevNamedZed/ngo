@@ -63,6 +63,9 @@ namespace Ngo.Compiler
         CannotInferTypeArguments,
         ConstraintNotSatisfied,
         WrongTypeArgumentCount,
+        CgoCompilerNotFound,
+        CgoDisabled,
+        CgoProbeFailed,
     }
 
     public sealed class CompileError

@@ -118,9 +118,9 @@ namespace Ngo.Compiler.Cgo
 
         private static void EmitUserFunctionStubs(EmitContext context, CompilationContext compilation)
         {
-            var functions = compilation.CgoFunctions;
+            var catalog = compilation.CgoCatalog;
             var cgoPackage = compilation.CgoPackage;
-            if (functions == null || functions.Count == 0 || cgoPackage == null)
+            if (catalog == null || catalog.Functions.Count == 0 || cgoPackage == null)
             {
                 return;
             }
@@ -128,44 +128,37 @@ namespace Ngo.Compiler.Cgo
             var probeResult = compilation.CgoResult?.ProbeResult ?? new CgoProbeResult();
             var marshaller = new MarshallingStubGenerator(probeResult);
 
-            // Create a P/Invoke class for user C functions
             var pinvokeType = context.Module.DefineType(
                 "Cgo_PInvoke",
                 TypeAttributes.Public | TypeAttributes.Abstract | TypeAttributes.Sealed);
 
-            foreach (var func in functions)
+            foreach (CgoFunctionInfo function in catalog.Functions.Values)
             {
-                var stub = marshaller.GenerateFunctionStub(func, "ngo_native");
+                PInvokeStub stub = marshaller.GenerateFunctionStub(function, "ngo_native");
 
-                // Map C types to .NET types for the P/Invoke signature
-                var returnType = MapToClrType(stub.ReturnType);
-                var paramTypes = new Type[stub.Parameters.Count];
-                for (int i = 0; i < stub.Parameters.Count; i++)
+                Type returnType = MapToClrType(stub.ReturnType);
+                Type[] parameterTypes = new Type[stub.Parameters.Count];
+                for (int parameterIndex = 0; parameterIndex < stub.Parameters.Count; parameterIndex++)
                 {
-                    paramTypes[i] = MapToClrType(stub.Parameters[i].Type);
+                    parameterTypes[parameterIndex] = MapToClrType(stub.Parameters[parameterIndex].Type);
                 }
 
-                // All static libs are linked into a single shared library at build time.
-                // The unified library name is always "ngo_native".
-                string libraryName = "ngo_native";
-
-                // Create real P/Invoke method via DefinePInvokeMethod
+                const string libraryName = "ngo_native";
                 var pinvokeMethod = pinvokeType.DefinePInvokeMethod(
-                    func.Name,
+                    function.Name,
                     libraryName,
-                    func.Name,
+                    function.Name,
                     MethodAttributes.Public | MethodAttributes.Static | MethodAttributes.PinvokeImpl,
                     CallingConventions.Standard,
                     returnType,
-                    paramTypes,
+                    parameterTypes,
                     System.Runtime.InteropServices.CallingConvention.Cdecl,
                     System.Runtime.InteropServices.CharSet.Ansi);
 
-                // Register in EmitContext so MethodBodyEmitter can find it
-                var funcSymbol = cgoPackage.LookupExport(func.Name);
-                if (funcSymbol != null)
+                var functionSymbol = cgoPackage.LookupExport(function.Name);
+                if (functionSymbol != null)
                 {
-                    context.CachedMethods[funcSymbol] = pinvokeMethod;
+                    context.CachedMethods[functionSymbol] = pinvokeMethod;
                 }
             }
 
@@ -188,14 +181,14 @@ namespace Ngo.Compiler.Cgo
         }
 
         /// <summary>
-        /// Emit .NET struct types with [StructLayout(Explicit)] for C structs defined in the preamble.
+        /// Emit .NET struct types with sequential layout for C structs in the catalog.
         /// Each C struct becomes a .NET value type with exact field offsets from the probe.
         /// </summary>
         private static void EmitCgoStructTypes(EmitContext context, CompilationContext compilation)
         {
-            var structs = compilation.CgoStructs;
+            var catalog = compilation.CgoCatalog;
             var cgoPackage = compilation.CgoPackage;
-            if (structs == null || structs.Count == 0 || cgoPackage == null)
+            if (catalog == null || catalog.StructsAndUnions.Count == 0 || cgoPackage == null)
             {
                 return;
             }
@@ -203,17 +196,15 @@ namespace Ngo.Compiler.Cgo
             var probeResult = compilation.CgoResult?.ProbeResult ?? new CgoProbeResult();
             var marshaller = new MarshallingStubGenerator(probeResult);
 
-            foreach (var structInfo in structs)
+            foreach (CgoStructInfo structInfo in catalog.StructsAndUnions.Values)
             {
                 var layout = marshaller.GenerateStructLayout(structInfo);
 
-                // Define the struct type with sequential layout matching C
                 var structType = context.Module.DefineType(
                     layout.NetTypeName,
                     TypeAttributes.Public | TypeAttributes.SequentialLayout | TypeAttributes.Sealed,
                     typeof(System.ValueType));
 
-                // Add fields in order
                 foreach (var field in layout.Fields)
                 {
                     var fieldType = MapToClrType(field.Type);
@@ -223,16 +214,13 @@ namespace Ngo.Compiler.Cgo
                         FieldAttributes.Public);
                 }
 
-                // Register in StructTypes — CreateType() is called during EmitPackage finalization
-                var goStructSym = cgoPackage.LookupExport("struct_" + structInfo.CName)
-                    ?? cgoPackage.LookupExport(structInfo.GoName);
-                if (goStructSym is Symbols.StructTypeSymbol sts)
+                var goStructSym = cgoPackage.LookupExport(structInfo.GoName);
+                if (goStructSym is StructTypeSymbol sts)
                 {
                     context.StructTypes[sts] = structType;
                 }
                 else
                 {
-                    // No matching symbol — finalize immediately
                     structType.CreateType();
                 }
             }
@@ -248,8 +236,8 @@ namespace Ngo.Compiler.Cgo
         /// </summary>
         private static void EmitNativeLibraryResolver(EmitContext context, CompilationContext compilation)
         {
-            var functions = compilation.CgoFunctions;
-            if (functions == null || functions.Count == 0)
+            var catalog = compilation.CgoCatalog;
+            if (catalog == null || catalog.Functions.Count == 0)
             {
                 return;
             }

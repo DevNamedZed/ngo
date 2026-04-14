@@ -24,10 +24,15 @@ namespace Ngo.Compiler.Language
 {
     public sealed class SyntaxTree
     {
-        private SyntaxTree(SourceFileSyntax root, string sourceText, IReadOnlyList<CompileError> errors)
+        private SyntaxTree(
+            SourceFileSyntax root,
+            string sourceText,
+            string sourcePath,
+            IReadOnlyList<CompileError> errors)
         {
             Root = root;
             SourceText = sourceText;
+            SourcePath = sourcePath;
             Errors = errors;
         }
 
@@ -35,15 +40,31 @@ namespace Ngo.Compiler.Language
 
         public string SourceText { get; }
 
+        /// <summary>
+        /// Absolute path of the file this tree was parsed from, or the
+        /// empty string when the tree was built from an in-memory source
+        /// with no on-disk location (e.g. synthetic test inputs). Callers
+        /// that need the source directory — notably
+        /// <see cref="Ngo.Compiler.Cgo.CgoPreambleExtractor"/> for the
+        /// probe's <c>-I</c> argument — must populate this through the
+        /// two-argument <see cref="Parse(string, string)"/> overload.
+        /// </summary>
+        public string SourcePath { get; }
+
         public IReadOnlyList<CompileError> Errors { get; }
 
         public bool HasErrors => Errors.Any(e => e.Severity == ErrorSeverity.Error);
 
         public static SyntaxTree Parse(string sourceText)
         {
+            return Parse(sourceText, string.Empty);
+        }
+
+        public static SyntaxTree Parse(string sourceText, string sourcePath)
+        {
             var parser = new Parser(sourceText);
             var root = parser.ParseSourceFile();
-            return new SyntaxTree(root, sourceText, parser.Errors);
+            return new SyntaxTree(root, sourceText, sourcePath, parser.Errors);
         }
     }
 }

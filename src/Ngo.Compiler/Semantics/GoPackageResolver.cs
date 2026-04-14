@@ -648,7 +648,7 @@ namespace Ngo.Compiler.Semantics
                 try
                 {
                     var source = File.ReadAllText(file);
-                    trees.Add(SyntaxTree.Parse(source));
+                    trees.Add(SyntaxTree.Parse(source, file));
                 }
                 catch
                 {
@@ -1107,25 +1107,26 @@ namespace Ngo.Compiler.Semantics
                 return !EvalBuildTerm(term.Substring(1));
             }
 
-            // Active tags: our target platform and compiler features
             if (term is "linux" or "amd64" or "unix")
             {
                 return true;
             }
 
-            // gc is the standard Go compiler toolchain tag
             if (term is "gc")
             {
                 return true;
             }
 
-            // Go version constraints: go1.X is active if X <= our target version
+            if (term is "cgo")
+            {
+                return true;
+            }
+
             if (term.StartsWith("go1.") && int.TryParse(term.AsSpan(4), out int version))
             {
                 return version <= _targetGoVersion;
             }
 
-            // Everything else (other OS/arch, cgo, gccgo, etc.) is not active
             return false;
         }
 

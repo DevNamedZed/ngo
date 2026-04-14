@@ -663,7 +663,7 @@ static class Analyzer
             if (HasPlatformBuildTag(source))
                 continue;
 
-            trees.Add(SyntaxTree.Parse(source));
+            trees.Add(SyntaxTree.Parse(source, file));
         }
 
         if (trees.Count == 0)
@@ -853,11 +853,11 @@ static class Analyzer
             active = true;
         else if (name is "gc")
             active = true;
+        else if (name is "cgo")
+            active = true;
         else if (name.StartsWith("go1.") && int.TryParse(name.AsSpan(4), out int ver))
             active = ver <= Ngo.Compiler.Semantics.CompilationContext.LatestGoVersion;
         else
-            // Unknown build tags default to false — in Go, only tags matching
-            // GOOS, GOARCH, CGO_ENABLED, and explicit -tags flags are active.
             active = false;
 
         return negated ? !active : active;

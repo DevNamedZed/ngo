@@ -17,7 +17,7 @@ namespace Ngo.Compiler.Cgo
         /// </summary>
         public static void SaveCgoMetadata(string ngoArchivePath, CgoCompilationResult result)
         {
-            if (result == null || !result.Success || result.NativeLibraryPath == null)
+            if (result == null || result.NativeLibraryPath == null)
             {
                 return;
             }

@@ -844,6 +844,10 @@ namespace Ngo.Compiler.Semantics
                 }
 
                 var exportType = _context.GetSymbolType(export);
+                if (pkg.Name == "C" && export is FunctionSymbol cFunc)
+                {
+                    exportType = new Cgo.CFunctionPointerTypeSymbol("*" + exportType.Name);
+                }
                 return new IdentifierExpression(export, exportType, span);
             }
 

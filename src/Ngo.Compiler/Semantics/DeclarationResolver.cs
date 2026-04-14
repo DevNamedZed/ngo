@@ -72,7 +72,7 @@ namespace Ngo.Compiler.Semantics
             var imports = new List<ImportDeclaration>();
             foreach (var file in files)
             {
-                imports.AddRange(ResolveImports(file.Imports, file));
+                imports.AddRange(ResolveImports(file.Imports, file, files));
             }
 
             // Scan for //export directives on functions (for CGo callbacks)
@@ -373,8 +373,10 @@ namespace Ngo.Compiler.Semantics
             return new PackageDeclaration(symbol, _context.SpanOf(syntax));
         }
 
-        private List<ImportDeclaration> ResolveImports(IReadOnlyList<ImportDeclarationSyntax> importDecls,
-            SourceFileSyntax sourceFile)
+        private List<ImportDeclaration> ResolveImports(
+            IReadOnlyList<ImportDeclarationSyntax> importDecls,
+            SourceFileSyntax sourceFile,
+            IReadOnlyList<SourceFileSyntax> packageFiles)
         {
             var imports = new List<ImportDeclaration>();
 
@@ -385,10 +387,9 @@ namespace Ngo.Compiler.Semantics
                     var path = spec.Path.Value as string ?? spec.Path.Text.Trim('"').Trim('`');
                     var span = _context.SpanOf(spec);
 
-                    // Handle import "C" — CGo pseudo-package
                     if (path == "C")
                     {
-                        var cgoPackage = BuildCgoPackage(importDecl, spec);
+                        var cgoPackage = BuildCgoPackage(importDecl, spec, sourceFile, packageFiles);
                         if (cgoPackage != null)
                         {
                             _context.Scope.TryDeclare(cgoPackage);
@@ -2276,80 +2277,261 @@ namespace Ngo.Compiler.Semantics
         }
 
         /// <summary>
-        /// Build the C pseudo-package for import "C".
-        /// Extracts the preamble, runs the CGo probe, and builds typed symbols.
+        /// Build the C pseudo-package for <c>import "C"</c>. Extracts
+        /// the preamble, runs the numeric executable probe for
+        /// primitive <c>sizeof_*</c> values, compiles the DWARF anchor
+        /// probe, and reads the resulting object file through
+        /// <see cref="Cgo.Symbols.CgoDwarfSymbolSource"/> to produce a
+        /// <see cref="Cgo.CgoSymbolCatalog"/>. The catalog plus the
+        /// probe result feed <see cref="Cgo.CgoSymbolBuilder"/>.
+        /// Subsequent imports of <c>"C"</c> in other files of the same
+        /// package reuse the already-built package so the expensive
+        /// anchor probe compile runs at most once per compilation.
         /// </summary>
-        private PackageSymbol? BuildCgoPackage(ImportDeclarationSyntax importDecl, ImportSpecSyntax spec)
+        private PackageSymbol? BuildCgoPackage(
+            ImportDeclarationSyntax importDecl,
+            ImportSpecSyntax spec,
+            SourceFileSyntax sourceFile,
+            IReadOnlyList<SourceFileSyntax> packageFiles)
         {
-            // Extract preamble from the comment trivia before import "C"
-            var extractor = new Cgo.CgoPreambleExtractor();
-            var importToken = importDecl.ImportKeyword;
-            var preamble = extractor.Extract(spec, importToken, "");
-
-            // If import keyword didn't have the comments, try the path token
-            if (preamble == null || !preamble.HasCSource)
+            var compilation = _context.Compilation;
+            if (compilation != null && compilation.CgoPackage != null)
             {
-                preamble = extractor.Extract(spec, spec.Path, "");
+                return compilation.CgoPackage;
             }
 
-            // Store preamble on the compilation for use by the emitter later
-            if (preamble != null && _context.Compilation != null)
+            var importSpan = _context.SpanOf(spec);
+            var preamble = ExtractCombinedCgoPreamble(sourceFile, packageFiles);
+            if (compilation != null)
             {
-                _context.Compilation.SetCgoPreamble(preamble);
+                compilation.SetCgoPreamble(preamble);
             }
 
-            // Build the C pseudo-package with probe results
-            // The probe runs the C compiler to get exact type sizes for this platform
-            var probeResult = new Cgo.CgoProbeResult();
-
-            // If there's actual C source and a C compiler is available, run the probe
-            if (preamble != null && preamble.HasCSource)
+            if (!preamble.HasCSource)
             {
-                try
-                {
-                    var cacheDir = System.IO.Path.Combine(
-                        System.IO.Path.GetTempPath(), "ngo", "cache");
-                    var cgoCompiler = new Cgo.CgoCompiler(cacheDir);
-                    var probeRequest = new Cgo.CgoProbeRequest();
-                    probeRequest.TypeSizes.Add("int");
-                    probeRequest.TypeSizes.Add("long");
-                    probeRequest.TypeSizes.Add("unsigned long");
-
-                    var result = cgoCompiler.Compile(preamble, probeRequest, "main");
-                    if (result.Success && result.ProbeResult != null)
-                    {
-                        probeResult = result.ProbeResult;
-                    }
-                }
-                catch
-                {
-                    // C compiler not available — proceed with default type sizes
-                }
+                return BuildEmptyCgoPackage(compilation);
             }
 
-            // Extract function and struct declarations from the preamble
-            var functionExtractor = new Cgo.CgoPreambleFunctionExtractor();
-            var functions = new List<Cgo.CgoFunctionInfo>();
-            var structs = new List<Cgo.CgoStructInfo>();
-
-            if (preamble != null && preamble.HasCSource)
+            Cgo.CgoCompilerResolution resolution;
+            if (!TryResolveCgoCompiler(importSpan, compilation, out resolution))
             {
-                functions = functionExtractor.Extract(preamble.CSource);
-                structs = functionExtractor.ExtractStructs(preamble.CSource);
+                return null;
             }
 
-            var symbolBuilder = new Cgo.CgoSymbolBuilder(probeResult);
-            var cgoPackage = symbolBuilder.BuildCPackage(functions, structs, "cgo_main");
+            string cacheDirectory = System.IO.Path.Combine(
+                System.IO.Path.GetTempPath(), "ngo", "cache");
+            var cgoCompiler = new Cgo.CgoCompiler(cacheDirectory, new Cgo.CCompilerDriver(), resolution);
 
-            // Store on compilation context for the emitter
-            if (_context.Compilation != null)
+            Cgo.CgoProbeResult probeResult;
+            if (!TryRunExecutableProbe(importSpan, cgoCompiler, preamble, out probeResult))
             {
-                _context.Compilation.CgoPackage = cgoPackage;
-                _context.Compilation.CgoFunctions = functions;
-                _context.Compilation.CgoStructs = structs;
+                return null;
             }
 
+            Cgo.CgoSymbolCatalog catalog;
+            if (!TryBuildCatalog(importSpan, cgoCompiler, preamble, packageFiles, out catalog))
+            {
+                return null;
+            }
+
+            var symbolBuilder = new Cgo.CgoSymbolBuilder(catalog, probeResult);
+            PackageSymbol cgoPackage = symbolBuilder.BuildCPackage("cgo_main");
+
+            if (compilation != null)
+            {
+                compilation.CgoPackage = cgoPackage;
+                compilation.CgoCatalog = catalog;
+            }
             return cgoPackage;
+        }
+
+        /// <summary>
+        /// Go's cgo combines every <c>import "C"</c> preamble in a
+        /// package into a single translation unit, so a wrapper
+        /// function defined in <c>foo_stream.go</c> is visible to a
+        /// <c>C.wrapper_call(...)</c> reference inside <c>foo.go</c>.
+        /// The anchor probe we compile therefore has to see the merged
+        /// preamble across <paramref name="packageFiles"/>; extracting
+        /// only the current <paramref name="sourceFile"/>'s preamble
+        /// would leave wrappers declared in sibling files undefined
+        /// when the probe tries to take their <c>__typeof__</c>.
+        /// </summary>
+        private Cgo.CgoPreamble ExtractCombinedCgoPreamble(
+            SourceFileSyntax sourceFile,
+            IReadOnlyList<SourceFileSyntax> packageFiles)
+        {
+            string sourceDirectory = ResolveSourceDirectory(sourceFile);
+            var extractor = new Cgo.CgoPreambleExtractor();
+            return extractor.ExtractCombined(packageFiles, sourceDirectory);
+        }
+
+        /// <summary>
+        /// Resolve the directory that holds the Go source file for cgo
+        /// preamble extraction — the value that <c>CgoCompiler.BuildIncludeArgs</c>
+        /// forwards to the probe compiler as <c>-I</c>. Prefers the path
+        /// recorded in <see cref="AnalysisContext.SourcePaths"/> when the
+        /// file was parsed with <see cref="SyntaxTree.Parse(string, string)"/>,
+        /// otherwise falls back to <see cref="CompilationContext.ProjectRoot"/>
+        /// — for single-package analyses the project root is the package
+        /// directory. Returns the empty string only when neither is
+        /// known (synthetic test input with no compilation context), in
+        /// which case the probe compile will run without <c>-I</c>.
+        /// </summary>
+        private string ResolveSourceDirectory(SourceFileSyntax sourceFile)
+        {
+            if (_context.SourcePaths.TryGetValue(sourceFile, out string? explicitPath)
+                && !string.IsNullOrEmpty(explicitPath))
+            {
+                string? directory = System.IO.Path.GetDirectoryName(explicitPath);
+                if (!string.IsNullOrEmpty(directory))
+                {
+                    return directory;
+                }
+            }
+            string? projectRoot = _context.Compilation?.ProjectRoot;
+            if (!string.IsNullOrEmpty(projectRoot))
+            {
+                return projectRoot;
+            }
+            return string.Empty;
+        }
+
+        private PackageSymbol BuildEmptyCgoPackage(CompilationContext? compilation)
+        {
+            var emptyCatalog = new Cgo.CgoSymbolCatalog();
+            var emptyProbe = new Cgo.CgoProbeResult();
+            var builder = new Cgo.CgoSymbolBuilder(emptyCatalog, emptyProbe);
+            PackageSymbol cgoPackage = builder.BuildCPackage("cgo_main");
+            if (compilation != null)
+            {
+                compilation.CgoPackage = cgoPackage;
+                compilation.CgoCatalog = emptyCatalog;
+            }
+            return cgoPackage;
+        }
+
+        private bool TryResolveCgoCompiler(
+            TextSpan importSpan,
+            CompilationContext? compilation,
+            out Cgo.CgoCompilerResolution resolution)
+        {
+            Cgo.CgoOptions cgoOptions = compilation?.CgoOptions ?? Cgo.CgoOptions.Empty;
+            try
+            {
+                resolution = new Cgo.CCompilerDriver().Resolve(cgoOptions);
+                return true;
+            }
+            catch (Cgo.CgoDisabledException ex)
+            {
+                _context.Errors.ReportError(importSpan, ErrorCode.CgoDisabled, ex.Message);
+                resolution = null!;
+                return false;
+            }
+            catch (Cgo.CgoCompilerNotFoundException ex)
+            {
+                _context.Errors.ReportError(importSpan, ErrorCode.CgoCompilerNotFound, ex.FormatDiagnostic());
+                resolution = null!;
+                return false;
+            }
+        }
+
+        private bool TryRunExecutableProbe(
+            TextSpan importSpan,
+            Cgo.CgoCompiler cgoCompiler,
+            Cgo.CgoPreamble preamble,
+            out Cgo.CgoProbeResult probeResult)
+        {
+            var probeRequest = new Cgo.CgoProbeRequest();
+            probeRequest.TypeSizes.Add("int");
+            probeRequest.TypeSizes.Add("long");
+            probeRequest.TypeSizes.Add("unsigned long");
+
+            try
+            {
+                var compilationResult = cgoCompiler.Compile(preamble, probeRequest, "main");
+                probeResult = compilationResult.ProbeResult ?? new Cgo.CgoProbeResult();
+                return true;
+            }
+            catch (Cgo.CgoProbeCompileException ex)
+            {
+                _context.Errors.ReportError(importSpan, ErrorCode.CgoProbeFailed,
+                    $"{ex.Message}\n{ex.CompilerOutput}");
+                probeResult = null!;
+                return false;
+            }
+            catch (Cgo.CgoCCompileException ex)
+            {
+                _context.Errors.ReportError(importSpan, ErrorCode.CgoProbeFailed,
+                    $"{ex.Message}\n{ex.CompilerOutput}");
+                probeResult = null!;
+                return false;
+            }
+        }
+
+        private bool TryBuildCatalog(
+            TextSpan importSpan,
+            Cgo.CgoCompiler cgoCompiler,
+            Cgo.CgoPreamble preamble,
+            IReadOnlyList<SourceFileSyntax> packageFiles,
+            out Cgo.CgoSymbolCatalog catalog)
+        {
+            Cgo.CgoUsageSet usageSet = Cgo.CgoUsageCollector.Collect(packageFiles);
+            try
+            {
+                Cgo.CgoAnchorProbeBuildResult anchorResult =
+                    cgoCompiler.CompileAnchorProbe(preamble, usageSet, "main");
+                var symbolSource = new Cgo.Symbols.CgoDwarfSymbolSource();
+                catalog = symbolSource.Extract(anchorResult);
+                HarvestMacroConstants(cgoCompiler, preamble, usageSet, catalog, symbolSource);
+                return true;
+            }
+            catch (Cgo.CgoCCompileException ex)
+            {
+                _context.Errors.ReportError(importSpan, ErrorCode.CgoProbeFailed,
+                    $"{ex.Message}\n{ex.CompilerOutput}");
+                catalog = null!;
+                return false;
+            }
+            catch (Cgo.Symbols.CgoDebugInfoException ex)
+            {
+                _context.Errors.ReportError(importSpan, ErrorCode.CgoProbeFailed, ex.Message);
+                catalog = null!;
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Run the pass-2 macro probe when the pass-1 typeof probe left
+        /// any <c>C.&lt;ident&gt;</c> references unmapped. DWARF cannot
+        /// carry preprocessor <c>#define</c> values directly; the
+        /// planner finds names that resolved to nothing in the pass-1
+        /// catalog, the compiler wraps each in an anonymous enum, and
+        /// the harvester copies the resulting enumerator values into
+        /// <paramref name="catalog"/> as <see cref="Cgo.CgoMacroConstantInfo"/>
+        /// entries. A failure at this stage (macro that is not an
+        /// integer constant expression, malformed preamble) propagates
+        /// as <see cref="Cgo.CgoCCompileException"/> up through
+        /// <see cref="TryBuildCatalog"/> so the user sees a real
+        /// diagnostic rather than a silently missing symbol.
+        /// </summary>
+        private static void HarvestMacroConstants(
+            Cgo.CgoCompiler cgoCompiler,
+            Cgo.CgoPreamble preamble,
+            Cgo.CgoUsageSet usageSet,
+            Cgo.CgoSymbolCatalog catalog,
+            Cgo.Symbols.CgoDwarfSymbolSource symbolSource)
+        {
+            IReadOnlyList<string> leftovers = Cgo.CgoMacroProbePlanner.CollectLeftoverNames(
+                usageSet, catalog);
+            if (leftovers.Count == 0)
+            {
+                return;
+            }
+
+            Cgo.CgoAnchorProbeBuildResult macroResult =
+                cgoCompiler.CompileMacroProbe(preamble, leftovers, "main");
+            Cgo.CgoSymbolCatalog macroCatalog = symbolSource.Extract(macroResult);
+            Cgo.CgoMacroProbePlanner.RegisterMacroConstants(catalog, macroCatalog);
         }
     }
 }

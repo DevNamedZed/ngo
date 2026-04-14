@@ -59,16 +59,16 @@ class Program
                 if (args.Length < 2)
                 {
                     Console.Error.WriteLine("ngo run: missing file argument");
-                    Console.Error.WriteLine("Usage: ngo run <file.go>");
+                    Console.Error.WriteLine("Usage: ngo run [--cc <path>] <file.go>");
                     return 1;
                 }
-                return RunFile(args[1]);
+                return RunFile(args[1..]);
 
             case "build":
                 if (args.Length < 2)
                 {
                     Console.Error.WriteLine("ngo build: missing file argument");
-                    Console.Error.WriteLine("Usage: ngo build [-o output] <file.go>");
+                    Console.Error.WriteLine("Usage: ngo build [--cc <path>] [-o output] <file.go>");
                     return 1;
                 }
                 return BuildFile(args[1..]);
@@ -104,7 +104,7 @@ class Program
                 // If it ends with .go, treat it as `ngo run <file>`
                 if (args[0].EndsWith(".go", StringComparison.OrdinalIgnoreCase))
                 {
-                    return RunFile(args[0]);
+                    return RunFile(args);
                 }
                 Console.Error.WriteLine($"ngo: unknown command '{args[0]}'");
                 Console.Error.WriteLine("Run 'ngo help' for usage.");
@@ -117,11 +117,13 @@ class Program
         Console.WriteLine("ngo - Go compiler for .NET");
         Console.WriteLine();
         Console.WriteLine("Usage:");
-        Console.WriteLine("  ngo run <file.go>          Compile and run a Go source file");
+        Console.WriteLine("  ngo run [options] <file>   Compile and run a Go source file");
+        Console.WriteLine("    --cc <path>              Override C compiler for cgo packages");
         Console.WriteLine("  ngo build [options] <file> Compile to a .NET assembly");
         Console.WriteLine("    -o <output>              Output file path");
         Console.WriteLine("    --library                Emit as .NET library (visibility from Go exports)");
         Console.WriteLine("    --namespace <ns>         Set .NET namespace (implies --library)");
+        Console.WriteLine("    --cc <path>              Override C compiler for cgo packages");
         Console.WriteLine("  ngo verify <assembly.dll>  Verify IL of a compiled assembly");
         Console.WriteLine("  ngo get [dir]              Download module dependencies from go.mod");
         Console.WriteLine("  ngo test [dir]             Run tests in *_test.go files");
@@ -153,20 +155,46 @@ class Program
                     continue;
                 }
                 var source = File.ReadAllText(file);
-                results.Add(new SourceFile(SyntaxTree.Parse(source), file));
+                results.Add(new SourceFile(SyntaxTree.Parse(source, file), file));
             }
         }
         else if (File.Exists(path))
         {
             var source = File.ReadAllText(path);
-            results.Add(new SourceFile(SyntaxTree.Parse(source), path));
+            results.Add(new SourceFile(SyntaxTree.Parse(source, path), path));
         }
 
         return results;
     }
 
-    static int RunFile(string filePath)
+    static int RunFile(string[] args)
     {
+        string? filePath = null;
+        string? ccOverride = null;
+
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (args[i] == "--cc" && i + 1 < args.Length)
+            {
+                ccOverride = args[++i];
+            }
+            else if (filePath == null)
+            {
+                filePath = args[i];
+            }
+            else
+            {
+                break;
+            }
+        }
+
+        if (filePath == null)
+        {
+            Console.Error.WriteLine("ngo run: missing file argument");
+            Console.Error.WriteLine("Usage: ngo run [--cc <path>] <file.go>");
+            return 1;
+        }
+
         var sources = ParseGoSources(filePath);
         if (sources.Count == 0)
         {
@@ -180,6 +208,10 @@ class Program
             ? Path.GetFullPath(filePath)
             : Path.GetDirectoryName(Path.GetFullPath(filePath))!;
         var compilation = new CompilationContext(projectRoot, new ConsoleLog(verbose: false));
+        if (ccOverride != null)
+        {
+            compilation.CgoOptions = new Ngo.Compiler.Cgo.CgoOptions { CCOverride = ccOverride };
+        }
 
         var trees = new List<SyntaxTree>();
         foreach (var src in sources)
@@ -298,6 +330,7 @@ class Program
         string? filePath = null;
         bool isLibrary = false;
         string? ns = null;
+        string? ccOverride = null;
 
         for (int i = 0; i < args.Length; i++)
         {
@@ -314,6 +347,10 @@ class Program
                 ns = args[++i];
                 isLibrary = true;
             }
+            else if (args[i] == "--cc" && i + 1 < args.Length)
+            {
+                ccOverride = args[++i];
+            }
             else if (filePath == null)
             {
                 filePath = args[i];
@@ -328,7 +365,7 @@ class Program
         if (filePath == null)
         {
             Console.Error.WriteLine("ngo build: missing file argument");
-            Console.Error.WriteLine("Usage: ngo build [--library] [--namespace <ns>] [-o output] <file.go>");
+            Console.Error.WriteLine("Usage: ngo build [--library] [--namespace <ns>] [--cc <path>] [-o output] <file.go>");
             return 1;
         }
 
@@ -360,6 +397,10 @@ class Program
             ? Path.GetFullPath(filePath)
             : Path.GetDirectoryName(Path.GetFullPath(filePath))!;
         var compilation = new CompilationContext(projectRoot, new ConsoleLog(verbose: false));
+        if (ccOverride != null)
+        {
+            compilation.CgoOptions = new Ngo.Compiler.Cgo.CgoOptions { CCOverride = ccOverride };
+        }
 
         var trees = new List<SyntaxTree>();
         foreach (var src in sources)
@@ -539,7 +580,7 @@ class Program
             foreach (var f in sourceFiles.Concat(testFiles))
             {
                 var source = File.ReadAllText(f);
-                trees.Add(SyntaxTree.Parse(source));
+                trees.Add(SyntaxTree.Parse(source, f));
             }
 
             // Analyze (don't check unused — test files may import testing but not use all)

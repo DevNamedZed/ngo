@@ -149,6 +149,14 @@ namespace Ngo.Compiler.Semantics
         }
 
         /// <summary>
+        /// User-supplied cgo toolchain overrides. Populated by the CLI
+        /// driver from flags like <c>--cc</c>. Defaults to empty, in
+        /// which case resolution falls back to environment variables
+        /// and platform auto-detection.
+        /// </summary>
+        public Cgo.CgoOptions CgoOptions { get; set; } = Cgo.CgoOptions.Empty;
+
+        /// <summary>
         /// The CGo preamble extracted from import "C", if any.
         /// Stored here so the emitter can access it for C compilation and P/Invoke generation.
         /// </summary>
@@ -166,14 +174,14 @@ namespace Ngo.Compiler.Semantics
         public Symbols.PackageSymbol? CgoPackage { get; set; }
 
         /// <summary>
-        /// C function info extracted from the preamble.
+        /// The DWARF/PDB-backed catalog of every C symbol the Go
+        /// code references through <c>import "C"</c>. Populated by
+        /// <see cref="Ngo.Compiler.Cgo.Symbols.CgoDwarfSymbolSource"/>
+        /// during import resolution and consumed by the P/Invoke
+        /// emitter when it materialises <c>[DllImport]</c> stubs
+        /// and <c>StructLayout</c> types for cgo.
         /// </summary>
-        public List<Cgo.CgoFunctionInfo>? CgoFunctions { get; set; }
-
-        /// <summary>
-        /// C struct info extracted from the preamble.
-        /// </summary>
-        public List<Cgo.CgoStructInfo>? CgoStructs { get; set; }
+        public Cgo.CgoSymbolCatalog? CgoCatalog { get; set; }
 
         /// <summary>
         /// Go function name → C export name from //export directives.

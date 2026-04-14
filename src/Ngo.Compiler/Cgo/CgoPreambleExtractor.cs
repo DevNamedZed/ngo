@@ -15,8 +15,18 @@ namespace Ngo.Compiler.Cgo
         /// <summary>
         /// Extracts the preamble from an import "C" spec.
         /// The preamble comes from the LeadingExtra of the import keyword token.
+        /// <paramref name="sourceDirectory"/> is the directory the Go
+        /// source file sits in and is embedded on the resulting
+        /// <see cref="CgoPreamble"/> so that <c>CgoCompiler.BuildIncludeArgs</c>
+        /// can pass it to the probe compiler as <c>-I</c> — that is how
+        /// <c>#include "foo.h"</c> in the preamble resolves against
+        /// package-local headers (e.g. <c>zstd.h</c> shipped inside
+        /// <c>github.com/DataDog/zstd</c>). Pass the empty string only
+        /// for synthetic inputs that reference nothing but standard
+        /// headers, because the probe compile will then run without
+        /// <c>-I</c>.
         /// </summary>
-        public CgoPreamble? Extract(ImportSpecSyntax importSpec, SyntaxToken importKeyword, string sourceFilePath)
+        public CgoPreamble? Extract(ImportSpecSyntax importSpec, SyntaxToken importKeyword, string sourceDirectory)
         {
             string pathText = importSpec.Path.Text?.Trim('"') ?? "";
             string pathValue = importSpec.Path.Value?.ToString()?.Trim('"') ?? pathText;
@@ -26,7 +36,7 @@ namespace Ngo.Compiler.Cgo
             }
 
             var leadingExtra = importKeyword.LeadingExtra;
-            string sourceDir = System.IO.Path.GetDirectoryName(sourceFilePath) ?? ".";
+            string sourceDir = sourceDirectory ?? string.Empty;
 
             if (leadingExtra == null || leadingExtra.Count == 0)
             {
@@ -80,9 +90,16 @@ namespace Ngo.Compiler.Cgo
                     {
                         text = text.Substring(0, text.Length - 2);
                     }
-                    foreach (var line in text.Split('\n'))
+
+                    // The outer loop walks leadingExtra from last to first so
+                    // the final commentLines.Reverse() restores source order.
+                    // A block comment is a single extra but carries many inner
+                    // lines; we must push those inner lines in reverse here so
+                    // that the final reversal puts them back in forward order.
+                    string[] blockLines = text.Split('\n');
+                    for (int blockLineIndex = blockLines.Length - 1; blockLineIndex >= 0; blockLineIndex--)
                     {
-                        commentLines.Add(line.TrimEnd('\r'));
+                        commentLines.Add(blockLines[blockLineIndex].TrimEnd('\r'));
                     }
                 }
                 else if (extra.Kind == SyntaxKind.EndOfLineExtra)
@@ -119,6 +136,101 @@ namespace Ngo.Compiler.Cgo
 
             string cSource = string.Join("\n", cSourceLines);
             return new CgoPreamble(cSource, directives, sourceDir);
+        }
+
+        /// <summary>
+        /// Extract a single preamble that represents every <c>import "C"</c>
+        /// found anywhere in <paramref name="packageFiles"/>, concatenated
+        /// into one C source and with directive lists merged. Go's cgo
+        /// treats all <c>import "C"</c> preambles in a package as one
+        /// combined translation unit — a wrapper function defined in
+        /// <c>zstd_stream.go</c> is in scope for a <c>C.zstd_compress(...)</c>
+        /// reference from <c>zstd.go</c>. The anchor probe therefore has
+        /// to see the union of them, otherwise symbols defined inline in
+        /// sibling files appear "undeclared" when the probe is compiled.
+        /// <paramref name="sourceDirectory"/> is the package directory
+        /// and is stored on the returned preamble so <c>-I</c> can be
+        /// emitted against package-local headers.
+        /// <para>
+        /// <c>#include</c> lines are de-duplicated by exact text match:
+        /// multiple files in a package routinely include the same
+        /// headers (<c>&lt;stdlib.h&gt;</c>, package-local <c>.h</c>
+        /// files, etc.), and some of those headers lack <c>#ifndef</c>
+        /// guards (e.g. <c>pkcs11go.h</c> in <c>miekg/pkcs11</c>), which
+        /// would trigger duplicate-typedef errors when the combined
+        /// preamble is compiled as one translation unit. Go's real cgo
+        /// sidesteps this by compiling each file's preamble in its own
+        /// translation unit; we instead combine text and dedupe the
+        /// include lines that would otherwise be textually identical.
+        /// </para>
+        /// </summary>
+        public CgoPreamble ExtractCombined(
+            IReadOnlyList<SourceFileSyntax> packageFiles, string sourceDirectory)
+        {
+            string sourceDir = sourceDirectory ?? string.Empty;
+            var combinedCSource = new StringBuilder();
+            var combinedDirectives = new List<CgoDirective>();
+            var seenIncludes = new HashSet<string>();
+
+            foreach (var file in packageFiles)
+            {
+                foreach (var importDecl in file.Imports)
+                {
+                    foreach (var spec in importDecl.Specs)
+                    {
+                        CgoPreamble? preamble = Extract(spec, importDecl.ImportKeyword, sourceDir);
+                        if (preamble == null || !preamble.HasCSource)
+                        {
+                            preamble = Extract(spec, spec.Path, sourceDir);
+                        }
+
+                        if (preamble == null)
+                        {
+                            continue;
+                        }
+
+                        if (preamble.HasCSource)
+                        {
+                            if (combinedCSource.Length > 0)
+                            {
+                                combinedCSource.Append('\n');
+                            }
+                            AppendDedupedSource(combinedCSource, preamble.CSource, seenIncludes);
+                        }
+
+                        foreach (var directive in preamble.Directives)
+                        {
+                            combinedDirectives.Add(directive);
+                        }
+                    }
+                }
+            }
+
+            return new CgoPreamble(combinedCSource.ToString(), combinedDirectives, sourceDir);
+        }
+
+        private static void AppendDedupedSource(
+            StringBuilder destination, string cSource, HashSet<string> seenIncludes)
+        {
+            string[] lines = cSource.Split('\n');
+            for (int lineIndex = 0; lineIndex < lines.Length; lineIndex++)
+            {
+                string line = lines[lineIndex];
+                string trimmed = line.TrimStart();
+                if (trimmed.StartsWith("#include"))
+                {
+                    string includeKey = trimmed.TrimEnd();
+                    if (!seenIncludes.Add(includeKey))
+                    {
+                        continue;
+                    }
+                }
+                destination.Append(line);
+                if (lineIndex < lines.Length - 1)
+                {
+                    destination.Append('\n');
+                }
+            }
         }
     }
 }

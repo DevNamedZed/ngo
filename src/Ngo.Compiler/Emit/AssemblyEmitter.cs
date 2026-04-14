@@ -159,58 +159,42 @@ namespace Ngo.Compiler.Emit
                 return;
             }
 
-            try
+            var driver = new Cgo.CCompilerDriver();
+            var resolution = driver.Resolve(compilation.CgoOptions);
+
+            var cacheDir = Path.Combine(Path.GetTempPath(), "ngo", "cache");
+            var cgoCompiler = new Cgo.CgoCompiler(cacheDir, driver, resolution);
+
+            var probeRequest = new Cgo.CgoProbeRequest();
+            probeRequest.TypeSizes.Add("int");
+            probeRequest.TypeSizes.Add("long");
+            probeRequest.TypeSizes.Add("unsigned long");
+
+            var result = cgoCompiler.Compile(preamble, probeRequest, "main");
+
+            if (result.NativeLibraryPath == null)
             {
-                var cacheDir = Path.Combine(Path.GetTempPath(), "ngo", "cache");
-                var cgoCompiler = new Cgo.CgoCompiler(cacheDir);
-
-                var probeRequest = new Cgo.CgoProbeRequest();
-                probeRequest.TypeSizes.Add("int");
-                probeRequest.TypeSizes.Add("long");
-                probeRequest.TypeSizes.Add("unsigned long");
-
-                // Step 1: Compile C code to static library (.a)
-                var result = cgoCompiler.Compile(preamble, probeRequest, "main");
-
-                if (result.Success && result.NativeLibraryPath != null)
-                {
-                    // Step 2: Link all static libs into one shared library for runtime
-                    string outputDir = Path.GetDirectoryName(outputPath) ?? ".";
-                    var staticLibs = new List<string> { result.NativeLibraryPath };
-                    string ldflags = result.LDFlags ?? "";
-
-                    // Auto-add -lm if math.h is included
-                    if (preamble.CSource.Contains("#include <math.h>") && !ldflags.Contains("-lm"))
-                    {
-                        ldflags = string.IsNullOrEmpty(ldflags) ? "-lm" : ldflags + " -lm";
-                    }
-
-                    var driver = new Cgo.CCompilerDriver();
-                    var (linkedLib, linkError) = driver.LinkStaticLibraries(
-                        staticLibs, outputDir, "ngo_native", ldflags);
-
-                    if (linkError != null)
-                    {
-                        compilation.Log.Warn($"cgo: warning: link failed: {linkError}");
-                        return;
-                    }
-
-                    // Update result to point to the final linked library
-                    result.NativeLibraryPath = linkedLib;
-                    compilation.CgoResult = result;
-
-                    // Save CGo metadata for cache
-                    if (compilation.ProjectRoot != null)
-                    {
-                        var pkgCacheDir = NgoArchive.GetCacheDir(compilation.ProjectRoot);
-                        Cgo.CgoArchiveManager.SaveCgoMetadata(
-                            NgoArchive.GetArchivePath(pkgCacheDir, "main"), result);
-                    }
-                }
+                return;
             }
-            catch (Exception ex)
+
+            string outputDir = Path.GetDirectoryName(outputPath) ?? ".";
+            var staticLibs = new List<string> { result.NativeLibraryPath };
+            string ldflags = result.LDFlags ?? string.Empty;
+
+            if (preamble.CSource.Contains("#include <math.h>") && !ldflags.Contains("-lm"))
             {
-                compilation.Log.Warn($"cgo: warning: failed to compile C code: {ex.Message}");
+                ldflags = string.IsNullOrEmpty(ldflags) ? "-lm" : ldflags + " -lm";
+            }
+
+            result.NativeLibraryPath = driver.LinkStaticLibraries(
+                staticLibs, outputDir, "ngo_native", ldflags);
+            compilation.CgoResult = result;
+
+            if (compilation.ProjectRoot != null)
+            {
+                var pkgCacheDir = NgoArchive.GetCacheDir(compilation.ProjectRoot);
+                Cgo.CgoArchiveManager.SaveCgoMetadata(
+                    NgoArchive.GetArchivePath(pkgCacheDir, "main"), result);
             }
         }
 
@@ -395,7 +379,7 @@ namespace Ngo.Compiler.Emit
                         continue;
                     }
                     var source = System.IO.File.ReadAllText(file);
-                    trees.Add(Language.SyntaxTree.Parse(source));
+                    trees.Add(Language.SyntaxTree.Parse(source, file));
                 }
 
                 if (trees.Count == 0)

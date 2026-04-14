@@ -18,6 +18,7 @@
 
 using System;
 using System.Collections.Generic;
+using Ngo.Compiler.Cgo;
 using Ngo.Compiler.Symbols;
 
 namespace Ngo.Compiler.Semantics
@@ -129,6 +130,9 @@ namespace Ngo.Compiler.Semantics
 
             // unsafe.Pointer ↔ any pointer
             if (IsUnsafePointerAssignable(source, target)) return true;
+
+            // C function pointer ↔ unsafe.Pointer ↔ *[0]byte ↔ C function pointer (cgo idiom)
+            if (IsCFunctionPointerInterchangeable(source, target)) return true;
 
             // Direct function type assignability (before structural to avoid short-circuit issues)
             if (source is FunctionTypeSymbol && target is FunctionTypeSymbol)
@@ -829,6 +833,48 @@ namespace Ngo.Compiler.Semantics
             return type is StructTypeSymbol sts
                 && (sts.Name == "Pointer" || sts.Name == "UnsafePointer")
                 && sts.Fields.Count == 0;
+        }
+
+        private static bool IsZeroLengthBytePointer(TypeSymbol type)
+        {
+            if (type is not PointerTypeSymbol ptr)
+            {
+                return false;
+            }
+            var element = ptr.ElementType;
+            if (element is not ArrayTypeSymbol arr)
+            {
+                return false;
+            }
+            if (arr.Length != 0)
+            {
+                return false;
+            }
+            return arr.ElementType.TypeKind == TypeKind.Uint8;
+        }
+
+        private static bool IsCFunctionPointerInterchangeable(TypeSymbol source, TypeSymbol target)
+        {
+            bool sourceIsCFunc = source is CFunctionPointerTypeSymbol;
+            bool targetIsCFunc = target is CFunctionPointerTypeSymbol;
+            if (!sourceIsCFunc && !targetIsCFunc)
+            {
+                return false;
+            }
+            if (sourceIsCFunc && targetIsCFunc)
+            {
+                return true;
+            }
+            var other = sourceIsCFunc ? target : source;
+            if (IsUnsafePointer(other))
+            {
+                return true;
+            }
+            if (IsZeroLengthBytePointer(other))
+            {
+                return true;
+            }
+            return false;
         }
 
         public static bool IsNilable(TypeSymbol type)

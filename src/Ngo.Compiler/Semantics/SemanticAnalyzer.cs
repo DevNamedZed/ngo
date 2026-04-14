@@ -54,7 +54,10 @@ namespace Ngo.Compiler.Semantics
 
             var roots = new List<Language.Syntax.SourceFileSyntax>();
             foreach (var tree in trees)
+            {
                 roots.Add(tree.Root);
+                context.SourcePaths[tree.Root] = tree.SourcePath;
+            }
 
             var root = declarationResolver.ResolveSourceFiles(roots);
 

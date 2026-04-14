@@ -1578,7 +1578,8 @@ func main() {
 
             var compilation = new CompilationContext(projectDir);
 
-            var tree = SyntaxTree.Parse(File.ReadAllText(Path.Combine(projectDir, "main.go")));
+            string mainPath = Path.Combine(projectDir, "main.go");
+            var tree = SyntaxTree.Parse(File.ReadAllText(mainPath), mainPath);
             var result = SemanticAnalyzer.Analyze(tree, compilation);
             Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
 
@@ -1691,7 +1692,8 @@ func main() {
 
             var compilation = new CompilationContext(projectDir);
 
-            var tree = SyntaxTree.Parse(File.ReadAllText(Path.Combine(projectDir, "main.go")));
+            string mainPath = Path.Combine(projectDir, "main.go");
+            var tree = SyntaxTree.Parse(File.ReadAllText(mainPath), mainPath);
             var result = SemanticAnalyzer.Analyze(tree, compilation);
             Assert.IsFalse(result.HasErrors, string.Join("\n", result.Errors));
 
