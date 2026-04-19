@@ -19,6 +19,7 @@
 using System;
 using System.Reflection.Emit;
 using Ngo.Compiler.Ast;
+using Ngo.Compiler.Emit.Builder;
 using Ngo.Compiler.Semantics;
 using Ngo.Compiler.Symbols;
 using Ngo.Runtime;
@@ -396,7 +397,7 @@ namespace Ngo.Compiler.Emit
             _ctx.IL.Emit(OpCodes.Stloc, limitLocal);
 
             // i := 0
-            LocalBuilder? keyLocal = null;
+            LocalSlot? keyLocal = null;
             if (forRange.Key != null)
             {
                 keyLocal = _ctx.IL.DeclareLocal(typeof(long));
@@ -488,7 +489,7 @@ namespace Ngo.Compiler.Emit
 
             // Save current method state
             var savedIL = _ctx.IL;
-            var savedLocals = new System.Collections.Generic.Dictionary<Symbols.Symbol, LocalBuilder>(_ctx.Locals);
+            var savedLocals = new System.Collections.Generic.Dictionary<Symbols.Symbol, LocalSlot>(_ctx.Locals);
             var savedParams = new System.Collections.Generic.Dictionary<Symbols.Symbol, int>(_ctx.Parameters);
             var savedReturnTypes = _body.CurrentReturnTypes;
 

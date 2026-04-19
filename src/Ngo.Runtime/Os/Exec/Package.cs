@@ -13,6 +13,9 @@ namespace Ngo.Runtime.Os.Exec
         [GoVar(Type = "error")]
         public static readonly object ErrNotFound = new Exception("executable file not found in $PATH");
 
+        [GoVar(Type = "error")]
+        public static readonly object ErrDot = new Exception("cannot run executable found relative to current directory");
+
         [GoFunc(IsVariadic = true)]
         public static GoCmd Command(string name, params string[] arg)
         {

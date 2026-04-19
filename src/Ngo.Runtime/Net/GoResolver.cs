@@ -60,5 +60,40 @@ namespace Ngo.Runtime.Net
                 return (default, ex.Message);
             }
         }
+
+        [GoMethod]
+        [return: GoReturn("string", "[]*net.SRV", "error")]
+        public (string, Slice<GoSRV?>, object?) LookupSRV([GoParam("context.Context")] object? ctx, string service, string proto, string name)
+        {
+            return GoNet.LookupSRV(service, proto, name);
+        }
+
+        [GoMethod]
+        [return: GoReturn("string", "[]*net.MX", "error")]
+        public (string, Slice<GoMX?>, object?) LookupMX([GoParam("context.Context")] object? ctx, string name)
+        {
+            return ("", new Slice<GoMX?>(System.Array.Empty<GoMX?>()), null);
+        }
+
+        [GoMethod]
+        [return: GoReturn("[]*net.NS", "error")]
+        public (Slice<object?>, object?) LookupNS([GoParam("context.Context")] object? ctx, string name)
+        {
+            return (new Slice<object?>(System.Array.Empty<object?>()), null);
+        }
+
+        [GoMethod]
+        [return: GoReturn("[]string", "error")]
+        public (Slice<string>, object?) LookupTXT([GoParam("context.Context")] object? ctx, string name)
+        {
+            return (new Slice<string>(System.Array.Empty<string>()), null);
+        }
+
+        [GoMethod]
+        [return: GoReturn("[]string", "error")]
+        public (Slice<string>, object?) LookupCNAME([GoParam("context.Context")] object? ctx, string name)
+        {
+            return (new Slice<string>(System.Array.Empty<string>()), null);
+        }
     }
 }

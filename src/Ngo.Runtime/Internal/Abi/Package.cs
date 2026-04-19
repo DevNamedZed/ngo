@@ -71,6 +71,23 @@ namespace Ngo.Runtime.Internal.Abi
         [GoFunc]
         [return: GoReturn("*Name")]
         public static GoName? NewName(string n, string tag, bool exported, bool embedded) => new GoName();
+
+        [GoFunc]
+        [return: GoReturn("*Type")]
+        public static GoType TypeOf([GoParam("any")] object? a)
+        {
+            var type = a?.GetType() ?? typeof(object);
+            return new GoType { ClrType = type };
+        }
+
+        public static GoType TypeForType(System.Type t)
+        {
+            if (t == null)
+            {
+                throw new System.ArgumentNullException(nameof(t));
+            }
+            return new GoType { ClrType = t };
+        }
     }
 
     // Named type aliases for offsets

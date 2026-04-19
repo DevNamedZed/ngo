@@ -844,6 +844,89 @@
     "label": "djherbis-times"
   },
   {
+    "module": "github.com/docker/cli",
+    "version": "v28.2.2+incompatible",
+    "subPackage": "cli",
+    "label": "docker-cli"
+  },
+  {
+    "module": "github.com/docker/cli",
+    "version": "v28.2.2+incompatible",
+    "subPackage": "cli/command",
+    "label": "docker-cli-command"
+  },
+  {
+    "module": "github.com/docker/cli",
+    "version": "v28.2.2+incompatible",
+    "subPackage": "cli/flags",
+    "label": "docker-cli-flags"
+  },
+  {
+    "module": "github.com/docker/docker",
+    "version": "v28.3.3+incompatible",
+    "subPackage": "client",
+    "label": "docker-client"
+  },
+  {
+    "module": "github.com/docker/docker-credential-helpers",
+    "version": "v0.9.3",
+    "subPackage": "credentials",
+    "label": "docker-credential-helpers-credentials"
+  },
+  {
+    "module": "github.com/docker/distribution",
+    "version": "v2.8.3+incompatible",
+    "label": "docker-distribution"
+  },
+  {
+    "module": "github.com/docker/docker",
+    "version": "v28.3.3+incompatible",
+    "subPackage": "api/types",
+    "label": "docker-docker-api-types"
+  },
+  {
+    "module": "github.com/docker/docker",
+    "version": "v28.3.3+incompatible",
+    "subPackage": "errdefs",
+    "label": "docker-docker-errdefs"
+  },
+  {
+    "module": "github.com/docker/go-connections",
+    "version": "v0.5.0",
+    "label": "docker-go-connections"
+  },
+  {
+    "module": "github.com/docker/go-connections",
+    "version": "v0.5.0",
+    "subPackage": "nat",
+    "label": "docker-go-connections-nat"
+  },
+  {
+    "module": "github.com/docker/go-events",
+    "version": "v0.0.0-20190806004212-e31b211e4f1c",
+    "label": "docker-go-events"
+  },
+  {
+    "module": "github.com/docker/go-metrics",
+    "version": "v0.0.1",
+    "label": "docker-go-metrics"
+  },
+  {
+    "module": "github.com/docker/go-units",
+    "version": "v0.5.0",
+    "label": "docker-go-units"
+  },
+  {
+    "module": "github.com/docker/libtrust",
+    "version": "v0.0.0-20160708172513-aabc10ec26b7",
+    "label": "docker-libtrust"
+  },
+  {
+    "module": "github.com/docker/spdystream",
+    "version": "v0.0.0-20160310174837-449fdfce4d96",
+    "label": "docker-spdystream"
+  },
+  {
     "module": "github.com/dolthub/maphash",
     "version": "v0.1.0",
     "label": "dolthub-maphash"

@@ -68,5 +68,13 @@ namespace Ngo.Compiler.Emit.Builder
             && other._isMethodGenericParam == _isMethodGenericParam;
 
         public override string ToString() => _name;
+
+        public override Type MakeArrayType() => NgoBuilderType.CreateArrayOf(this);
+
+        public override Type MakeArrayType(int rank) => NgoBuilderType.CreateArrayOf(this, rank);
+
+        public override Type MakeByRefType() => NgoBuilderType.CreateByRefOf(this);
+
+        public override Type MakePointerType() => NgoBuilderType.CreatePointerOf(this);
     }
 }

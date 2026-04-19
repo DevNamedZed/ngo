@@ -16,6 +16,35 @@ namespace Ngo.Runtime.Internal.Syscall.Unix
         [GoConst] public static readonly long W_OK = 2;
         [GoConst] public static readonly long R_OK = 4;
 
+        [GoVar(Type = "Errno")]
+        public static readonly object? NoFollowErrno = 40L;
+
+        [GoFunc]
+        [return: GoReturn("uintptr", "error")]
+        public static (long, object?) PidFDOpen([GoParam("int")] long pid, [GoParam("int")] long flags)
+        {
+            int result = LinuxUnixSyscalls.pidfd_open((int)pid, (uint)flags);
+            if (result == -1)
+            {
+                int errno = System.Runtime.InteropServices.Marshal.GetLastPInvokeError();
+                return (~(long)0, (long)errno);
+            }
+            return ((long)result, null);
+        }
+
+        [GoFunc]
+        [return: GoReturn("error")]
+        public static object? PidFDSendSignal([GoParam("uintptr")] long pidfd, [GoParam("syscall.Signal")] long signal)
+        {
+            int result = LinuxUnixSyscalls.pidfd_send_signal((int)pidfd, (int)signal, System.IntPtr.Zero, 0);
+            if (result == -1)
+            {
+                int errno = System.Runtime.InteropServices.Marshal.GetLastPInvokeError();
+                return (long)errno;
+            }
+            return null;
+        }
+
         [GoFunc]
         [return: GoReturn("int", "error")]
         public static (long, object?) GetRandom(Slice<byte> p, long flags)
@@ -135,6 +164,42 @@ namespace Ngo.Runtime.Internal.Syscall.Unix
         }
     }
 
+    [GoType("struct", Name = "SiginfoChild", Package = "internal/syscall/unix")]
+    public class GoSiginfoChild
+    {
+        [GoField] public int Signo;
+        [GoField] public int Errno;
+        [GoField] public int Code;
+        [GoField] public int Pid;
+        [GoField] public uint Uid;
+        [GoField] public int Status;
+
+        [GoMethod]
+        public long WaitStatus()
+        {
+            const int core = 0x80;
+            const int stopped = 0x7f;
+            const int continued = 0xffff;
+
+            switch (Code)
+            {
+                case 1: // CLD_EXITED
+                    return (long)(Status << 8);
+                case 3: // CLD_DUMPED
+                    return (long)(Status | core);
+                case 2: // CLD_KILLED
+                    return (long)Status;
+                case 4: // CLD_TRAPPED
+                case 5: // CLD_STOPPED
+                    return (long)((Status << 8) | stopped);
+                case 6: // CLD_CONTINUED
+                    return continued;
+                default:
+                    return 0;
+            }
+        }
+    }
+
     internal static class LinuxUnixSyscalls
     {
         [System.Runtime.InteropServices.DllImport("libc", SetLastError = true)]
@@ -145,5 +210,18 @@ namespace Ngo.Runtime.Internal.Syscall.Unix
 
         [System.Runtime.InteropServices.DllImport("libc", SetLastError = true)]
         internal static extern int fstatat(int dirfd, [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPUTF8Str)] string pathname, System.IntPtr statbuf, int flags);
+
+        [System.Runtime.InteropServices.DllImport("libc", SetLastError = true)]
+        internal static extern long syscall(long number, long arg1, long arg2, long arg3);
+
+        internal static int pidfd_open(int pid, uint flags)
+        {
+            return (int)syscall(434, pid, flags, 0);
+        }
+
+        internal static int pidfd_send_signal(int pidfd, int sig, System.IntPtr info, int flags)
+        {
+            return (int)syscall(424, pidfd, sig, 0);
+        }
     }
 }

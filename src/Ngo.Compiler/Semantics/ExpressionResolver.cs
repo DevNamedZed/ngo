@@ -419,9 +419,16 @@ namespace Ngo.Compiler.Semantics
 
             // interface{} fallback: when a selector returns interface{} (unresolved package method),
             // allow all operators — the concrete type is unknown at compile time.
-            if (left is InterfaceTypeSymbol || right is InterfaceTypeSymbol)
+            // Also handle named types whose underlying type is an interface.
+            if (left is InterfaceTypeSymbol || right is InterfaceTypeSymbol
+                || left.UnderlyingType is InterfaceTypeSymbol || right.UnderlyingType is InterfaceTypeSymbol
+                || left.TypeKind == TypeKind.Interface || right.TypeKind == TypeKind.Interface)
             {
-                var iface = (left as InterfaceTypeSymbol) ?? (right as InterfaceTypeSymbol)!;
+                var iface = (left as InterfaceTypeSymbol)
+                    ?? (right as InterfaceTypeSymbol)
+                    ?? (left.UnderlyingType as InterfaceTypeSymbol)
+                    ?? (right.UnderlyingType as InterfaceTypeSymbol)
+                    ?? (InterfaceTypeSymbol)BuiltinTypes.EmptyInterface;
                 switch (op)
                 {
                     case BinaryOperator.Equal:
@@ -534,7 +541,12 @@ namespace Ngo.Compiler.Semantics
                     }
 
                     // Interface comparison: interfaces can always be compared with == / !=
-                    if (left is InterfaceTypeSymbol || right is InterfaceTypeSymbol)
+                    // Also handle named types whose underlying type is an interface (e.g., type Token any)
+                    if (left is InterfaceTypeSymbol || right is InterfaceTypeSymbol
+                        || left.UnderlyingType is InterfaceTypeSymbol
+                        || right.UnderlyingType is InterfaceTypeSymbol
+                        || left.TypeKind == TypeKind.Interface
+                        || right.TypeKind == TypeKind.Interface)
                     {
                         return BuiltinTypes.UntypedBool;
                     }
@@ -1115,6 +1127,7 @@ namespace Ngo.Compiler.Semantics
                 var syntheticField = new FieldSymbol(fieldName, targetType, 0);
                 return new SelectorExpression(target, syntheticField, targetType, span);
             }
+
 
             // Named slice/map/channel types can have methods — check them
             // Also check when the underlying type is slice/map/channel but the named type has Struct kind
@@ -2063,6 +2076,7 @@ namespace Ngo.Compiler.Semantics
                 || exprTypeResolved is InterfaceTypeSymbol
                 || expr.Type.TypeKind == TypeKind.Interface
                 || exprTypeResolved.TypeKind == TypeKind.Interface
+                || expr.Type.TypeKind == TypeKind.TypeParameter
                 || (expr.Type is InstantiatedTypeSymbol instType
                     && instType.GenericType is InterfaceTypeSymbol)
                 || expr.Type == BuiltinTypes.Error

@@ -668,7 +668,14 @@ namespace Ngo.Compiler.Language
             }
             else
             {
-                _pos++; // skip the rune character
+                if (char.IsHighSurrogate(_source[_pos]) && _pos + 1 < _source.Length && char.IsLowSurrogate(_source[_pos + 1]))
+                {
+                    _pos += 2;
+                }
+                else
+                {
+                    _pos++;
+                }
             }
 
             if (_pos < _source.Length && _source[_pos] == '\'')

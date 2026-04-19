@@ -1,5 +1,5 @@
 {
-  "goVersion": "go1.22.6",
+  "goVersion": "go1.23.6",
   "packages": [
     {
       "path": "archive/tar",
@@ -621,6 +621,10 @@
       "impl": "go"
     },
     {
+      "path": "structs",
+      "impl": "go"
+    },
+    {
       "path": "sync",
       "impl": "go"
     },
@@ -679,6 +683,10 @@
     },
     {
       "path": "time/tzdata",
+      "impl": "go"
+    },
+    {
+      "path": "unique",
       "impl": "go"
     },
     {

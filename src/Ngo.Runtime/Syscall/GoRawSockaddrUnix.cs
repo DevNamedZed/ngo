@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------
-// <copyright file="CapturedLocal.cs" company="Ziad">
+// <copyright file="GoRawSockaddrUnix.cs" company="Ziad">
 //  Copyright 2016 Ziad
 //
 //  Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,25 +16,14 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
-using System;
-using Ngo.Compiler.Emit.Builder;
+using Ngo.Runtime.Discovery;
 
-namespace Ngo.Compiler.Emit
+namespace Ngo.Runtime.Syscall
 {
-    /// <summary>
-    /// A local variable paired with its CLR type, used for eagerly evaluated
-    /// defer/go arguments in closure emission.
-    /// </summary>
-    public sealed class CapturedLocal
+    [GoType("struct", Name = "RawSockaddrUnix", Package = "syscall")]
+    public class GoRawSockaddrUnix
     {
-        internal CapturedLocal(LocalSlot local, Type type)
-        {
-            Local = local;
-            Type = type;
-        }
-
-        internal LocalSlot Local { get; }
-
-        public Type Type { get; }
+        [GoField] public long Family;
+        [GoField] public Slice<byte> Path;
     }
 }

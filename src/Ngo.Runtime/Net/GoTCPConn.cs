@@ -232,14 +232,14 @@ namespace Ngo.Runtime.Net
         }
 
         [GoMethod]
-        [return: GoReturn("net.Conn")]
-        public object? SyscallConn()
+        [return: GoReturn("syscall.RawConn", "error")]
+        public (object?, object?) SyscallConn()
         {
             if (_client?.Client != null)
             {
-                return _client.Client.Handle.ToInt64();
+                return (_client.Client.Handle.ToInt64(), null);
             }
-            return null;
+            return (null, (object?)"net: no underlying socket");
         }
 
         private static int ExtractTimeoutMs(object t)

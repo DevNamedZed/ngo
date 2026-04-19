@@ -21,6 +21,7 @@ using System.Collections.Generic;
 using System.Reflection;
 using System.Reflection.Emit;
 using Ngo.Compiler.Ast;
+using Ngo.Compiler.Emit.Builder;
 using Ngo.Compiler.Symbols;
 using Ngo.Runtime;
 using Ngo.Runtime.Io;
@@ -200,9 +201,85 @@ namespace Ngo.Compiler.Emit
                 case "dotnet":
                     return EmitDotnetCall(call, name);
 
+                case "internal/abi":
+                case "abi":
+                    return TryEmitInternalAbiSpecial(call, name);
+
                 default:
                     return false;
             }
+        }
+
+        private bool TryEmitInternalAbiSpecial(CallExpression call, string name)
+        {
+            switch (name)
+            {
+                case "Escape":
+                case "NoEscape":
+                {
+                    if (call.Arguments.Count != 1)
+                    {
+                        throw new NotSupportedException(
+                            $"internal/abi.{name} expects exactly 1 argument, got {call.Arguments.Count}");
+                    }
+                    _body.EmitExpression(call.Arguments[0]);
+                    return true;
+                }
+
+                case "TypeOf":
+                {
+                    if (call.Arguments.Count != 1)
+                    {
+                        throw new NotSupportedException(
+                            $"internal/abi.TypeOf expects exactly 1 argument, got {call.Arguments.Count}");
+                    }
+                    _body.EmitExpression(call.Arguments[0]);
+                    var argClrType = _ctx.Mapper.Map(call.Arguments[0].Type);
+                    if (argClrType.IsValueType)
+                    {
+                        _ctx.IL.Emit(OpCodes.Box, argClrType);
+                    }
+                    var typeOfMethod = typeof(Ngo.Runtime.Internal.Abi.Package)
+                        .GetMethod("TypeOf", new[] { typeof(object) });
+                    if (typeOfMethod == null)
+                    {
+                        throw new InvalidOperationException(
+                            "Ngo.Runtime.Internal.Abi.Package.TypeOf(object) not found");
+                    }
+                    _ctx.IL.Emit(OpCodes.Call, typeOfMethod);
+                    return true;
+                }
+
+                case "TypeFor":
+                {
+                    if (call.TypeArguments == null || call.TypeArguments.Count != 1)
+                    {
+                        throw new NotSupportedException(
+                            $"internal/abi.TypeFor expects exactly 1 type argument, got {call.TypeArguments?.Count ?? 0}");
+                    }
+                    var typeArg = _ctx.Mapper.Map(call.TypeArguments[0]);
+                    _ctx.IL.Emit(OpCodes.Ldtoken, typeArg);
+                    var getTypeFromHandle = typeof(Type).GetMethod(
+                        "GetTypeFromHandle",
+                        new[] { typeof(RuntimeTypeHandle) });
+                    if (getTypeFromHandle == null)
+                    {
+                        throw new InvalidOperationException(
+                            "System.Type.GetTypeFromHandle(RuntimeTypeHandle) not found");
+                    }
+                    _ctx.IL.Emit(OpCodes.Call, getTypeFromHandle);
+                    var typeForMethod = typeof(Ngo.Runtime.Internal.Abi.Package)
+                        .GetMethod("TypeForType", new[] { typeof(Type) });
+                    if (typeForMethod == null)
+                    {
+                        throw new InvalidOperationException(
+                            "Ngo.Runtime.Internal.Abi.Package.TypeForType(Type) not found");
+                    }
+                    _ctx.IL.Emit(OpCodes.Call, typeForMethod);
+                    return true;
+                }
+            }
+            return false;
         }
 
         private bool TryEmitFmtSpecial(CallExpression call, string name)
@@ -565,12 +642,41 @@ namespace Ngo.Compiler.Emit
             if (method == null)
             {
                 var candidates = targetType.GetMethods(BindingFlags.Public | BindingFlags.Static);
-                foreach (var c in candidates)
+
+                foreach (var candidate in candidates)
                 {
-                    if (c.Name == methodName && c.GetParameters().Length == call.Arguments.Count)
+                    if (candidate.Name != methodName)
                     {
-                        method = c;
+                        continue;
+                    }
+                    var candidateParams = candidate.GetParameters();
+                    bool candidateVariadic = candidateParams.Length > 0
+                        && candidateParams[candidateParams.Length - 1]
+                            .IsDefined(typeof(ParamArrayAttribute), false);
+                    if (!candidateVariadic && candidateParams.Length == call.Arguments.Count)
+                    {
+                        method = candidate;
                         break;
+                    }
+                }
+
+                if (method == null)
+                {
+                    foreach (var candidate in candidates)
+                    {
+                        if (candidate.Name != methodName)
+                        {
+                            continue;
+                        }
+                        var candidateParams = candidate.GetParameters();
+                        bool candidateVariadic = candidateParams.Length > 0
+                            && candidateParams[candidateParams.Length - 1]
+                                .IsDefined(typeof(ParamArrayAttribute), false);
+                        if (candidateVariadic && call.Arguments.Count >= candidateParams.Length - 1)
+                        {
+                            method = candidate;
+                            break;
+                        }
                     }
                 }
             }
@@ -588,7 +694,7 @@ namespace Ngo.Compiler.Emit
                 && methodParams[methodParams.Length - 1].IsDefined(typeof(ParamArrayAttribute), false);
 
             // Collect &localVar arguments for pointer writeback after call
-            var writebacks = new List<(Symbol symbol, LocalBuilder ptrLocal, Type innerType)>();
+            var writebacks = new List<(Symbol symbol, LocalSlot ptrLocal, Type innerType)>();
 
             void EmitArgWithWriteback(Expression arg, Type expectedParamType)
             {
@@ -800,6 +906,29 @@ namespace Ngo.Compiler.Emit
                 return true;
             }
 
+            if (resolvedArgType is ChannelTypeSymbol || argType.TypeKind == TypeKind.Channel)
+            {
+                _body.EmitExpression(arg);
+                var chanClrType = _ctx.Mapper.Map(resolvedArgType is ChannelTypeSymbol ? resolvedArgType : argType);
+                var lenGetter = _ctx.Definitions.GetPropertyGetter(chanClrType, "Length");
+                _ctx.IL.Emit(OpCodes.Call, lenGetter);
+                _ctx.IL.Emit(OpCodes.Conv_I8);
+                return true;
+            }
+
+            if (resolvedArgType is Symbols.InterfaceTypeSymbol || argType.TypeKind == TypeKind.Interface)
+            {
+                _body.EmitExpression(arg);
+                if (_ctx.Mapper.Map(argType).IsValueType)
+                {
+                    _ctx.IL.Emit(OpCodes.Box, _ctx.Mapper.Map(argType));
+                }
+                var lenMethod = typeof(Ngo.Runtime.BuiltIn).GetMethod("Len", new[] { typeof(object) })!;
+                _ctx.IL.Emit(OpCodes.Call, lenMethod);
+                _ctx.IL.Emit(OpCodes.Conv_I8);
+                return true;
+            }
+
             return false;
         }
 
@@ -842,6 +971,32 @@ namespace Ngo.Compiler.Emit
                 return true;
             }
 
+            if (resolvedArgType is ArrayTypeSymbol || argType.TypeKind == TypeKind.Array)
+            {
+                var arrCapType = resolvedArgType as ArrayTypeSymbol
+                    ?? argType.Resolved() as ArrayTypeSymbol;
+                bool isInlineField = false;
+                if (arrCapType != null && arg is Ast.SelectorExpression capSel
+                    && capSel.Field?.Type is ArrayTypeSymbol
+                    && _ctx.StructFields.TryGetValue(capSel.Field, out var capFb)
+                    && !capFb.FieldType.IsArray)
+                {
+                    isInlineField = true;
+                }
+                if (isInlineField)
+                {
+                    _ctx.IL.Emit(OpCodes.Ldc_I4, arrCapType!.Length);
+                    _ctx.IL.Emit(OpCodes.Conv_I8);
+                }
+                else
+                {
+                    _body.EmitExpression(arg);
+                    _ctx.IL.Emit(OpCodes.Ldlen);
+                    _ctx.IL.Emit(OpCodes.Conv_I8);
+                }
+                return true;
+            }
+
             return false;
         }
 
@@ -877,7 +1032,6 @@ namespace Ngo.Compiler.Emit
                 elemType = (underlying as SliceTypeSymbol)?.ElementType ?? BuiltinTypes.EmptyInterface;
             }
             var elemClrType = _ctx.Mapper.Map(elemType);
-            var sliceClrType = _ctx.Mapper.Map(resolved is SliceTypeSymbol ? resolved : sliceArg.Type);
             var appendSliceType = typeof(Slice<>).MakeGenericType(elemClrType);
 
             // Spread case: append(dst, src...) — append one slice to another
@@ -896,7 +1050,7 @@ namespace Ngo.Compiler.Emit
                     var toBytesMethod = typeof(GoString).GetMethod("ToBytes", new[] { typeof(GoString) })!;
                     _ctx.IL.Emit(OpCodes.Call, toBytesMethod);
                 }
-                var appendSliceMethod = _ctx.Definitions.GetMethod(appendSliceType, "Append", new[] { sliceClrType, sliceClrType });
+                var appendSliceMethod = _ctx.Definitions.GetMethod(appendSliceType, "Append", new[] { appendSliceType, appendSliceType });
                 _ctx.IL.Emit(OpCodes.Call, appendSliceMethod);
                 return true;
             }
@@ -928,7 +1082,7 @@ namespace Ngo.Compiler.Emit
                 _body.EmitStelem(elemClrType);
             }
 
-            var appendMethod = _ctx.Definitions.GetMethod(appendSliceType, "Append", new[] { sliceClrType, elemClrType.MakeArrayType() });
+            var appendMethod = _ctx.Definitions.GetMethod(appendSliceType, "Append", new[] { appendSliceType, elemClrType.MakeArrayType() });
             _ctx.IL.Emit(OpCodes.Call, appendMethod);
             return true;
         }
@@ -1153,13 +1307,12 @@ namespace Ngo.Compiler.Emit
             }
 
             var elemClrType = _ctx.Mapper.Map(copyElemType);
-            var sliceClrType = _ctx.Mapper.Map(resolvedCopy is SliceTypeSymbol ? resolvedCopy : call.Arguments[0].Type);
 
             _body.EmitExpression(call.Arguments[0]);
             _body.EmitExpression(call.Arguments[1]);
 
             var copySliceType = typeof(Slice<>).MakeGenericType(elemClrType);
-            var copyMethod2 = _ctx.Definitions.GetMethod(copySliceType, "Copy", new[] { sliceClrType, sliceClrType });
+            var copyMethod2 = _ctx.Definitions.GetMethod(copySliceType, "Copy", new[] { copySliceType, copySliceType });
             _ctx.IL.Emit(OpCodes.Call, copyMethod2);
             _ctx.IL.Emit(OpCodes.Conv_I8);
             return true;
@@ -1208,8 +1361,7 @@ namespace Ngo.Compiler.Emit
                     }
                 }
 
-                if (!elemClrType.IsValueType && !EmitContext.IsNonRuntimeType(elemClrType)
-                    && !EmitContext.HasTypeBuilderArgs(elemClrType))
+                if (IsRuntimeReferenceType(elemClrType))
                 {
                     var ctor = elemClrType.GetConstructor(Type.EmptyTypes);
                     if (ctor != null)
@@ -1226,8 +1378,7 @@ namespace Ngo.Compiler.Emit
                     var ptrClrType = typeof(Ptr<>).MakeGenericType(elemClrType);
                     var ctor = _ctx.Definitions.GetConstructor(ptrClrType, Type.EmptyTypes);
                     _ctx.IL.Emit(OpCodes.Newobj, ctor);
-                    if (!EmitContext.IsNonRuntimeType(elemClrType)
-                        && !EmitContext.HasTypeBuilderArgs(elemClrType))
+                    if (IsRuntimeReferenceType(elemClrType))
                     {
                         EmitReferenceFieldInitialization(ptrClrType, elemClrType);
                     }
@@ -1350,10 +1501,17 @@ namespace Ngo.Compiler.Emit
                 argType = tpClear.Constraint.TypeElements[0].Type;
             }
 
-            if (argType is MapTypeSymbol)
+            var resolvedArgType = argType;
+            while (resolvedArgType != null && resolvedArgType.GetType() == typeof(TypeSymbol)
+                   && resolvedArgType.UnderlyingType != null)
+            {
+                resolvedArgType = resolvedArgType.UnderlyingType;
+            }
+
+            if (resolvedArgType is MapTypeSymbol || argType.TypeKind == TypeKind.Map)
             {
                 _body.EmitExpression(arg);
-                var mapClrType = _ctx.Mapper.Map(argType);
+                var mapClrType = _ctx.Mapper.Map(resolvedArgType is MapTypeSymbol ? resolvedArgType : argType);
                 var clearMethod = _ctx.Definitions.GetMethod(mapClrType, "Clear");
                 if (clearMethod != null)
                 {
@@ -1362,7 +1520,7 @@ namespace Ngo.Compiler.Emit
                 return true;
             }
 
-            if (argType is SliceTypeSymbol sliceType)
+            if (resolvedArgType is SliceTypeSymbol sliceType)
             {
                 var elemClrType = _ctx.Mapper.Map(sliceType.ElementType);
                 var sliceClrType = _ctx.Mapper.Map(sliceType);
@@ -1548,6 +1706,36 @@ namespace Ngo.Compiler.Emit
                 _ctx.IL.Emit(OpCodes.Newobj, defaultCtor);
                 _ctx.IL.Emit(OpCodes.Stfld, field);
             }
+        }
+
+        private static bool IsRuntimeReferenceType(Type type)
+        {
+            if (type.IsValueType)
+            {
+                return false;
+            }
+            return !ContainsNonRuntimeType(type);
+        }
+
+        private static bool ContainsNonRuntimeType(Type type)
+        {
+            if (EmitContext.IsNonRuntimeType(type))
+            {
+                return true;
+            }
+            if (type.IsGenericType && EmitContext.HasTypeBuilderArgs(type))
+            {
+                return true;
+            }
+            if (type.HasElementType)
+            {
+                var elementType = type.GetElementType();
+                if (elementType != null && ContainsNonRuntimeType(elementType))
+                {
+                    return true;
+                }
+            }
+            return false;
         }
     }
 }

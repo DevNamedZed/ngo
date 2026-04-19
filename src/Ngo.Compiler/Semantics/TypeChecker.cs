@@ -246,8 +246,17 @@ namespace Ngo.Compiler.Semantics
 
         private static bool IsStringToError(TypeSymbol source, TypeSymbol target)
         {
-            return (source.TypeKind == TypeKind.String || source.TypeKind == TypeKind.UntypedString)
-                && target is InterfaceTypeSymbol errIface && errIface.Name == "error";
+            if ((source.TypeKind == TypeKind.String || source.TypeKind == TypeKind.UntypedString)
+                && target is InterfaceTypeSymbol errIface && errIface.Name == "error")
+            {
+                return true;
+            }
+            if (source is InterfaceTypeSymbol srcErr && srcErr.Name == "error"
+                && (target.TypeKind == TypeKind.String || target.TypeKind == TypeKind.UntypedString))
+            {
+                return true;
+            }
+            return false;
         }
 
         private static bool IsUnsafePointerAssignable(TypeSymbol source, TypeSymbol target)
@@ -655,6 +664,13 @@ namespace Ngo.Compiler.Semantics
                 return left.TypeKind == TypeKind.Float64 ? left : right;
             }
 
+            // complex64 ↔ complex128: Go allows mixed complex operations, widening complex64 to complex128
+            if ((left.TypeKind == TypeKind.Complex64 && right.TypeKind == TypeKind.Complex128)
+                || (left.TypeKind == TypeKind.Complex128 && right.TypeKind == TypeKind.Complex64))
+            {
+                return left.TypeKind == TypeKind.Complex128 ? left : right;
+            }
+
             return null;
         }
 
@@ -700,13 +716,13 @@ namespace Ngo.Compiler.Semantics
                 var targetSliceElem = GetSliceElementType(target, resolvedTarget);
 
                 if (IsStringish(source, resolvedSource) && targetSliceElem != null
-                    && (targetSliceElem.TypeKind == TypeKind.Uint8 || targetSliceElem.TypeKind == TypeKind.Int32))
+                    && IsRuneOrByte(targetSliceElem.TypeKind))
                 {
                     return true;
                 }
 
                 if (sourceSliceElem != null
-                    && (sourceSliceElem.TypeKind == TypeKind.Uint8 || sourceSliceElem.TypeKind == TypeKind.Int32)
+                    && IsRuneOrByte(sourceSliceElem.TypeKind)
                     && IsStringish(target, resolvedTarget))
                 {
                     return true;
@@ -810,6 +826,13 @@ namespace Ngo.Compiler.Semantics
         private static bool IsIntegerOrUnderlyingInteger(TypeSymbol original, TypeSymbol resolved)
         {
             return IsInteger(original) || IsInteger(resolved);
+        }
+
+        private static bool IsRuneOrByte(TypeKind kind)
+        {
+            return kind == TypeKind.Uint8
+                || kind == TypeKind.Int32
+                || kind == TypeKind.Int;
         }
 
         private static bool IsStringish(TypeSymbol original, TypeSymbol resolved)

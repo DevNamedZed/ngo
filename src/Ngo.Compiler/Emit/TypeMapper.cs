@@ -61,11 +61,40 @@ namespace Ngo.Compiler.Emit
             _pendingTypeCreations.Clear();
         }
 
+        internal void PromoteTypeBuilders()
+        {
+            foreach (var kvp in _typeCache)
+            {
+                if (kvp.Value is TypeBuilder typeBuilder && typeBuilder.IsCreated())
+                {
+                    _typeCache[kvp.Key] = typeBuilder.CreateType()!;
+                }
+            }
+        }
+
         public void Register(TypeSymbol symbol, Type type)
         {
             if (type != null)
             {
                 _typeCache[symbol] = type;
+            }
+        }
+
+        private static string? GetSafeFullName(Type type)
+        {
+            try
+            {
+                return type.FullName;
+            }
+            catch (ArgumentException)
+            {
+                var ns = type.Namespace;
+                return string.IsNullOrEmpty(ns) ? type.Name : ns + "." + type.Name;
+            }
+            catch (NotSupportedException)
+            {
+                var ns = type.Namespace;
+                return string.IsNullOrEmpty(ns) ? type.Name : ns + "." + type.Name;
             }
         }
 
@@ -301,15 +330,13 @@ namespace Ngo.Compiler.Emit
                             if (kvp.Key is StructTypeSymbol cached
                                 && cached.Name == symbol.Name
                                 && kvp.Value != null
-                                && !(kvp.Value is System.Reflection.Emit.TypeBuilder))
+                                && kvp.Value is not System.Reflection.Emit.TypeBuilder)
                             {
                                 if (cached.PackagePath == symbol.PackagePath)
                                 {
                                     bestMatch = kvp.Value;
                                     break;
                                 }
-                                // Allow matching when the unresolved symbol has no PackagePath
-                                // but is in the current package's dependency scope
                                 if (symbol.PackagePath == null && cached.PackagePath != null && bestMatch == null)
                                 {
                                     bestMatch = kvp.Value;
@@ -326,22 +353,11 @@ namespace Ngo.Compiler.Emit
                     // Generate a CLR value type for anonymous/unresolved structs
                     if (symbol is StructTypeSymbol anonStruct && anonStruct.Fields.Count > 0 && _emitContext != null)
                     {
-                        // Build a qualified name to avoid CLR naming conflicts.
-                        string structName;
+                        string qualifiedName;
                         if (!string.IsNullOrEmpty(anonStruct.Name) && anonStruct.Name != "struct{}")
                         {
-                            bool shouldQualify = _emitContext.IsDependencyEmit;
                             var pkgPath = anonStruct.PackagePath ?? _emitContext.CurrentPackagePath;
-                            if (shouldQualify && pkgPath != null)
-                            {
-                                var lastSlash = pkgPath.LastIndexOf('/');
-                                var shortPkg = lastSlash >= 0 ? pkgPath.Substring(lastSlash + 1) : pkgPath;
-                                structName = shortPkg + "." + anonStruct.Name;
-                            }
-                            else
-                            {
-                                structName = anonStruct.Name;
-                            }
+                            qualifiedName = _emitContext.QualifyCrossPackageType(pkgPath, anonStruct.Name);
                         }
                         else
                         {
@@ -353,26 +369,24 @@ namespace Ngo.Compiler.Emit
                                 nameBuilder.Append(field.Type.Name);
                                 nameBuilder.Append('_');
                             }
-                            structName = nameBuilder.ToString();
+                            qualifiedName = _emitContext.QualifyName(nameBuilder.ToString());
                         }
 
-                        // Check if we already generated this type
-                        var qualifiedName = _emitContext.QualifyName(structName);
                         foreach (var cached in _typeCache.Values)
                         {
-                            if (cached != null && cached.FullName == qualifiedName)
+                            if (cached != null && GetSafeFullName(cached) == qualifiedName)
                             {
                                 _typeCache[symbol] = cached;
-                                // Register this struct's field symbols to point to the existing type's fields
                                 foreach (var field in anonStruct.Fields)
                                 {
                                     if (!_emitContext.StructFields.ContainsKey(field))
                                     {
-                                        // Find the original field symbol that maps to this field name
                                         foreach (var existingEntry in _emitContext.StructFields)
                                         {
+                                            var declaring = existingEntry.Value.DeclaringType;
                                             if (existingEntry.Key.Name == field.Name
-                                                && existingEntry.Value.DeclaringType == cached)
+                                                && declaring != null
+                                                && GetSafeFullName(declaring) == qualifiedName)
                                             {
                                                 _emitContext.StructFields[field] = existingEntry.Value;
                                                 break;
@@ -383,38 +397,12 @@ namespace Ngo.Compiler.Emit
                                 return cached;
                             }
                         }
-                        // Check if the type already exists in the module (from another dependency emit)
-                        var qualifiedName2 = _emitContext.QualifyName(structName);
-                        foreach (var cached2 in _typeCache.Values)
-                        {
-                            if (cached2 != null && cached2.FullName == qualifiedName2)
-                            {
-                                _typeCache[symbol] = cached2;
-                                // Register fields
-                                foreach (var field in anonStruct.Fields)
-                                {
-                                    if (!_emitContext.StructFields.ContainsKey(field))
-                                    {
-                                        foreach (var existingEntry in _emitContext.StructFields)
-                                        {
-                                            if (existingEntry.Key.Name == field.Name
-                                                && existingEntry.Value.DeclaringType?.FullName == qualifiedName2)
-                                            {
-                                                _emitContext.StructFields[field] = existingEntry.Value;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                }
-                                return cached2;
-                            }
-                        }
 
                         Builder.ITypeBuilder structBuilder;
                         try
                         {
                             structBuilder = _emitContext.Module.DefineType(
-                                qualifiedName2,
+                                qualifiedName,
                                 System.Reflection.TypeAttributes.Public
                                 | System.Reflection.TypeAttributes.Sealed
                                 | System.Reflection.TypeAttributes.SequentialLayout,
@@ -423,7 +411,7 @@ namespace Ngo.Compiler.Emit
                         catch (ArgumentException ex)
                         {
                             throw new InvalidOperationException(
-                                $"TypeMapper: struct type name collision for '{qualifiedName2}'", ex);
+                                $"TypeMapper: struct type name collision for '{qualifiedName}'", ex);
                         }
 
                         if (anonStruct.TypeParameters.Count > 0)
@@ -443,11 +431,11 @@ namespace Ngo.Compiler.Emit
                                 || anonStruct.PackagePath == _emitContext.CurrentPackagePath;
                             if (!isCurrentPackage)
                             {
-                                ngoMod.ExternalTypeNames.Add(qualifiedName2);
+                                ngoMod.ExternalTypeNames.Add(qualifiedName);
                             }
                         }
 
-                        _emitContext.Definitions.RegisterType(qualifiedName2, structBuilder);
+                        _emitContext.Definitions.RegisterType(qualifiedName, structBuilder);
 
                         foreach (var field in anonStruct.Fields)
                         {
@@ -457,7 +445,7 @@ namespace Ngo.Compiler.Emit
                                 fieldType,
                                 System.Reflection.FieldAttributes.Public);
                             _emitContext.StructFields[field] = fieldBuilder;
-                            _emitContext.Definitions.RegisterField(qualifiedName2, field.Name, fieldBuilder);
+                            _emitContext.Definitions.RegisterField(qualifiedName, field.Name, fieldBuilder);
                         }
                         structBuilder.CreateType();
                         return structBuilder.AsType();
@@ -749,9 +737,11 @@ namespace Ngo.Compiler.Emit
                 moduleBuilder = _ngoInlineArrayModule;
             }
 
-            // Use Name (not FullName) to avoid assembly-qualified names with brackets/commas
-            // that are invalid for DefineType
-            var elemName = elementType.Name.Replace('.', '_');
+            var elemName = elementType.Name
+                .Replace('.', '_')
+                .Replace('`', '_')
+                .Replace('[', '_')
+                .Replace(']', '_');
             var typeName = $"GoArray_{elemName}_{length}";
 
             // Check if already defined in this module.
@@ -783,12 +773,16 @@ namespace Ngo.Compiler.Emit
             typeBuilder.SetCustomAttribute(
                 new System.Reflection.Emit.CustomAttributeBuilder(attrCtor, new object[] { length }));
 
-            typeBuilder.DefineField("_element0", elementType,
+            // When the element type is an unfinished TypeBuilder (or wrapper like NgoBuilderType),
+            // DefineField crashes with "Must be an array type" because the CLR's signature
+            // encoder calls GetArrayRank() on non-RuntimeType types. Use typeof(byte) as a stand-in.
+            bool isUnfinishedType = elementType is System.Reflection.Emit.TypeBuilder
+                || elementType is System.Reflection.TypeDelegator;
+            var fieldElementType = isUnfinishedType ? typeof(byte) : elementType;
+
+            typeBuilder.DefineField("_element0", fieldElementType,
                 System.Reflection.FieldAttributes.Private);
 
-            // Don't CreateType here — the element type may not be created yet.
-            // InlineArray types are CreateType'd in the topological sort after their
-            // element types. Return the TypeBuilder; it's valid for DefineField.
             if (cache != null)
             {
                 cache[key] = typeBuilder;

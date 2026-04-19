@@ -442,5 +442,13 @@ namespace Ngo.Runtime.Net
         [GoMethod]
         [return: GoReturn("string")]
         public string Error() => "unknown network " + Value;
+
+        [GoMethod]
+        [return: GoReturn("bool")]
+        public bool Timeout() => false;
+
+        [GoMethod]
+        [return: GoReturn("bool")]
+        public bool Temporary() => false;
     }
 }

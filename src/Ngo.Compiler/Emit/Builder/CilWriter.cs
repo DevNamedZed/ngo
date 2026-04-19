@@ -26,6 +26,9 @@ namespace Ngo.Compiler.Emit.Builder
     /// <summary>
     /// Abstract IL emission target. MethodBodyEmitter emits through this.
     /// Two implementations: ILGeneratorWriter (real ILGenerator) and NgoWriter (.ngo archive buffer).
+    /// Locals and labels are represented by domain types (LocalSlot, LabelSlot) so both writers
+    /// can carry the original declared type through emission without round-tripping through a
+    /// scratch ILGenerator.
     /// </summary>
     internal abstract class CilWriter
     {
@@ -40,18 +43,18 @@ namespace Ngo.Compiler.Emit.Builder
         public abstract void Emit(OpCode op, MethodInfo method);
         public abstract void Emit(OpCode op, ConstructorInfo ctor);
         public abstract void Emit(OpCode op, FieldInfo field);
-        public abstract void Emit(OpCode op, Label label);
-        public abstract void Emit(OpCode op, Label[] labels);
-        public abstract void Emit(OpCode op, LocalBuilder local);
+        public abstract void Emit(OpCode op, LabelSlot label);
+        public abstract void Emit(OpCode op, LabelSlot[] labels);
+        public abstract void Emit(OpCode op, LocalSlot local);
 
         public abstract void Emit(OpCode op, TypeRef typeRef);
         public abstract void Emit(OpCode op, MethodRef methodRef);
         public abstract void Emit(OpCode op, CtorRef ctorRef);
         public abstract void Emit(OpCode op, FieldRef fieldRef);
 
-        public abstract LocalBuilder DeclareLocal(Type type);
-        public abstract Label DefineLabel();
-        public abstract void MarkLabel(Label label);
+        public abstract LocalSlot DeclareLocal(Type type);
+        public abstract LabelSlot DefineLabel();
+        public abstract void MarkLabel(LabelSlot label);
 
         public abstract void BeginExceptionBlock();
         public abstract void BeginCatchBlock(Type type);

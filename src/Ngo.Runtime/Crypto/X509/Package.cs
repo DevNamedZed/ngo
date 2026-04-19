@@ -12,6 +12,7 @@ namespace Ngo.Runtime.Crypto.X509
     {
         // Error variables
         [GoVar] public static readonly object? ErrUnsupportedAlgorithm = "x509: cannot verify signature: algorithm unimplemented";
+        [GoVar] public static readonly object? IncorrectPasswordError = "x509: decryption password incorrect";
 
         // x509.ParseCertificate(asn1Data []byte) (*Certificate, error)
         [GoFunc]
@@ -288,6 +289,14 @@ namespace Ngo.Runtime.Crypto.X509
 
         // SignatureAlgorithm constants
         [GoConst(Type = "x509.SignatureAlgorithm")]
+        public const long UnknownSignatureAlgorithm = 0;
+        [GoConst(Type = "x509.SignatureAlgorithm")]
+        public const long MD2WithRSA = 1;
+        [GoConst(Type = "x509.SignatureAlgorithm")]
+        public const long MD5WithRSA = 2;
+        [GoConst(Type = "x509.SignatureAlgorithm")]
+        public const long SHA1WithRSA = 3;
+        [GoConst(Type = "x509.SignatureAlgorithm")]
         public const long SHA256WithRSA = 4;
         [GoConst(Type = "x509.SignatureAlgorithm")]
         public const long SHA384WithRSA = 5;
@@ -299,6 +308,14 @@ namespace Ngo.Runtime.Crypto.X509
         public const long ECDSAWithSHA384 = 8;
         [GoConst(Type = "x509.SignatureAlgorithm")]
         public const long ECDSAWithSHA512 = 9;
+        [GoConst(Type = "x509.SignatureAlgorithm")]
+        public const long DSAWithSHA1 = 10;
+        [GoConst(Type = "x509.SignatureAlgorithm")]
+        public const long DSAWithSHA256 = 11;
+        [GoConst(Type = "x509.SignatureAlgorithm")]
+        public const long ECDSAWithSHA1 = 12;
+        [GoConst(Type = "x509.SignatureAlgorithm")]
+        public const long PureEd25519 = 13;
 
         // PublicKeyAlgorithm constants
         [GoConst(Type = "x509.PublicKeyAlgorithm")]
@@ -412,7 +429,6 @@ namespace Ngo.Runtime.Crypto.X509
                 BasicConstraintsValid = cert.Extensions.OfType<X509BasicConstraintsExtension>().Any(),
             };
 
-            // Subject/Issuer as string representations
             goCert.Subject = cert.Subject;
             goCert.Issuer = cert.Issuer;
 
@@ -498,7 +514,7 @@ namespace Ngo.Runtime.Crypto.X509
             [GoField(Name = "Signature")] public Slice<byte> Signature;
             [GoField(Name = "PublicKey")] public object? PublicKey;
             [GoField(Name = "PublicKeyAlgorithm")] public long PublicKeyAlgorithm;
-            [GoField(Name = "Subject")] public object? Subject; // pkix.Name
+            [GoField(Name = "Subject", Type = "pkix.Name")] public object? Subject;
             [GoField(Name = "DNSNames")] public Slice<string> DNSNames;
             [GoField(Name = "EmailAddresses")] public Slice<string> EmailAddresses;
             [GoField(Name = "IPAddresses")] public Slice<object?> IPAddresses;
@@ -569,8 +585,8 @@ namespace Ngo.Runtime.Crypto.X509
         [GoField(Name = "PublicKey")] public object? PublicKey; // any
         [GoField(Name = "Version")] public long Version;
         [GoField(Name = "SerialNumber")] public object? SerialNumber; // *big.Int
-        [GoField(Name = "Issuer")] public object? Issuer; // pkix.Name
-        [GoField(Name = "Subject")] public object? Subject; // pkix.Name
+        [GoField(Name = "Issuer", Type = "pkix.Name")] public object? Issuer;
+        [GoField(Name = "Subject", Type = "pkix.Name")] public object? Subject;
         [GoField(Name = "NotBefore")] public object? NotBefore; // time.Time
         [GoField(Name = "NotAfter")] public object? NotAfter; // time.Time
         [GoField(Name = "KeyUsage")] public long KeyUsage; // KeyUsage
@@ -820,6 +836,16 @@ namespace Ngo.Runtime.Crypto.X509
 
         [GoMethod]
         public string Error() => "x509: certificate signed by unknown authority";
+    }
+
+    [GoType("struct", Name = "HostnameError", Package = "crypto/x509")]
+    public class GoHostnameError
+    {
+        [GoField(Name = "Certificate", Type = "*x509.Certificate")] public GoCertificate? Certificate;
+        [GoField(Name = "Host")] public string Host = "";
+
+        [GoMethod]
+        public string Error() => "x509: certificate is not valid for host " + Host;
     }
 }
 

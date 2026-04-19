@@ -227,7 +227,7 @@ namespace Ngo.Compiler.Semantics
             if (syntax.Left.Count > 1 && syntax.Right.Count == 1)
             {
                 var rhs = _expressionResolver.ResolveExpression(syntax.Right[0]);
-                var returnTypes = _context.GetCallReturnTypes(rhs);
+                var returnTypes = _context.GetCallReturnTypes(rhs, syntax.Left.Count);
                 if (returnTypes != null && returnTypes.Count == syntax.Left.Count)
                 {
                     var targets = new Expression?[syntax.Left.Count];
@@ -339,7 +339,7 @@ namespace Ngo.Compiler.Semantics
             if (syntax.Left.Count > 1 && syntax.Right.Count == 1)
             {
                 var rhs = _expressionResolver.ResolveExpression(syntax.Right[0]);
-                var returnTypes = _context.GetCallReturnTypes(rhs);
+                var returnTypes = _context.GetCallReturnTypes(rhs, syntax.Left.Count);
                 if (returnTypes != null && returnTypes.Count == syntax.Left.Count)
                 {
                     var symbols = new LocalSymbol?[syntax.Left.Count];
@@ -515,8 +515,26 @@ namespace Ngo.Compiler.Semantics
 
             if (!TypeChecker.IsNumeric(operand.Type) && operand.Type != TypeSymbol.Error)
             {
-                _context.Errors.ReportError(_context.SpanOf(syntax), ErrorCode.InvalidOperation,
-                    $"Cannot apply increment/decrement to type '{operand.Type.Name}'");
+                bool allowedByConstraint = false;
+                if (operand.Type is TypeParameterSymbol incDecTypeParam
+                    && incDecTypeParam.Constraint.TypeElements.Count > 0)
+                {
+                    allowedByConstraint = true;
+                    foreach (var element in incDecTypeParam.Constraint.TypeElements)
+                    {
+                        if (!TypeChecker.IsNumeric(element.Type))
+                        {
+                            allowedByConstraint = false;
+                            break;
+                        }
+                    }
+                }
+
+                if (!allowedByConstraint)
+                {
+                    _context.Errors.ReportError(_context.SpanOf(syntax), ErrorCode.InvalidOperation,
+                        $"Cannot apply increment/decrement to type '{operand.Type.Name}'");
+                }
             }
 
             return new IncDecStatement(operand, isIncrement, _context.SpanOf(syntax));
@@ -756,7 +774,8 @@ namespace Ngo.Compiler.Semantics
                 && guardExpr.Type is not InterfaceTypeSymbol
                 && guardResolved is not InterfaceTypeSymbol
                 && guardExpr.Type.TypeKind != TypeKind.Interface
-                && guardResolved.TypeKind != TypeKind.Interface)
+                && guardResolved.TypeKind != TypeKind.Interface
+                && guardExpr.Type.TypeKind != TypeKind.TypeParameter)
             {
                 _context.Errors.ReportError(span, ErrorCode.InvalidTypeAssert,
                     $"Cannot type switch on non-interface type '{guardExpr.Type.Name}'");
@@ -1505,8 +1524,14 @@ namespace Ngo.Compiler.Semantics
                         {
                             var parameters = _typeResolver.ResolveParameterList(methodSpec.Parameters);
                             var returnTypes = _typeResolver.ResolveResultTypes(methodSpec.Result);
+                            bool isVariadic = false;
+                            if (methodSpec.Parameters.Parameters.Count > 0)
+                            {
+                                var lastParam = methodSpec.Parameters.Parameters[methodSpec.Parameters.Parameters.Count - 1];
+                                isVariadic = lastParam.Ellipsis != null;
+                            }
                             var method = new MethodSymbol(methodSpec.Name.Text, ifaceType, false,
-                                parameters, returnTypes);
+                                Array.Empty<TypeParameterSymbol>(), parameters, returnTypes, isVariadic);
                             methods.Add(method);
                         }
                     }

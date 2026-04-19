@@ -250,5 +250,16 @@ namespace Ngo.Runtime.Net
         {
             return (0, 0, 0, null, (object?)"not supported");
         }
+
+        [GoMethod]
+        [return: GoReturn("syscall.RawConn", "error")]
+        public (object?, object?) SyscallConn()
+        {
+            if (_client?.Client != null)
+            {
+                return (_client.Client.Handle.ToInt64(), null);
+            }
+            return (null, (object?)"net: no underlying socket");
+        }
     }
 }

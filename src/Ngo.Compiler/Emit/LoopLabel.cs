@@ -16,7 +16,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
-using System.Reflection.Emit;
+using Ngo.Compiler.Emit.Builder;
 
 namespace Ngo.Compiler.Emit
 {
@@ -26,14 +26,14 @@ namespace Ngo.Compiler.Emit
     /// </summary>
     public sealed class LoopLabel
     {
-        public LoopLabel(Label breakLabel, Label continueLabel)
+        internal LoopLabel(LabelSlot breakLabel, LabelSlot continueLabel)
         {
             BreakLabel = breakLabel;
             ContinueLabel = continueLabel;
         }
 
-        public Label BreakLabel { get; }
+        internal LabelSlot BreakLabel { get; }
 
-        public Label ContinueLabel { get; }
+        internal LabelSlot ContinueLabel { get; }
     }
 }

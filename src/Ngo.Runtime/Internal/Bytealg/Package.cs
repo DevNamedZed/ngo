@@ -88,6 +88,16 @@ namespace Ngo.Runtime.Internal.Bytealg
         }
 
         [GoFunc]
+        [return: GoReturn("int")]
+        public static long CompareString(string a, string b)
+        {
+            int result = string.Compare(a, b, System.StringComparison.Ordinal);
+            if (result < 0) { return -1; }
+            if (result > 0) { return 1; }
+            return 0;
+        }
+
+        [GoFunc]
         [return: GoReturn("uint32", "uint32")]
         public static (long, long) HashStr(string sep)
         {

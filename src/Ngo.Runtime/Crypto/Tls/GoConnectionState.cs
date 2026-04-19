@@ -12,8 +12,8 @@ namespace Ngo.Runtime.Crypto.Tls
         [GoField(Name = "NegotiatedProtocol")] public string NegotiatedProtocol = "";
         [GoField(Name = "NegotiatedProtocolIsMutual")] public bool NegotiatedProtocolIsMutual;
         [GoField(Name = "CipherSuite")] public ushort CipherSuite;
-        [GoField(Name = "PeerCertificates")] public Slice<object> PeerCertificates;
-        [GoField(Name = "VerifiedChains")] public Slice<Slice<object>> VerifiedChains;
+        [GoField(Name = "PeerCertificates", Type = "[]*x509.Certificate")] public Slice<object?> PeerCertificates;
+        [GoField(Name = "VerifiedChains", Type = "[][]*x509.Certificate")] public Slice<Slice<object?>> VerifiedChains;
         [GoField(Name = "OCSPResponse")] public Slice<byte> OCSPResponse;
         [GoField(Name = "TLSUnique")] public Slice<byte> TLSUnique;
         [GoField(Name = "DidResume")] public bool DidResume;

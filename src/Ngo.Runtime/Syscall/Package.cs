@@ -82,9 +82,13 @@ namespace Ngo.Runtime.Syscall
         [GoConst] public static readonly long SO_TYPE = 3;
         [GoConst] public static readonly long SO_SNDBUF = 7;
         [GoConst] public static readonly long SO_RCVBUF = 8;
+        [GoConst] public static readonly long SO_RCVTIMEO = 20;
+        [GoConst] public static readonly long SO_SNDTIMEO = 21;
         [GoConst] public static readonly long TCP_NODELAY = 1;
+        [GoConst] public static readonly long TCP_INFO = 11;
         [GoConst] public static readonly long TCP_KEEPINTVL = 5;
         [GoConst] public static readonly long TCP_KEEPIDLE = 4;
+        [GoConst] public static readonly long TCP_KEEPCNT = 6;
         [GoConst] public static readonly long IP_TOS = 1;
         [GoConst] public static readonly long IP_TTL = 2;
         [GoConst] public static readonly long IPV6_V6ONLY = 26;
@@ -370,6 +374,120 @@ namespace Ngo.Runtime.Syscall
         [GoFunc]
         [return: GoReturn("[]int", "error")]
         public static (Slice<long>, object?) Getgroups() => (new Slice<long>(System.Array.Empty<long>()), null);
+
+        [GoFunc]
+        [return: GoReturn("error")]
+        public static object? Setuid([GoParam("int")] long uid)
+        {
+            if (!IsUnix)
+            {
+                return "setuid: not available on this platform";
+            }
+            return LinuxSyscalls.setuid((uint)uid) == -1 ? ErrnoToError("setuid") : null;
+        }
+
+        [GoFunc]
+        [return: GoReturn("error")]
+        public static object? Setgid([GoParam("int")] long gid)
+        {
+            if (!IsUnix)
+            {
+                return "setgid: not available on this platform";
+            }
+            return LinuxSyscalls.setgid((uint)gid) == -1 ? ErrnoToError("setgid") : null;
+        }
+
+        [GoFunc]
+        [return: GoReturn("error")]
+        public static object? Setreuid([GoParam("int")] long ruid, [GoParam("int")] long euid)
+        {
+            if (!IsUnix)
+            {
+                return "setreuid: not available on this platform";
+            }
+            return LinuxSyscalls.setreuid((uint)ruid, (uint)euid) == -1 ? ErrnoToError("setreuid") : null;
+        }
+
+        [GoFunc]
+        [return: GoReturn("error")]
+        public static object? Setregid([GoParam("int")] long rgid, [GoParam("int")] long egid)
+        {
+            if (!IsUnix)
+            {
+                return "setregid: not available on this platform";
+            }
+            return LinuxSyscalls.setregid((uint)rgid, (uint)egid) == -1 ? ErrnoToError("setregid") : null;
+        }
+
+        [GoFunc]
+        [return: GoReturn("error")]
+        public static object? Setresuid([GoParam("int")] long ruid, [GoParam("int")] long euid, [GoParam("int")] long suid)
+        {
+            if (!IsUnix)
+            {
+                return "setresuid: not available on this platform";
+            }
+            return LinuxSyscalls.setresuid((uint)ruid, (uint)euid, (uint)suid) == -1 ? ErrnoToError("setresuid") : null;
+        }
+
+        [GoFunc]
+        [return: GoReturn("error")]
+        public static object? Setresgid([GoParam("int")] long rgid, [GoParam("int")] long egid, [GoParam("int")] long sgid)
+        {
+            if (!IsUnix)
+            {
+                return "setresgid: not available on this platform";
+            }
+            return LinuxSyscalls.setresgid((uint)rgid, (uint)egid, (uint)sgid) == -1 ? ErrnoToError("setresgid") : null;
+        }
+
+        [GoFunc]
+        [return: GoReturn("error")]
+        public static object? Exec(string argv0, Slice<string> argv, Slice<string> envv)
+        {
+            if (!IsUnix)
+            {
+                return "exec: not available on this platform";
+            }
+            var argvArray = SliceToNullTerminatedUtf8(argv);
+            var envvArray = SliceToNullTerminatedUtf8(envv);
+            try
+            {
+                if (LinuxSyscalls.execve(argv0, argvArray, envvArray) == -1)
+                {
+                    return ErrnoToError("exec");
+                }
+                return null;
+            }
+            finally
+            {
+                FreeNullTerminatedUtf8(argvArray);
+                FreeNullTerminatedUtf8(envvArray);
+            }
+        }
+
+        private static System.IntPtr[] SliceToNullTerminatedUtf8(Slice<string> slice)
+        {
+            int count = slice.Len;
+            var result = new System.IntPtr[count + 1];
+            for (int index = 0; index < count; index++)
+            {
+                result[index] = System.Runtime.InteropServices.Marshal.StringToCoTaskMemUTF8(slice[index]);
+            }
+            result[count] = System.IntPtr.Zero;
+            return result;
+        }
+
+        private static void FreeNullTerminatedUtf8(System.IntPtr[] array)
+        {
+            for (int index = 0; index < array.Length; index++)
+            {
+                if (array[index] != System.IntPtr.Zero)
+                {
+                    System.Runtime.InteropServices.Marshal.FreeCoTaskMem(array[index]);
+                }
+            }
+        }
 
         [GoFunc]
         [return: GoReturn("string", "error")]
@@ -1192,18 +1310,50 @@ namespace Ngo.Runtime.Syscall
         }
 
         [GoFunc]
-        public static long ByteSliceToString(Slice<byte> s)
+        [return: GoReturn("string")]
+        public static string ByteSliceToString(Slice<byte> sliceData)
         {
-            // In Go, this converts a NUL-terminated byte slice to a string
-            // Returns the length of the string (up to first NUL byte)
-            for (int i = 0; i < s.Len; i++)
+            int length = sliceData.Len;
+            for (int i = 0; i < sliceData.Len; i++)
             {
-                if (s[i] == 0)
+                if (sliceData[i] == 0)
                 {
-                    return i;
+                    length = i;
+                    break;
                 }
             }
-            return s.Len;
+            var bytes = new byte[length];
+            for (int i = 0; i < length; i++)
+            {
+                bytes[i] = sliceData[i];
+            }
+            return System.Text.Encoding.UTF8.GetString(bytes);
+        }
+
+        [GoFunc]
+        [return: GoReturn("[]byte", "error")]
+        public static (Slice<byte>, object?) ByteSliceFromString(string value)
+        {
+            if (value.IndexOf('\0') != -1)
+            {
+                return (default, EINVAL);
+            }
+            var bytes = System.Text.Encoding.UTF8.GetBytes(value);
+            var result = new byte[bytes.Length + 1];
+            System.Array.Copy(bytes, result, bytes.Length);
+            return (new Slice<byte>(result), null);
+        }
+
+        [GoFunc]
+        [return: GoReturn("*byte", "error")]
+        public static (Ptr<byte>?, object?) BytePtrFromString(string value)
+        {
+            var (sliceResult, errorResult) = ByteSliceFromString(value);
+            if (errorResult != null)
+            {
+                return (null, errorResult);
+            }
+            return (new Ptr<byte>(sliceResult[0]), null);
         }
 
         [GoFunc]
@@ -1389,11 +1539,30 @@ namespace Ngo.Runtime.Syscall
         [GoConst] public static readonly long MADV_SEQUENTIAL = 2;
         [GoConst] public static readonly long MADV_WILLNEED = 3;
 
-        // Terminal line discipline constants
-        [GoConst] public static readonly long ISIG = 0x0001;
+        // Terminal line discipline constants - input modes
+        [GoConst] public static readonly long IGNBRK = 0x0001;
+        [GoConst] public static readonly long BRKINT = 0x0002;
+        [GoConst] public static readonly long PARMRK = 0x0008;
+        [GoConst] public static readonly long ISTRIP = 0x0020;
+        [GoConst] public static readonly long INLCR = 0x0040;
+        [GoConst] public static readonly long IGNCR = 0x0080;
         [GoConst] public static readonly long ICRNL = 0x100;
+        [GoConst] public static readonly long IXON = 0x0400;
+        // Terminal line discipline constants - local modes
+        [GoConst] public static readonly long ISIG = 0x0001;
         [GoConst] public static readonly long ICANON = 0x0002;
         [GoConst] public static readonly long ECHO = 0x0008;
+        [GoConst] public static readonly long ECHONL = 0x0040;
+        [GoConst] public static readonly long IEXTEN = 0x8000;
+        // Terminal line discipline constants - control modes
+        [GoConst] public static readonly long CSIZE = 0x0030;
+        [GoConst] public static readonly long PARENB = 0x0100;
+        [GoConst] public static readonly long CS8 = 0x0030;
+        // Terminal control character indices
+        [GoConst] public static readonly long VMIN = 6;
+        [GoConst] public static readonly long VTIME = 5;
+        // Message flags (send/recv)
+        [GoConst] public static readonly long MSG_DONTWAIT = 0x40;
 
         // UnixCredentials returns a socket control message encoding Ucred
         [GoFunc]
@@ -1427,6 +1596,7 @@ namespace Ngo.Runtime.Syscall
         // Memory map constants
         [GoConst] public static readonly long MAP_SHARED = 0x01;
         [GoConst] public static readonly long MAP_PRIVATE = 0x02;
+        [GoConst] public static readonly long MAP_ANON = 0x20;
         [GoConst] public static readonly long MAP_ANONYMOUS = 0x20;
 
         [GoFunc]
@@ -1528,6 +1698,10 @@ namespace Ngo.Runtime.Syscall
         [GoField] public long Oflag;
         [GoField] public long Cflag;
         [GoField] public long Lflag;
+        [GoField] public byte Line;
+        [GoField(Name = "Cc")] public Slice<byte> Cc;
+        [GoField] public long Ispeed;
+        [GoField] public long Ospeed;
     }
 
     // syscall.Ucred struct
@@ -1555,6 +1729,30 @@ namespace Ngo.Runtime.Syscall
 
         [System.Runtime.InteropServices.DllImport("libc", EntryPoint = "getppid")]
         internal static extern int getppid();
+
+        [System.Runtime.InteropServices.DllImport("libc", SetLastError = true)]
+        internal static extern int setuid(uint uid);
+
+        [System.Runtime.InteropServices.DllImport("libc", SetLastError = true)]
+        internal static extern int setgid(uint gid);
+
+        [System.Runtime.InteropServices.DllImport("libc", SetLastError = true)]
+        internal static extern int setreuid(uint ruid, uint euid);
+
+        [System.Runtime.InteropServices.DllImport("libc", SetLastError = true)]
+        internal static extern int setregid(uint rgid, uint egid);
+
+        [System.Runtime.InteropServices.DllImport("libc", SetLastError = true)]
+        internal static extern int setresuid(uint ruid, uint euid, uint suid);
+
+        [System.Runtime.InteropServices.DllImport("libc", SetLastError = true)]
+        internal static extern int setresgid(uint rgid, uint egid, uint sgid);
+
+        [System.Runtime.InteropServices.DllImport("libc", SetLastError = true)]
+        internal static extern int execve(
+            [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPUTF8Str)] string path,
+            System.IntPtr[] argv,
+            System.IntPtr[] envp);
 
         [System.Runtime.InteropServices.DllImport("libc", SetLastError = true)]
         internal static extern int socket(int domain, int type, int protocol);

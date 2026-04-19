@@ -230,6 +230,7 @@ namespace Ngo.Runtime.Reflect
             return invoke?.GetParameters().Length ?? 0;
         }
 
+        [GoMethod]
         public GoReflectType In(long i)
         {
             if (Kind() != GoReflectKinds.Func)
@@ -241,6 +242,7 @@ namespace Ngo.Runtime.Reflect
             return new GoReflectType(parms[(int)i].ParameterType);
         }
 
+        [GoMethod]
         public long NumOut()
         {
             if (Kind() != GoReflectKinds.Func)
@@ -250,6 +252,7 @@ namespace Ngo.Runtime.Reflect
             return 1;
         }
 
+        [GoMethod]
         public GoReflectType Out(long i)
         {
             if (Kind() != GoReflectKinds.Func)
@@ -259,6 +262,7 @@ namespace Ngo.Runtime.Reflect
             return new GoReflectType(invoke.ReturnType);
         }
 
+        [GoMethod]
         public bool IsVariadic()
         {
             if (Kind() != GoReflectKinds.Func)
@@ -278,6 +282,7 @@ namespace Ngo.Runtime.Reflect
             return false;
         }
 
+        [GoMethod]
         public long Size()
         {
             try
@@ -288,6 +293,23 @@ namespace Ngo.Runtime.Reflect
             {
                 return 0;
             }
+        }
+
+        [GoMethod]
+        public bool CanSeq()
+        {
+            var kind = Kind();
+            return kind == GoReflectKinds.Slice || kind == GoReflectKinds.Array ||
+                   kind == GoReflectKinds.Chan || kind == GoReflectKinds.String ||
+                   kind == GoReflectKinds.Map || kind == GoReflectKinds.Int;
+        }
+
+        [GoMethod]
+        public bool CanSeq2()
+        {
+            var kind = Kind();
+            return kind == GoReflectKinds.Slice || kind == GoReflectKinds.Array ||
+                   kind == GoReflectKinds.String || kind == GoReflectKinds.Map;
         }
 
         [GoMethod]

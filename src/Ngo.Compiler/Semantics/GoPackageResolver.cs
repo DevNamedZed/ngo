@@ -141,9 +141,6 @@ namespace Ngo.Compiler.Semantics
                 "internal/syscall/unix" => true,
                 "internal/syscall/execenv" => true,
 
-                // go/internal packages (Go toolchain internals, not in stdlib source tree)
-                _ when importPath.StartsWith("go/internal/") => true,
-
                 // Everything else compiles from Go source
                 _ => false,
             };
@@ -151,11 +148,10 @@ namespace Ngo.Compiler.Semantics
 
         /// <summary>
         /// Find the Go stdlib source directory.
-        /// Searches: GOROOT env, ~/.ngo/gosrc/go1.22.6/src, /usr/local/go/src
+        /// Searches: GOROOT env, ~/.ngo/gosrc/go1.{goVersion}.*/src, /usr/local/go/src
         /// </summary>
         private static string? FindGoStdlibSource(int goVersion)
         {
-            // Check GOROOT environment variable
             var goroot = System.Environment.GetEnvironmentVariable("GOROOT");
             if (!string.IsNullOrEmpty(goroot))
             {
@@ -166,12 +162,24 @@ namespace Ngo.Compiler.Semantics
                 }
             }
 
-            // Check ngo's cached Go source (~/.ngo/gosrc/go1.22.6/src)
             var home = System.Environment.GetFolderPath(System.Environment.SpecialFolder.UserProfile);
             var ngoCache = Path.Combine(home, ".ngo", "gosrc");
             if (Directory.Exists(ngoCache))
             {
-                foreach (var dir in Directory.GetDirectories(ngoCache).OrderByDescending(d => d))
+                var versionPrefix = $"go1.{goVersion}.";
+                var candidates = Directory.GetDirectories(ngoCache);
+
+                foreach (var dir in candidates.Where(d => Path.GetFileName(d).StartsWith(versionPrefix, StringComparison.Ordinal))
+                    .OrderByDescending(d => d))
+                {
+                    var src = Path.Combine(dir, "src");
+                    if (Directory.Exists(src) && Directory.Exists(Path.Combine(src, "fmt")))
+                    {
+                        return src;
+                    }
+                }
+
+                foreach (var dir in candidates.OrderByDescending(d => d))
                 {
                     var src = Path.Combine(dir, "src");
                     if (Directory.Exists(src) && Directory.Exists(Path.Combine(src, "fmt")))
@@ -181,7 +189,6 @@ namespace Ngo.Compiler.Semantics
                 }
             }
 
-            // Check common system paths
             foreach (var candidate in new[] { "/usr/local/go/src", "/usr/lib/go/src", "/snap/go/current/src" })
             {
                 if (Directory.Exists(candidate) && Directory.Exists(Path.Combine(candidate, "fmt")))
@@ -190,7 +197,6 @@ namespace Ngo.Compiler.Semantics
                 }
             }
 
-            // Auto-download Go source if not found anywhere
             return GoSourceDownloader.EnsureGoSource(goVersion);
         }
 
@@ -307,9 +313,11 @@ namespace Ngo.Compiler.Semantics
                 return null;
             }
 
-            // Skip packages that must stay in C# runtime
             if (IsRuntimeIntrinsicPackage(importPath))
+            {
+                AugmentIntrinsicPackage(importPath);
                 return null;
+            }
 
             // Resolve from source or .ngo cache (via topological DAG ordering)
             _resolveDepth++;
@@ -321,6 +329,42 @@ namespace Ngo.Compiler.Semantics
             {
                 _resolveDepth--;
             }
+        }
+
+        private void AugmentIntrinsicPackage(string importPath)
+        {
+            var runtimePkg = RuntimePackageResolver.Instance.Resolve(importPath);
+            if (runtimePkg == null)
+            {
+                return;
+            }
+
+            if (importPath == "sync")
+            {
+                AugmentSyncPackage(runtimePkg);
+            }
+        }
+
+        private static void AugmentSyncPackage(PackageSymbol pkg)
+        {
+            var typeParamT = new TypeParameterSymbol("T", 0, ConstraintInfo.Any);
+            var funcReturningT = new FunctionTypeSymbol(
+                Array.Empty<TypeSymbol>(), new TypeSymbol[] { typeParamT });
+            pkg.AddExport(new FunctionSymbol("OnceValue",
+                new[] { typeParamT },
+                new[] { new ParameterSymbol("f", funcReturningT, 0) },
+                new TypeSymbol[] { funcReturningT },
+                false, "sync"));
+
+            var typeParamT1 = new TypeParameterSymbol("T1", 0, ConstraintInfo.Any);
+            var typeParamT2 = new TypeParameterSymbol("T2", 1, ConstraintInfo.Any);
+            var funcReturningT1T2 = new FunctionTypeSymbol(
+                Array.Empty<TypeSymbol>(), new TypeSymbol[] { typeParamT1, typeParamT2 });
+            pkg.AddExport(new FunctionSymbol("OnceValues",
+                new[] { typeParamT1, typeParamT2 },
+                new[] { new ParameterSymbol("f", funcReturningT1T2, 0) },
+                new TypeSymbol[] { funcReturningT1T2 },
+                false, "sync"));
         }
 
         public Type? ResolveClrType(string importPath, string typeName) => null;
@@ -397,6 +441,7 @@ namespace Ngo.Compiler.Semantics
                         continue;
                     }
 
+                    InjectGeneratedSources(pkg, trees);
                     _resolvedDirs[pkg] = dir;
                     AnalyzeAndCachePackage(pkg, trees);
                 }
@@ -543,15 +588,43 @@ namespace Ngo.Compiler.Semantics
             using var reader = new StreamReader(filePath);
             bool pastPackage = false;
             bool inImportBlock = false;
+            bool inBlockComment = false;
 
             string? line;
             while ((line = reader.ReadLine()) != null)
             {
                 var trimmed = line.TrimStart();
 
+                if (inBlockComment)
+                {
+                    if (trimmed.Contains("*/"))
+                    {
+                        inBlockComment = false;
+                        var afterClose = trimmed.Substring(trimmed.IndexOf("*/") + 2).TrimStart();
+                        if (afterClose.Length == 0)
+                        {
+                            continue;
+                        }
+                        trimmed = afterClose;
+                    }
+                    else
+                    {
+                        continue;
+                    }
+                }
+
                 // Skip comments and blank lines
                 if (trimmed.Length == 0 || trimmed.StartsWith("//"))
                 {
+                    continue;
+                }
+
+                if (trimmed.StartsWith("/*"))
+                {
+                    if (!trimmed.Contains("*/"))
+                    {
+                        inBlockComment = true;
+                    }
                     continue;
                 }
 
@@ -611,24 +684,31 @@ namespace Ngo.Compiler.Semantics
             }
         }
 
-        /// <summary>
-        /// Extracts the content of the first double-quoted string in the line.
-        /// Returns null if no quoted string found.
-        /// </summary>
         private static string? ExtractQuotedString(string text)
         {
             int start = text.IndexOf('"');
-            if (start < 0)
+            if (start >= 0)
             {
-                return null;
+                int end = text.IndexOf('"', start + 1);
+                if (end >= 0)
+                {
+                    var path = text.Substring(start + 1, end - start - 1);
+                    return path.Length > 0 ? path : null;
+                }
             }
-            int end = text.IndexOf('"', start + 1);
-            if (end < 0)
+
+            start = text.IndexOf('`');
+            if (start >= 0)
             {
-                return null;
+                int end = text.IndexOf('`', start + 1);
+                if (end >= 0)
+                {
+                    var path = text.Substring(start + 1, end - start - 1);
+                    return path.Length > 0 ? path : null;
+                }
             }
-            var path = text.Substring(start + 1, end - start - 1);
-            return path.Length > 0 ? path : null;
+
+            return null;
         }
 
         /// <summary>
@@ -657,6 +737,45 @@ namespace Ngo.Compiler.Semantics
             }
             return trees;
         }
+
+        private static void InjectGeneratedSources(string importPath, List<SyntaxTree> trees)
+        {
+            switch (importPath)
+            {
+                case "internal/buildcfg":
+                    trees.Add(SyntaxTree.Parse(BuildcfgBootstrapSource));
+                    break;
+                case "go/build":
+                    trees.Add(SyntaxTree.Parse("package build\n\nconst defaultCGO_ENABLED = \"0\"\n"));
+                    break;
+                case "runtime/internal/sys":
+                    trees.Add(SyntaxTree.Parse("package sys\n"));
+                    break;
+                case "time/tzdata":
+                    trees.Add(SyntaxTree.Parse("package tzdata\n\nconst zipdata = \"\"\n"));
+                    break;
+            }
+        }
+
+        private const string BuildcfgBootstrapSource =
+            "package buildcfg\n" +
+            "\n" +
+            "import \"runtime\"\n" +
+            "\n" +
+            "const defaultGO386 = `sse2`\n" +
+            "const defaultGOAMD64 = `v1`\n" +
+            "const defaultGOARM = `7`\n" +
+            "const defaultGOARM64 = `v8.0`\n" +
+            "const defaultGOMIPS = `hardfloat`\n" +
+            "const defaultGOMIPS64 = `hardfloat`\n" +
+            "const defaultGOPPC64 = `power8`\n" +
+            "const defaultGORISCV64 = `rva20u64`\n" +
+            "const defaultGOEXPERIMENT = ``\n" +
+            "const defaultGO_EXTLINK_ENABLED = ``\n" +
+            "const defaultGO_LDSO = ``\n" +
+            "const version = `go1.23.6`\n" +
+            "const defaultGOOS = runtime.GOOS\n" +
+            "const defaultGOARCH = runtime.GOARCH\n";
 
         private static bool ContainsGoFiles(string directory)
         {
@@ -744,23 +863,26 @@ namespace Ngo.Compiler.Semantics
             AnalysisResult result;
             try
             {
-                // Pass compilation context so nested imports resolve through the resolver chain
                 result = SemanticAnalyzer.Analyze(trees, _ctx);
-                if (result.HasErrors)
-                {
-                    var errorCount = result.Errors.Count(e => e.Severity == ErrorSeverity.Error);
-                    if (errorCount > 0)
-                    {
-                        _ctx.Log.Warn($"analysis of '{importPath}' has {errorCount} errors:");
-                        foreach (var err in result.Errors.Where(e => e.Severity == ErrorSeverity.Error).Take(5))
-                            _ctx.Log.Warn($"  {err.Code}: {err.Message}");
-                    }
-                }
             }
             catch (Exception ex)
             {
-                _ctx.Log.Warn($"analysis failed for '{importPath}': {ex.Message}");
-                return;
+                throw new PackageCacheBuildException(importPath,
+                    $"semantic analysis threw {ex.GetType().Name}: {ex.Message}", ex);
+            }
+
+            var analysisErrors = new List<CompileError>();
+            foreach (var err in result.Errors)
+            {
+                if (err.Severity == ErrorSeverity.Error)
+                {
+                    analysisErrors.Add(err);
+                }
+            }
+            if (analysisErrors.Count > 0)
+            {
+                throw new PackageCacheBuildException(importPath,
+                    $"semantic analysis produced {analysisErrors.Count} errors", analysisErrors);
             }
 
             var pkgName = result.Root.Package.Symbol.Name;
@@ -854,7 +976,6 @@ namespace Ngo.Compiler.Semantics
 
             _resolvedPackages[importPath] = pkg;
 
-            // Write .ngo archive to disk for caching.
             var cacheDir = NgoArchive.GetCacheDir(ProjectRoot);
             _resolvedDirs.TryGetValue(importPath, out var writeSourceDir);
             var archivePath = NgoArchive.GetArchivePath(cacheDir, importPath, writeSourceDir);
@@ -865,7 +986,8 @@ namespace Ngo.Compiler.Semantics
             }
             catch (Exception ex)
             {
-                _ctx.Log.Warn($"failed to cache {importPath}: {ex.GetType().Name}: {ex.Message}");
+                throw new PackageCacheBuildException(importPath,
+                    $"archive writer threw {ex.GetType().Name}: {ex.Message}", ex);
             }
         }
 
@@ -927,14 +1049,12 @@ namespace Ngo.Compiler.Semantics
                 }
             }
 
-            // Read build tags from the first ~20 lines.
-            // If //go:build is present, it is authoritative and // +build lines are ignored.
             string? goBuildExpr = null;
             var oldBuildTags = new List<string>();
 
             using (var reader = new StreamReader(filePath))
             {
-                for (int i = 0; i < 20; i++)
+                while (true)
                 {
                     var line = reader.ReadLine();
                     if (line == null)

@@ -340,7 +340,10 @@ namespace Ngo.Compiler.Cgo
             }
 
             return new FunctionSymbol(
-                function.Name, parameters, returnTypes, function.IsVariadic, packageName: null);
+                function.Name, parameters, returnTypes, function.IsVariadic, packageName: null)
+            {
+                IsCgoFunction = true
+            };
         }
 
         private static bool IsVoidCType(string cType)
@@ -486,13 +489,8 @@ namespace Ngo.Compiler.Cgo
 
         private TypeSymbol MapCToGoType(string cType)
         {
-            string trimmed = (cType ?? string.Empty).Trim();
+            string trimmed = StripCTypeQualifiers((cType ?? string.Empty).Trim());
 
-            // Cgo's Go surface uses underscore-prefixed tag spellings
-            // ('struct_ctx', 'union_foo', 'enum_bar'); the C-source form
-            // 'struct ctx' would never match a Go-side reference like
-            // '*C.struct_ctx'. Normalising here keeps both sides on the
-            // same identifier before any further mapping runs.
             string canonical = NormalizeTagSpelling(trimmed);
 
             // C 'T *' must surface as a Go-side PointerTypeSymbol so an
@@ -602,6 +600,35 @@ namespace Ngo.Compiler.Cgo
                 _ => TypeKind.Uintptr,
             };
             return new TypeSymbol(canonical, kind, null);
+        }
+
+        private static string StripCTypeQualifiers(string cType)
+        {
+            string result = cType;
+            result = StripQualifierToken(result, "const ");
+            result = StripQualifierToken(result, "volatile ");
+            result = StripQualifierToken(result, "_Atomic ");
+
+            if (result.EndsWith(" restrict", StringComparison.Ordinal))
+            {
+                result = result.Substring(0, result.Length - " restrict".Length);
+            }
+            else
+            {
+                result = StripQualifierToken(result, "restrict ");
+            }
+
+            return result.Trim();
+        }
+
+        private static string StripQualifierToken(string input, string qualifier)
+        {
+            while (input.Contains(qualifier))
+            {
+                int index = input.IndexOf(qualifier, StringComparison.Ordinal);
+                input = input.Remove(index, qualifier.Length);
+            }
+            return input;
         }
 
         private static string NormalizeTagSpelling(string cType)

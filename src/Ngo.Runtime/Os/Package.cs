@@ -131,6 +131,8 @@ namespace Ngo.Runtime.Os
         public static readonly object ErrInvalid = Ngo.Runtime.Errors.Package.New("invalid argument");
         [GoVar(Type = "error")]
         public static readonly object ErrProcessDone = Ngo.Runtime.Errors.Package.New("os: process already finished");
+        [GoVar(Type = "error")]
+        public static readonly object ErrNoDeadline = Ngo.Runtime.Errors.Package.New("file type does not support deadline");
 
         // Signal variables
         [GoVar(Type = "Signal")]

@@ -61,11 +61,8 @@ namespace Ngo.Compiler.Symbols
 
         public string? PackageName { get; }
 
-        /// <summary>
-        /// If this function has a //go:linkname directive, this is the target
-        /// (e.g., "runtime.semacquire"). Used to map assembly-backed functions
-        /// to their .NET intrinsic implementations.
-        /// </summary>
+        public bool IsCgoFunction { get; set; }
+
         public string? LinkName { get; set; }
 
         public TypeSymbol ReturnType =>

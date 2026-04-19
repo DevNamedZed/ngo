@@ -49,6 +49,55 @@ namespace Ngo.Runtime.Sync
         }
 
         [GoMethod]
+        public void Clear()
+        {
+            _dict.Clear();
+        }
+
+        [GoMethod]
+        [return: GoReturn("interface{}", "bool")]
+        public (object?, bool) Swap(object key, object? value)
+        {
+            if (_dict.TryGetValue(key, out var previous))
+            {
+                _dict[key] = value;
+                return (previous, true);
+            }
+            _dict[key] = value;
+            return (null, false);
+        }
+
+        [GoMethod]
+        [return: GoReturn("interface{}", "bool")]
+        public (object?, bool) CompareAndSwap(object key, object? old, object? @new)
+        {
+            lock (_dict)
+            {
+                if (_dict.TryGetValue(key, out var current) && Equals(current, old))
+                {
+                    _dict[key] = @new;
+                    return (current, true);
+                }
+                return (current, false);
+            }
+        }
+
+        [GoMethod]
+        [return: GoReturn("bool")]
+        public bool CompareAndDelete(object key, object? old)
+        {
+            lock (_dict)
+            {
+                if (_dict.TryGetValue(key, out var current) && Equals(current, old))
+                {
+                    _dict.TryRemove(key, out _);
+                    return true;
+                }
+                return false;
+            }
+        }
+
+        [GoMethod]
         public void Range([GoParam("func(key, value interface{}) bool")] Func<object, object?, bool> f)
         {
             foreach (var kvp in _dict)

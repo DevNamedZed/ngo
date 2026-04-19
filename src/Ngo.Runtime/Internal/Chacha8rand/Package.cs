@@ -22,15 +22,15 @@ namespace Ngo.Runtime.Internal.Chacha8rand
         [return: GoReturn("error")]
         public static object? Unmarshal([GoParam("*State")] GoState? state, Slice<byte> data)
         {
-            // Re-seed from data
-            if (state != null && data.Len >= 8)
+            if (state != null && data.Len > 0)
             {
-                long seed = 0;
-                for (int i = 0; i < System.Math.Min(8, data.Len); i++)
+                var seed = new byte[32];
+                int copyLength = System.Math.Min(seed.Length, data.Len);
+                for (int index = 0; index < copyLength; index++)
                 {
-                    seed |= (long)data[i] << (i * 8);
+                    seed[index] = data[index];
                 }
-                state.Init(new Slice<long>(new[] { seed }));
+                state.Init(seed);
             }
             return null;
         }
@@ -42,33 +42,38 @@ namespace Ngo.Runtime.Internal.Chacha8rand
         private System.Random _rng = new();
 
         [GoMethod]
-        public void Init(Slice<long> seed)
+        public void Init([GoParam("[32]byte")] byte[] seed)
         {
-            if (seed.Len > 0)
+            int derivedSeed = 0;
+            for (int index = 0; index < seed.Length; index++)
             {
-                _rng = new System.Random((int)seed[0]);
+                derivedSeed = unchecked((derivedSeed * 31) ^ seed[index]);
             }
+            _rng = new System.Random(derivedSeed);
         }
 
         [GoMethod]
-        public void Init64(Slice<long> seed)
+        public void Init64([GoParam("[4]uint64")] ulong[] seed)
         {
-            if (seed.Len > 0)
+            ulong combined = 0;
+            for (int index = 0; index < seed.Length; index++)
             {
-                _rng = new System.Random((int)(seed[0] ^ (seed[0] >> 32)));
+                combined ^= seed[index];
             }
+            _rng = new System.Random((int)(combined ^ (combined >> 32)));
         }
 
         [GoMethod]
         public void Refill()
         {
-            // Refill is called when the internal buffer is exhausted.
-            // System.Random doesn't have a buffer concept — Next() generates on demand.
         }
 
         [GoMethod]
-        [return: GoReturn("uint64")]
-        public long Next() => (long)((ulong)_rng.NextInt64());
+        [return: GoReturn("uint64", "bool")]
+        public (long, bool) Next()
+        {
+            return ((long)((ulong)_rng.NextInt64()), true);
+        }
 
         [GoMethod]
         public void Reseed()

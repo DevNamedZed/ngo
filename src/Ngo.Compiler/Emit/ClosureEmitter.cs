@@ -97,16 +97,18 @@ namespace Ngo.Compiler.Emit
 
             // Save current method state
             var savedIL = _ctx.IL;
-            var savedLocals = new Dictionary<Symbol, LocalBuilder>(_ctx.Locals);
+            var savedLocals = new Dictionary<Symbol, LocalSlot>(_ctx.Locals);
             var savedParams = new Dictionary<Symbol, int>(_ctx.Parameters);
             var savedCaptured = new HashSet<Symbol>(_ctx.CapturedSymbols);
             var savedReturnTypes = _body.CurrentReturnTypes;
+            var savedNamedReturns = _body.NamedReturns;
 
             _ctx.IL = lambdaMethod.GetILWriter();
             _ctx.Locals.Clear();
             _ctx.Parameters.Clear();
             _ctx.CapturedSymbols.Clear();
             _body.CurrentReturnTypes = funcLit.ReturnTypes;
+            _body.NamedReturns = funcLit.NamedReturns;
 
             for (int i = 0; i < funcLit.Parameters.Count; i++)
             {
@@ -148,6 +150,7 @@ namespace Ngo.Compiler.Emit
             _ctx.CapturedSymbols.Clear();
             foreach (var sym in savedCaptured) _ctx.CapturedSymbols.Add(sym);
             _body.CurrentReturnTypes = savedReturnTypes;
+            _body.NamedReturns = savedNamedReturns;
 
             // Create delegate from the static method
             var delegateType = _ctx.Mapper.Map(funcLit.FunctionType);
@@ -227,7 +230,7 @@ namespace Ngo.Compiler.Emit
 
             // Save current method state
             var savedIL = _ctx.IL;
-            var savedLocals = new Dictionary<Symbol, LocalBuilder>(_ctx.Locals);
+            var savedLocals = new Dictionary<Symbol, LocalSlot>(_ctx.Locals);
             var savedParams = new Dictionary<Symbol, int>(_ctx.Parameters);
             var savedCaptured2 = new HashSet<Symbol>(_ctx.CapturedSymbols);
             var savedReturnTypes = _body.CurrentReturnTypes;
@@ -340,32 +343,30 @@ namespace Ngo.Compiler.Emit
                 closureType = closureBuilder.AsType();
             }
 
-            // Create closure instance and populate captured fields
             var closureLocal = _ctx.IL.DeclareLocal(closureType);
-            var resolvedConstructor = _ctx.Definitions.GetConstructor(closureType, Type.EmptyTypes);
-            _ctx.IL.Emit(OpCodes.Newobj, resolvedConstructor!);
+            var resolvedConstructor = _ctx.Definitions.GetConstructor(closureType, Type.EmptyTypes)!;
+            _ctx.IL.Emit(OpCodes.Newobj, resolvedConstructor);
             _ctx.IL.Emit(OpCodes.Stloc, closureLocal);
 
             foreach (var sym in captures)
             {
-                var capturedField = _ctx.Definitions.GetField(closureType, sym.Name);
                 _ctx.IL.Emit(OpCodes.Ldloc, closureLocal);
                 var captureLocal = ResolveLocal(sym);
                 _ctx.IL.Emit(OpCodes.Ldloc, captureLocal);
-                _ctx.IL.Emit(OpCodes.Stfld, capturedField!);
+                var capturedField = _ctx.Definitions.GetField(closureType, sym.Name)!;
+                _ctx.IL.Emit(OpCodes.Stfld, capturedField);
             }
 
-            // Create delegate from closure instance + invoke method
             var delegateType = _ctx.Mapper.Map(funcLit.FunctionType);
             if (delegateType == typeof(Delegate) || delegateType == typeof(object))
             {
                 delegateType = funcLit.FunctionType.ReturnTypes.Count == 0
                     ? typeof(Action) : typeof(Func<object>);
             }
-            var closureInvokeMethod = _ctx.Definitions.GetMethod(closureType, "Invoke");
             _ctx.IL.Emit(OpCodes.Ldloc, closureLocal);
-            _ctx.IL.Emit(OpCodes.Ldftn, closureInvokeMethod!);
-            var delegateCtor = _ctx.Definitions.GetConstructor(delegateType, new[] { typeof(object), typeof(IntPtr) });
+            var closureInvokeMethod = _ctx.Definitions.GetMethod(closureType, "Invoke")!;
+            _ctx.IL.Emit(OpCodes.Ldftn, closureInvokeMethod);
+            var delegateCtor = _ctx.Definitions.GetConstructor(delegateType, new[] { typeof(object), typeof(IntPtr) })!;
             _ctx.IL.Emit(OpCodes.Newobj, delegateCtor);
         }
 
@@ -433,20 +434,17 @@ namespace Ngo.Compiler.Emit
 
             // Create closure instance, set receiver field
             var closureLocal = _ctx.IL.DeclareLocal(closureType);
-            var resolvedCtor = _ctx.Definitions.GetConstructor(closureType, Type.EmptyTypes)!;
-            _ctx.IL.Emit(OpCodes.Newobj, resolvedCtor);
+            _ctx.IL.Emit(OpCodes.Newobj, methodValConstructor.AsCtorRef());
             _ctx.IL.Emit(OpCodes.Stloc, closureLocal);
 
             _ctx.IL.Emit(OpCodes.Ldloc, closureLocal);
             _body.EmitExpression(mv.Receiver);
-            var resolvedReceiverField = _ctx.Definitions.GetField(closureType, "_receiver")!;
-            _ctx.IL.Emit(OpCodes.Stfld, resolvedReceiverField);
+            _ctx.IL.Emit(OpCodes.Stfld, receiverField.AsFieldRef());
 
             // Create delegate from closure + Invoke
             var delegateType = _ctx.Mapper.Map(mv.FunctionType);
-            var resolvedInvoke = _ctx.Definitions.GetMethod(closureType, "Invoke")!;
             _ctx.IL.Emit(OpCodes.Ldloc, closureLocal);
-            _ctx.IL.Emit(OpCodes.Ldftn, resolvedInvoke);
+            _ctx.IL.Emit(OpCodes.Ldftn, invokeMethod.AsMethodRef());
             var delegateCtor = _ctx.Definitions.GetConstructor(delegateType, new[] { typeof(object), typeof(IntPtr) });
             _ctx.IL.Emit(OpCodes.Newobj, delegateCtor);
         }
@@ -483,7 +481,7 @@ namespace Ngo.Compiler.Emit
             return captures;
         }
 
-        private LocalBuilder ResolveLocal(Symbol sym)
+        private LocalSlot ResolveLocal(Symbol sym)
         {
             if (_ctx.Locals.TryGetValue(sym, out var local))
             {
@@ -640,7 +638,23 @@ namespace Ngo.Compiler.Emit
                     return;
                 case CompositeLiteralExpression lit:
                     if (lit.Initializers != null)
-                        foreach (var init in lit.Initializers) FindFunctionLiterals(init.Value, result);
+                    {
+                        foreach (var init in lit.Initializers)
+                        {
+                            FindFunctionLiterals(init.Value, result);
+                        }
+                    }
+                    if (lit.Elements != null)
+                    {
+                        foreach (var element in lit.Elements)
+                        {
+                            if (element.Key != null)
+                            {
+                                FindFunctionLiterals(element.Key, result);
+                            }
+                            FindFunctionLiterals(element.Value, result);
+                        }
+                    }
                     return;
                 case SwitchStatement sw:
                     if (sw.Init != null) FindFunctionLiterals(sw.Init, result);
@@ -664,6 +678,65 @@ namespace Ngo.Compiler.Emit
                     return;
                 case ReceiveExpression recv:
                     FindFunctionLiterals(recv.Channel, result);
+                    return;
+                case SliceExpression slice:
+                    FindFunctionLiterals(slice.Operand, result);
+                    if (slice.Low != null)
+                    {
+                        FindFunctionLiterals(slice.Low, result);
+                    }
+                    if (slice.High != null)
+                    {
+                        FindFunctionLiterals(slice.High, result);
+                    }
+                    if (slice.Max != null)
+                    {
+                        FindFunctionLiterals(slice.Max, result);
+                    }
+                    return;
+                case MultiAssignmentStatement multi:
+                    foreach (var target in multi.Targets)
+                    {
+                        if (target != null)
+                        {
+                            FindFunctionLiterals(target, result);
+                        }
+                    }
+                    FindFunctionLiterals(multi.Value, result);
+                    return;
+                case LabeledStatement labeled:
+                    FindFunctionLiterals(labeled.InnerStatement, result);
+                    return;
+                case TypeSwitchStatement typeSwitch:
+                    if (typeSwitch.Init != null)
+                    {
+                        FindFunctionLiterals(typeSwitch.Init, result);
+                    }
+                    FindFunctionLiterals(typeSwitch.GuardExpression, result);
+                    foreach (var typeCase in typeSwitch.Cases)
+                    {
+                        foreach (var statement in typeCase.Body)
+                        {
+                            FindFunctionLiterals(statement, result);
+                        }
+                    }
+                    return;
+                case SelectStatement select:
+                    foreach (var selectCase in select.Cases)
+                    {
+                        if (selectCase.Channel != null)
+                        {
+                            FindFunctionLiterals(selectCase.Channel, result);
+                        }
+                        if (selectCase.SendValue != null)
+                        {
+                            FindFunctionLiterals(selectCase.SendValue, result);
+                        }
+                        foreach (var statement in selectCase.Body)
+                        {
+                            FindFunctionLiterals(statement, result);
+                        }
+                    }
                     return;
             }
         }
@@ -750,7 +823,23 @@ namespace Ngo.Compiler.Emit
                     return;
                 case CompositeLiteralExpression lit:
                     if (lit.Initializers != null)
-                        foreach (var init in lit.Initializers) CollectReferencedSymbols(init.Value, result);
+                    {
+                        foreach (var init in lit.Initializers)
+                        {
+                            CollectReferencedSymbols(init.Value, result);
+                        }
+                    }
+                    if (lit.Elements != null)
+                    {
+                        foreach (var element in lit.Elements)
+                        {
+                            if (element.Key != null)
+                            {
+                                CollectReferencedSymbols(element.Key, result);
+                            }
+                            CollectReferencedSymbols(element.Value, result);
+                        }
+                    }
                     return;
                 case SwitchStatement sw:
                     if (sw.Init != null) CollectReferencedSymbols(sw.Init, result);
@@ -786,12 +875,49 @@ namespace Ngo.Compiler.Emit
                     CollectReferencedSymbols(range.Body, result);
                     return;
                 case MultiAssignmentStatement multi:
+                    foreach (var target in multi.Targets)
+                    {
+                        if (target != null)
+                        {
+                            CollectReferencedSymbols(target, result);
+                        }
+                    }
                     CollectReferencedSymbols(multi.Value, result);
                     return;
                 case LabeledStatement labeled:
                     CollectReferencedSymbols(labeled.InnerStatement, result);
                     return;
-                // Recurse into nested function literals so transitive captures are visible
+                case TypeSwitchStatement typeSwitch:
+                    if (typeSwitch.Init != null)
+                    {
+                        CollectReferencedSymbols(typeSwitch.Init, result);
+                    }
+                    CollectReferencedSymbols(typeSwitch.GuardExpression, result);
+                    foreach (var typeCase in typeSwitch.Cases)
+                    {
+                        foreach (var statement in typeCase.Body)
+                        {
+                            CollectReferencedSymbols(statement, result);
+                        }
+                    }
+                    return;
+                case SelectStatement select:
+                    foreach (var selectCase in select.Cases)
+                    {
+                        if (selectCase.Channel != null)
+                        {
+                            CollectReferencedSymbols(selectCase.Channel, result);
+                        }
+                        if (selectCase.SendValue != null)
+                        {
+                            CollectReferencedSymbols(selectCase.SendValue, result);
+                        }
+                        foreach (var statement in selectCase.Body)
+                        {
+                            CollectReferencedSymbols(statement, result);
+                        }
+                    }
+                    return;
                 case FunctionLiteralExpression funcLit:
                     CollectReferencedSymbols(funcLit.Body, result);
                     return;

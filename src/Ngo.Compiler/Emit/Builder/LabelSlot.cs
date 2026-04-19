@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------
-// <copyright file="WrapperTypeInfo.cs" company="Ziad">
+// <copyright file="LabelSlot.cs" company="Ziad">
 //  Copyright 2016 Ziad
 //
 //  Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,28 +17,44 @@
 // -----------------------------------------------------------------------
 
 using System;
-using Ngo.Compiler.Emit.Refs;
 
-namespace Ngo.Compiler.Emit
+namespace Ngo.Compiler.Emit.Builder
 {
-    internal sealed class WrapperTypeInfo
+    internal sealed class LabelSlot : IEquatable<LabelSlot>
     {
-        public WrapperTypeInfo(Type type, CtorRef ctorRef)
+        public LabelSlot(int id)
         {
-            if (type == null)
+            if (id < 0)
             {
-                throw new ArgumentNullException(nameof(type));
+                throw new ArgumentOutOfRangeException(nameof(id));
             }
-            if (ctorRef == null)
-            {
-                throw new ArgumentNullException(nameof(ctorRef));
-            }
-            Type = type;
-            CtorRef = ctorRef;
+            Id = id;
         }
 
-        public Type Type { get; }
+        public int Id { get; }
 
-        public CtorRef CtorRef { get; }
+        public bool Equals(LabelSlot? other)
+        {
+            if (other is null)
+            {
+                return false;
+            }
+            return Id == other.Id;
+        }
+
+        public override bool Equals(object? obj)
+        {
+            return obj is LabelSlot other && Equals(other);
+        }
+
+        public override int GetHashCode()
+        {
+            return Id;
+        }
+
+        public override string ToString()
+        {
+            return $"label#{Id}";
+        }
     }
 }

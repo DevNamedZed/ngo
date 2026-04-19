@@ -36,7 +36,8 @@ namespace Ngo.Compiler.Semantics
 
             if (type is TypeParameterSymbol tps)
             {
-                for (int i = 0; i < typeParams.Count; i++)
+                int limit = Math.Min(typeParams.Count, typeArgs.Count);
+                for (int i = 0; i < limit; i++)
                 {
                     if (typeParams[i] == tps
                         || (typeParams[i].Name == tps.Name && typeParams[i].Ordinal == tps.Ordinal))

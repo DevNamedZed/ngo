@@ -39,6 +39,9 @@ namespace Ngo.Runtime.Os.Exec
         [GoField(Name = "ExtraFiles", Type = "[]*os.File")]
         public object? ExtraFiles;
 
+        [GoField(Name = "Err", Type = "error")]
+        public object? Err;
+
         private System.Diagnostics.Process? _process;
 
         private ProcessStartInfo BuildStartInfo(bool redirectStdout, bool redirectStderr, bool redirectStdin)

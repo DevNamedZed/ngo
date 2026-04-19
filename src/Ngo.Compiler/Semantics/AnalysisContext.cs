@@ -129,11 +129,26 @@ namespace Ngo.Compiler.Semantics
             }
         }
 
-        public IReadOnlyList<TypeSymbol>? GetCallReturnTypes(Expression expr)
+        public IReadOnlyList<TypeSymbol>? GetCallReturnTypes(Expression expr, int expectedCount = -1)
         {
-            if (expr is CallExpression call && call.Function.ReturnTypes.Count > 1)
+            if (expr is CallExpression call)
             {
-                return call.Function.ReturnTypes;
+                if (call.Function.ReturnTypes.Count > 1)
+                {
+                    return call.Function.ReturnTypes;
+                }
+
+                if (call.Function.IsCgoFunction
+                    && expectedCount == call.Function.ReturnTypes.Count + 1)
+                {
+                    var augmented = new TypeSymbol[call.Function.ReturnTypes.Count + 1];
+                    for (int i = 0; i < call.Function.ReturnTypes.Count; i++)
+                    {
+                        augmented[i] = call.Function.ReturnTypes[i];
+                    }
+                    augmented[augmented.Length - 1] = Symbols.BuiltinTypes.Error;
+                    return augmented;
+                }
             }
 
             if (expr is MethodCallExpression methodCall && methodCall.Method.ReturnTypes.Count > 1)
@@ -304,6 +319,10 @@ namespace Ngo.Compiler.Semantics
                 var innerVal = TryEvaluateConstant(conv.Operand);
                 if (innerVal is long longVal)
                 {
+                    if (conv.Type.TypeKind == TypeKind.String)
+                    {
+                        return RuneToUtf8String(longVal);
+                    }
                     return conv.Type.TypeKind switch
                     {
                         TypeKind.Uint => (object)(long)(ulong)(uint)longVal,
@@ -342,6 +361,16 @@ namespace Ngo.Compiler.Semantics
             }
 
             return null;
+        }
+
+        private static string RuneToUtf8String(long runeValue)
+        {
+            int codePoint = unchecked((int)runeValue);
+            if (runeValue < 0 || runeValue > 0x10FFFF || (codePoint >= 0xD800 && codePoint <= 0xDFFF))
+            {
+                return "\uFFFD";
+            }
+            return char.ConvertFromUtf32(codePoint);
         }
 
         public static Scope CreateUniverseScope()

@@ -436,6 +436,7 @@ namespace Ngo.Compiler.Archive
             foreach (var nt in namedTypes) { if (nt.UnderlyingType != null) { WalkType(nt.UnderlyingType); } WalkMethods(nt.Methods); }
             foreach (var f in functions) { foreach (var p in f.Parameters) { WalkType(p.Type); } foreach (var r in f.ReturnTypes) { WalkType(r); } }
             foreach (var v in variables) { WalkType(v.Type); }
+            foreach (var c in constants) { WalkType(c.Type); }
 
             // Merge reachable unexported types
             var allStructs = new List<StructTypeSymbol>(reachableStructs);
@@ -510,7 +511,7 @@ namespace Ngo.Compiler.Archive
             int funcCount = r.ReadInt32();
             for (int i = 0; i < funcCount; i++)
             {
-                var func = ReadFunction(r, typeMap, name, crossPkgResolver);
+                var func = ReadFunction(r, typeMap, importPath, crossPkgResolver);
                 pkg.AddExport(func);
             }
 
@@ -579,7 +580,11 @@ namespace Ngo.Compiler.Archive
             w.Write(func.Name);
             w.Write(func.IsVariadic);
             w.Write(func.TypeParameters.Count);
-            foreach (var tp in func.TypeParameters) { w.Write(tp.Name); }
+            foreach (var tp in func.TypeParameters)
+            {
+                w.Write(tp.Name);
+                WriteConstraint(w, tp.Constraint, pkgPath);
+            }
             w.Write(func.Parameters.Count);
             foreach (var p in func.Parameters) { w.Write(p.Name); w.Write(TypeToString(p.Type, pkgPath)); }
             w.Write(func.ReturnTypes.Count);
@@ -601,7 +606,11 @@ namespace Ngo.Compiler.Archive
             w.Write(s.Name);
             var typeParams = s.IsGeneric ? s.TypeParameters : Array.Empty<TypeParameterSymbol>();
             w.Write(typeParams.Count);
-            foreach (var tp in typeParams) { w.Write(tp.Name); }
+            foreach (var tp in typeParams)
+            {
+                w.Write(tp.Name);
+                WriteConstraint(w, tp.Constraint, pkgPath);
+            }
             w.Write(s.Fields.Count);
             foreach (var f in s.Fields) { w.Write(f.Name); w.Write(TypeToString(f.Type, pkgPath)); w.Write(f.IsEmbedded); }
             w.Write(s.Methods.Count);
@@ -613,15 +622,31 @@ namespace Ngo.Compiler.Archive
             w.Write(iface.Name);
             var ifaceTypeParams = iface.IsGeneric ? iface.TypeParameters : Array.Empty<TypeParameterSymbol>();
             w.Write(ifaceTypeParams.Count);
-            foreach (var tp in ifaceTypeParams) { w.Write(tp.Name); }
+            foreach (var tp in ifaceTypeParams)
+            {
+                w.Write(tp.Name);
+                WriteConstraint(w, tp.Constraint, pkgPath);
+            }
             w.Write(iface.Methods.Count);
             foreach (var m in iface.Methods) { WriteMethod(w, m, pkgPath); }
+        }
+
+        private static void WriteConstraint(BinaryWriter w, ConstraintInfo constraint, string? pkgPath)
+        {
+            w.Write(constraint.TypeElements.Count);
+            foreach (var element in constraint.TypeElements)
+            {
+                w.Write(TypeToString(element.Type, pkgPath));
+                w.Write(element.IsTilde);
+            }
+            w.Write(constraint.IsComparable);
         }
 
         private static void WriteNamedType(BinaryWriter w, TypeSymbol t, string? pkgPath = null)
         {
             w.Write(t.Name);
             w.Write(t.UnderlyingType != null ? TypeToString(t.UnderlyingType, pkgPath) : "");
+            w.Write(t.IsAlias);
             w.Write(t.Methods.Count);
             foreach (var m in t.Methods) { WriteMethod(w, m, pkgPath); }
         }
@@ -648,10 +673,15 @@ namespace Ngo.Compiler.Archive
             var isVariadic = r.ReadBoolean();
             int typeParamCount = r.ReadInt32();
             var typeParameters = new List<TypeParameterSymbol>(typeParamCount);
+            var constraintData = new List<(List<(string typeStr, bool isTilde)> elements, bool isComparable)>(typeParamCount);
             for (int i = 0; i < typeParamCount; i++)
             {
-                typeParameters.Add(new TypeParameterSymbol(r.ReadString(), i, ConstraintInfo.Any));
+                var typeParamName = r.ReadString();
+                typeParameters.Add(new TypeParameterSymbol(typeParamName, i, ConstraintInfo.Any));
+                constraintData.Add(ReadConstraintData(r));
             }
+            ResolveConstraints(typeParameters, constraintData, typeMap, crossPkgResolver);
+
             int paramCount = r.ReadInt32();
             var parameters = new List<ParameterSymbol>(paramCount);
             for (int i = 0; i < paramCount; i++)
@@ -700,10 +730,13 @@ namespace Ngo.Compiler.Archive
             var name = r.ReadString();
             int typeParamCount = r.ReadInt32();
             var structTypeParams = new List<TypeParameterSymbol>(typeParamCount);
+            var structConstraintData = new List<(List<(string typeStr, bool isTilde)> elements, bool isComparable)>(typeParamCount);
             for (int i = 0; i < typeParamCount; i++)
             {
                 structTypeParams.Add(new TypeParameterSymbol(r.ReadString(), i, ConstraintInfo.Any));
+                structConstraintData.Add(ReadConstraintData(r));
             }
+            ResolveConstraints(structTypeParams, structConstraintData, typeMap, crossPkgResolver);
             int fieldCount = r.ReadInt32();
             var fields = new List<FieldSymbol>(fieldCount);
             for (int i = 0; i < fieldCount; i++)
@@ -744,10 +777,13 @@ namespace Ngo.Compiler.Archive
             var name = r.ReadString();
             int ifaceTypeParamCount = r.ReadInt32();
             var ifaceTypeParams = new List<TypeParameterSymbol>(ifaceTypeParamCount);
+            var ifaceConstraintData = new List<(List<(string typeStr, bool isTilde)> elements, bool isComparable)>(ifaceTypeParamCount);
             for (int i = 0; i < ifaceTypeParamCount; i++)
             {
                 ifaceTypeParams.Add(new TypeParameterSymbol(r.ReadString(), i, ConstraintInfo.Any));
+                ifaceConstraintData.Add(ReadConstraintData(r));
             }
+            ResolveConstraints(ifaceTypeParams, ifaceConstraintData, typeMap, crossPkgResolver);
             int methodCount = r.ReadInt32();
 
             InterfaceTypeSymbol iface;
@@ -777,6 +813,7 @@ namespace Ngo.Compiler.Archive
         {
             var name = r.ReadString();
             var underlyingStr = r.ReadString();
+            var isAlias = r.ReadBoolean();
             var underlying = string.IsNullOrEmpty(underlyingStr)
                 ? BuiltinTypes.EmptyInterface
                 : StringToType(underlyingStr, typeMap, crossPkgResolver);
@@ -792,6 +829,7 @@ namespace Ngo.Compiler.Archive
             {
                 namedType = new TypeSymbol(name, underlying.TypeKind, underlying);
             }
+            namedType.IsAlias = isAlias;
             typeMap[name] = namedType;
 
             int methodCount = r.ReadInt32();
@@ -818,6 +856,60 @@ namespace Ngo.Compiler.Archive
             var name = r.ReadString();
             var type = StringToType(r.ReadString(), typeMap, crossPkgResolver);
             return new PackageVarSymbol(name, type);
+        }
+
+        // ----- Constraint serialization helpers -----
+
+        private static (List<(string typeStr, bool isTilde)> elements, bool isComparable) ReadConstraintData(BinaryReader r)
+        {
+            int elementCount = r.ReadInt32();
+            var elements = new List<(string typeStr, bool isTilde)>(elementCount);
+            for (int i = 0; i < elementCount; i++)
+            {
+                var typeStr = r.ReadString();
+                var isTilde = r.ReadBoolean();
+                elements.Add((typeStr, isTilde));
+            }
+            var isComparable = r.ReadBoolean();
+            return (elements, isComparable);
+        }
+
+        private static void ResolveConstraints(
+            List<TypeParameterSymbol> typeParameters,
+            List<(List<(string typeStr, bool isTilde)> elements, bool isComparable)> constraintData,
+            Dictionary<string, TypeSymbol> typeMap,
+            Func<string, string, TypeSymbol?>? crossPkgResolver)
+        {
+            if (typeParameters.Count == 0)
+            {
+                return;
+            }
+
+            var localTypeMap = new Dictionary<string, TypeSymbol>(typeMap);
+            foreach (var typeParam in typeParameters)
+            {
+                localTypeMap["~" + typeParam.Name] = typeParam;
+            }
+
+            for (int i = 0; i < typeParameters.Count; i++)
+            {
+                var data = constraintData[i];
+                if (data.elements.Count == 0 && !data.isComparable)
+                {
+                    continue;
+                }
+
+                var typeElements = new List<TypeElement>(data.elements.Count);
+                foreach (var (typeStr, isTilde) in data.elements)
+                {
+                    var elementType = StringToType(typeStr, localTypeMap, crossPkgResolver);
+                    typeElements.Add(new TypeElement(elementType, isTilde));
+                }
+
+                string constraintName = data.isComparable ? "comparable" : "any";
+                typeParameters[i].Constraint = new ConstraintInfo(
+                    constraintName, Array.Empty<MethodSymbol>(), typeElements, data.isComparable);
+            }
         }
 
         // ----- Type string conversion -----

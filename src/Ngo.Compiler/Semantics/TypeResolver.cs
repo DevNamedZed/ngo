@@ -93,6 +93,13 @@ namespace Ngo.Compiler.Semantics
                 var resolved = BuiltinTypes.Resolve(idSyntax.Identifier.Text);
                 if (resolved != null)
                 {
+                    var scopeSymbol = _context.Scope.Lookup(idSyntax.Identifier.Text);
+                    if (scopeSymbol is TypeSymbol scopeType
+                        && !ReferenceEquals(scopeType, resolved)
+                        && scopeType is StructTypeSymbol or InterfaceTypeSymbol)
+                    {
+                        return scopeType;
+                    }
                     return resolved;
                 }
 
@@ -402,6 +409,11 @@ namespace Ngo.Compiler.Semantics
                     {
                         embeddedType = embeddedType.UnderlyingType;
                     }
+                    if (embeddedType != null && embeddedType is not InterfaceTypeSymbol
+                        && embeddedType.Resolved() is InterfaceTypeSymbol resolvedIface)
+                    {
+                        embeddedType = resolvedIface;
+                    }
                     if (embeddedType is InterfaceTypeSymbol embeddedIface)
                     {
                         foreach (var m in embeddedIface.Methods)
@@ -547,6 +559,7 @@ namespace Ngo.Compiler.Semantics
                 var pkgSym = _context.Scope.Lookup(pkgId.Identifier.Text);
                 if (pkgSym is PackageSymbol pkg)
                 {
+                    _context.UsedPackages.Add(pkg.Name);
                     var member = pkg.LookupExport(sel.Name.Text);
                     if (member is ConstantSymbol c)
                     {
@@ -704,9 +717,60 @@ namespace Ngo.Compiler.Semantics
                     if (lenSym is ConstantSymbol lenConst && lenConst.Value is string lenStr)
                         return lenStr.Length;
 
+                    // len(arrayVar) — look up local/package variable with known array type
+                    TypeSymbol? lenVarType = null;
+                    if (lenSym is LocalSymbol lenLocal)
+                    {
+                        lenVarType = lenLocal.Type;
+                    }
+                    else if (lenSym is PackageVarSymbol lenPkgVar)
+                    {
+                        lenVarType = lenPkgVar.Type;
+                    }
+                    else if (lenSym is ParameterSymbol lenParam)
+                    {
+                        lenVarType = lenParam.Type;
+                    }
+                    if (lenVarType != null)
+                    {
+                        var resolvedVarType = lenVarType.Resolved();
+                        for (int depth = 0; depth < 10 && resolvedVarType != null; depth++)
+                        {
+                            if (resolvedVarType is ArrayTypeSymbol lenArr)
+                            {
+                                return lenArr.Length;
+                            }
+                            if (resolvedVarType.UnderlyingType == null)
+                            {
+                                break;
+                            }
+                            resolvedVarType = resolvedVarType.UnderlyingType.Resolved();
+                        }
+                    }
+
                     // Fallback: check pre-scanned string constant lengths
                     if (_context.PendingConstStringLens.TryGetValue(lenArgId.Identifier.Text, out var strLen))
                         return strLen;
+                }
+            }
+
+            // Type conversion as array length: int(constExpr), int64(constExpr), etc.
+            if (expr is CallExpressionSyntax convCallExpr
+                && convCallExpr.Arguments.Count == 1
+                && convCallExpr.Function is IdentifierNameSyntax convTypeName)
+            {
+                var typeName = convTypeName.Identifier.Text;
+                if (typeName == "int" || typeName == "int8" || typeName == "int16"
+                    || typeName == "int32" || typeName == "int64"
+                    || typeName == "uint" || typeName == "uint8" || typeName == "uint16"
+                    || typeName == "uint32" || typeName == "uint64"
+                    || typeName == "uintptr")
+                {
+                    var innerVal = TryEvalConstantLength(convCallExpr.Arguments[0]);
+                    if (innerVal.HasValue)
+                    {
+                        return innerVal.Value;
+                    }
                 }
             }
 
@@ -718,6 +782,7 @@ namespace Ngo.Compiler.Semantics
                 && callSel.Name.Text == "Sizeof"
                 && callExpr.Arguments.Count == 1)
             {
+                _context.UsedPackages.Add("unsafe");
                 var arg = callExpr.Arguments[0];
                 // Try to resolve the type of the argument and compute its size
                 TypeSymbol? argType = null;
@@ -729,14 +794,23 @@ namespace Ngo.Compiler.Semantics
                 else if (arg is CallExpressionSyntax convCall
                     && convCall.Function is IdentifierNameSyntax convId)
                     argType = _context.Scope.Lookup(convId.Identifier.Text) as TypeSymbol;
-                // unsafe.Sizeof(*ptr) or unsafe.Sizeof(var) — resolve expression type
+                // unsafe.Sizeof(&Type{}) — address-of composite literal (pointer = 8)
+                else if (arg is UnaryExpressionSyntax addrOf
+                    && addrOf.OperatorToken.Kind == SyntaxKind.AmpersandToken
+                    && addrOf.Operand is CompositeLiteralSyntax)
+                {
+                    return 8;
+                }
+                // unsafe.Sizeof(*ptr) — dereference pointer to get underlying type
                 else if (arg is UnaryExpressionSyntax unarySizeof
                     && unarySizeof.OperatorToken.Kind == SyntaxKind.StarToken
                     && unarySizeof.Operand is IdentifierNameSyntax unaryId)
                 {
                     var sym = _context.Scope.Lookup(unaryId.Identifier.Text);
                     if (sym is TypeSymbol ts && ts is PointerTypeSymbol pts)
+                    {
                         argType = pts.ElementType;
+                    }
                 }
 
                 if (argType != null)
@@ -757,6 +831,7 @@ namespace Ngo.Compiler.Semantics
                 && offsetCall.Arguments.Count == 1
                 && offsetCall.Arguments[0] is SelectorExpressionSyntax fieldSel)
             {
+                _context.UsedPackages.Add("unsafe");
                 var fieldName = fieldSel.Name.Text;
                 TypeSymbol? structType = null;
 

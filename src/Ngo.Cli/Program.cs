@@ -41,6 +41,24 @@ class Program
             return 0;
         }
 
+        try
+        {
+            return Dispatch(args);
+        }
+        catch (PackageCacheBuildException ex)
+        {
+            Console.Error.WriteLine($"ngo: cannot compile dependency '{ex.ImportPath}'");
+            Console.Error.WriteLine($"  {ex.Reason}");
+            foreach (var err in ex.AnalysisErrors)
+            {
+                Console.Error.WriteLine($"  {err.Code}: {err.Message}");
+            }
+            return 1;
+        }
+    }
+
+    static int Dispatch(string[] args)
+    {
         switch (args[0])
         {
             case "version":

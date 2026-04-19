@@ -115,6 +115,48 @@ namespace Ngo.Compiler.Semantics
             return result;
         }
 
+        public static TypeSymbol?[]? InferPartialTypeArguments(
+            FunctionSymbol generic,
+            IReadOnlyList<Expression> arguments)
+        {
+            var typeParams = generic.TypeParameters;
+            var inferred = new TypeSymbol?[typeParams.Count];
+
+            int paramCount = generic.Parameters.Count;
+            int argCount = arguments.Count;
+            int matchCount = paramCount < argCount ? paramCount : argCount;
+
+            for (int i = 0; i < matchCount; i++)
+            {
+                var paramType = generic.Parameters[i].Type;
+                var argType = arguments[i].Type;
+
+                if (argType == TypeSymbol.Error)
+                {
+                    continue;
+                }
+
+                if (TypeChecker.IsUntyped(argType))
+                {
+                    argType = TypeChecker.DefaultType(argType);
+                }
+
+                Unify(paramType, argType, typeParams, inferred);
+            }
+
+            bool anyInferred = false;
+            for (int i = 0; i < inferred.Length; i++)
+            {
+                if (inferred[i] != null)
+                {
+                    anyInferred = true;
+                    break;
+                }
+            }
+
+            return anyInferred ? inferred : null;
+        }
+
         private static void Unify(
             TypeSymbol paramType,
             TypeSymbol argType,

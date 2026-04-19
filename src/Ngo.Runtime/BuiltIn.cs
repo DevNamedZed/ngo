@@ -35,6 +35,37 @@ namespace Ngo.Runtime
         public static int Len<K, V>(Map<K, V> m) where K : notnull => m.Len;
         public static int Len<T>(Channel<T> ch) => ch.Length;
 
+        public static int Len(object? value)
+        {
+            if (value is GoString goStr)
+            {
+                return goStr.Len;
+            }
+            if (value is string str)
+            {
+                return System.Text.Encoding.UTF8.GetByteCount(str);
+            }
+            if (value is System.Array arr)
+            {
+                return arr.Length;
+            }
+            var type = value?.GetType();
+            if (type != null)
+            {
+                var lenProp = type.GetProperty("Len");
+                if (lenProp != null)
+                {
+                    return (int)lenProp.GetValue(value)!;
+                }
+                var lengthProp = type.GetProperty("Length");
+                if (lengthProp != null)
+                {
+                    return (int)lengthProp.GetValue(value)!;
+                }
+            }
+            return 0;
+        }
+
         // --- cap ---
 
         public static int Cap<T>(Slice<T> s) => s.Cap;

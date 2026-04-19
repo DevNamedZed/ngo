@@ -61,7 +61,7 @@ namespace Ngo.Compiler.Emit
 
         // Per-method state (reset for each method body)
         public CilWriter IL { get; set; } = null!;
-        public Dictionary<Symbol, LocalBuilder> Locals { get; } = new();
+        public Dictionary<Symbol, LocalSlot> Locals { get; } = new();
         public Dictionary<Symbol, int> Parameters { get; } = new();
 
         // Symbols captured by closures in the current function body (stored in Box<T>)
@@ -138,10 +138,10 @@ namespace Ngo.Compiler.Emit
         public Dictionary<string, ITypeBuilder> PackageTypes { get; } = new();
 
         // Fallthrough target label for switch cases
-        public Label? FallthroughLabel { get; set; }
+        public LabelSlot? FallthroughLabel { get; set; }
 
         // Goto target labels: "labelName" → IL label
-        public Dictionary<string, Label> GotoLabels { get; } = new();
+        public Dictionary<string, LabelSlot> GotoLabels { get; } = new();
 
         // Named labels for labeled break/continue: "labelName" → (breakLabel, continueLabel)
         public Dictionary<string, LoopLabel> NamedLabels { get; } = new();
@@ -166,14 +166,24 @@ namespace Ngo.Compiler.Emit
         public Dictionary<Symbol, SliceElementPointer> SliceElementPointers { get; } = new();
 
         // Defer stack local for the current method (null if no defer statements)
-        public LocalBuilder? DeferStack { get; set; }
+        public LocalSlot? DeferStack { get; set; }
 
         // For non-void defer-wrapped functions: store return value here, then leave
-        public LocalBuilder? DeferReturnLocal { get; set; }
-        public Label DeferExitLabel { get; set; }
+        public LocalSlot? DeferReturnLocal { get; set; }
+        public LabelSlot? DeferExitLabel { get; set; }
 
         public string QualifyName(string name) =>
             Options?.Namespace != null ? $"{Options.Namespace}.{name}" : name;
+
+        public string QualifyCrossPackageType(string? packagePath, string typeName)
+        {
+            if (!IsDependencyEmit || string.IsNullOrEmpty(packagePath))
+            {
+                return QualifyName(typeName);
+            }
+            var sanitized = packagePath.Replace('/', '.');
+            return QualifyName(sanitized + "." + typeName);
+        }
 
         /// <summary>
         /// Qualifies a name with the current package prefix. Used for types/closures

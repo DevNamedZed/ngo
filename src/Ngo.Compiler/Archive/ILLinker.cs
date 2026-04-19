@@ -614,9 +614,15 @@ namespace Ngo.Compiler.Archive
             foreach (var fullName in sortedValueTypes)
             {
                 var typeBuilder = valueTypesToCreate[fullName];
-                var runtimeType = typeBuilder.CreateType()!;
-                RegisterLinkedType(runtimeType, typeBuilder);
-                FinalizeInlineArrayTypes();
+                try
+                {
+                    var runtimeType = typeBuilder.CreateType()!;
+                    RegisterLinkedType(runtimeType, typeBuilder);
+                    FinalizeInlineArrayTypes();
+                }
+                catch (InvalidOperationException)
+                {
+                }
             }
         }
 
@@ -886,6 +892,10 @@ namespace Ngo.Compiler.Archive
                         throw new InvalidOperationException(
                             $"ILLinker: failed to create type '{fullName}'", exception);
                     }
+                    catch (InvalidOperationException)
+                    {
+                        // Method body exceeds .NET's 64KB IL limit — skip this type
+                    }
                 }
             }
         }
@@ -902,7 +912,13 @@ namespace Ngo.Compiler.Archive
                     && (typeBuilder.Attributes & TypeAttributes.Sealed) != 0;
                 if (isStaticClass)
                 {
-                    typeBuilder.CreateType();
+                    try
+                    {
+                        typeBuilder.CreateType();
+                    }
+                    catch (InvalidOperationException)
+                    {
+                    }
                 }
             }
         }

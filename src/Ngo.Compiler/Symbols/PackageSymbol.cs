@@ -91,6 +91,12 @@ namespace Ngo.Compiler.Symbols
                 && symbol is FunctionSymbol newFunc
                 && existingFunc.Parameters.Count == newFunc.Parameters.Count)
             {
+                if (newFunc.TypeParameters.Count > 0 && existingFunc.TypeParameters.Count == 0)
+                {
+                    _exports[symbol.Name] = symbol;
+                    return;
+                }
+
                 bool paramsDiffer = false;
                 for (int i = 0; i < existingFunc.Parameters.Count; i++)
                 {

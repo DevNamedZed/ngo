@@ -180,6 +180,8 @@ namespace Ngo.Runtime.Math
         [GoConst]
         public static readonly long MinInt64 = long.MinValue;
         [GoConst]
+        public static readonly ulong MaxUint = ulong.MaxValue;
+        [GoConst]
         public static readonly ulong MaxUint8 = byte.MaxValue;
         [GoConst]
         public static readonly ulong MaxUint16 = ushort.MaxValue;

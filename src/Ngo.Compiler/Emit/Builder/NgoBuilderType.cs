@@ -77,17 +77,37 @@ namespace Ngo.Compiler.Emit.Builder
         public override bool Equals(Type? o) => o is NgoBuilderType other && other._fullName == _fullName;
         public override string ToString() => _fullName;
 
-        public override Type MakeArrayType() =>
-            new NgoBuilderType(_fullName + "[]", this, isArray: true, isPointer: false, isByRef: false);
+        public override Type MakeArrayType() => CreateArrayOf(this);
 
-        public override Type MakeArrayType(int rank) =>
-            new NgoBuilderType(_fullName + $"[{new string(',', rank - 1)}]", this, isArray: true, isPointer: false, isByRef: false);
+        public override Type MakeArrayType(int rank) => CreateArrayOf(this, rank);
 
-        public override Type MakeByRefType() =>
-            new NgoBuilderType(_fullName + "&", this, isArray: false, isPointer: false, isByRef: true);
+        public override Type MakeByRefType() => CreateByRefOf(this);
 
-        public override Type MakePointerType() =>
-            new NgoBuilderType(_fullName + "*", this, isArray: false, isPointer: true, isByRef: false);
+        public override Type MakePointerType() => CreatePointerOf(this);
+
+        internal static NgoBuilderType CreateArrayOf(Type elementType)
+        {
+            var elementFullName = elementType.FullName ?? elementType.Name;
+            return new NgoBuilderType(elementFullName + "[]", elementType, isArray: true, isPointer: false, isByRef: false);
+        }
+
+        internal static NgoBuilderType CreateArrayOf(Type elementType, int rank)
+        {
+            var elementFullName = elementType.FullName ?? elementType.Name;
+            return new NgoBuilderType(elementFullName + $"[{new string(',', rank - 1)}]", elementType, isArray: true, isPointer: false, isByRef: false);
+        }
+
+        internal static NgoBuilderType CreateByRefOf(Type elementType)
+        {
+            var elementFullName = elementType.FullName ?? elementType.Name;
+            return new NgoBuilderType(elementFullName + "&", elementType, isArray: false, isPointer: false, isByRef: true);
+        }
+
+        internal static NgoBuilderType CreatePointerOf(Type elementType)
+        {
+            var elementFullName = elementType.FullName ?? elementType.Name;
+            return new NgoBuilderType(elementFullName + "*", elementType, isArray: false, isPointer: true, isByRef: false);
+        }
 
         public override Type MakeGenericType(params Type[] typeArguments)
         {

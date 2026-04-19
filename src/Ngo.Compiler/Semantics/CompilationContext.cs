@@ -56,6 +56,14 @@ namespace Ngo.Compiler.Semantics
         public ICompilerLog Log { get; }
 
         /// <summary>
+        /// Errors and warnings raised during transitive analysis or cache IO
+        /// that occur outside a per-file <see cref="AnalysisContext"/>. The
+        /// top-level compile caller (CLI, test harness) is expected to merge
+        /// these into its final error list so failures never hide.
+        /// </summary>
+        public ErrorCollector Diagnostics { get; } = new ErrorCollector();
+
+        /// <summary>
         /// Target Go language version (e.g. 23 for Go 1.23). Default: latest supported.
         /// Set from go.mod directive or CLI flag.
         /// </summary>

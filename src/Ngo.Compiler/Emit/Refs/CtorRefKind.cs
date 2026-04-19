@@ -22,5 +22,6 @@ namespace Ngo.Compiler.Emit.Refs
     {
         Runtime,
         Defined,
+        MemberRef,
     }
 }

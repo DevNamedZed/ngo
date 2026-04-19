@@ -51,9 +51,6 @@ namespace Ngo.Compiler.Archive
         private readonly Dictionary<int, int> _tryLengths = new();
         private int _currentHandlerStart = -1;
 
-        private ILGenerator _labelFactory;
-        private ILGenerator _localFactory;
-
         private static readonly Dictionary<Type, PrimitiveTypeKind> PrimitiveTypeMap = new()
         {
             { typeof(void), PrimitiveTypeKind.Void },
@@ -80,8 +77,6 @@ namespace Ngo.Compiler.Archive
         public NgoWriter(SerializationContext? serializationContext = null)
         {
             _serializationContext = serializationContext ?? SerializationContext.Empty;
-            _labelFactory = CreateFactory();
-            _localFactory = CreateFactory();
         }
 
         public byte[] GetILBytes()
@@ -288,6 +283,11 @@ namespace Ngo.Compiler.Archive
                     parameterCount = ctorRef.Builder!.ParameterTypes.Length;
                     break;
                 }
+                case CtorRefKind.MemberRef:
+                {
+                    parameterCount = ctorRef.MemberParameterTypes.Length;
+                    break;
+                }
                 default:
                 {
                     throw new InvalidOperationException($"NgoWriter: unexpected CtorRef kind: {ctorRef.Kind}");
@@ -318,85 +318,94 @@ namespace Ngo.Compiler.Archive
             WriteInt32(0);
         }
 
-        public override void Emit(OpCode op, Label label)
+        public override void Emit(OpCode op, LabelSlot label)
         {
+            if (label == null)
+            {
+                throw new ArgumentNullException(nameof(label));
+            }
             TrackStack(op);
             WriteOpCode(op);
             var fixupOffset = (int)_code.Position;
-            var labelId = GetLabelId(label);
 
             if (IsShortBranch(op))
             {
-                _branchFixups.Add(new BranchFixup { Offset = fixupOffset, LabelId = labelId, IsShort = true });
+                _branchFixups.Add(new BranchFixup { Offset = fixupOffset, LabelId = label.Id, IsShort = true });
                 _code.WriteByte(0);
             }
             else
             {
-                _branchFixups.Add(new BranchFixup { Offset = fixupOffset, LabelId = labelId, IsShort = false });
+                _branchFixups.Add(new BranchFixup { Offset = fixupOffset, LabelId = label.Id, IsShort = false });
                 WriteInt32(0);
             }
         }
 
-        public override void Emit(OpCode op, Label[] labels)
+        public override void Emit(OpCode op, LabelSlot[] labels)
         {
+            if (labels == null)
+            {
+                throw new ArgumentNullException(nameof(labels));
+            }
             TrackStack(op);
             WriteOpCode(op);
             WriteInt32(labels.Length);
             int baseOffset = (int)_code.Position + labels.Length * 4;
             for (int index = 0; index < labels.Length; index++)
             {
+                var labelSlot = labels[index]
+                    ?? throw new ArgumentException($"NgoWriter: label at index {index} is null", nameof(labels));
                 var fixupOffset = (int)_code.Position;
-                var labelId = GetLabelId(labels[index]);
-                _branchFixups.Add(new BranchFixup { Offset = fixupOffset, LabelId = labelId, IsShort = false, BaseOffset = baseOffset });
+                _branchFixups.Add(new BranchFixup { Offset = fixupOffset, LabelId = labelSlot.Id, IsShort = false, BaseOffset = baseOffset });
                 WriteInt32(0);
             }
         }
 
-        public override void Emit(OpCode op, LocalBuilder local)
+        public override void Emit(OpCode op, LocalSlot local)
         {
+            if (local == null)
+            {
+                throw new ArgumentNullException(nameof(local));
+            }
             TrackStack(op);
             WriteOpCode(op);
             var operandType = op.OperandType;
             if (operandType == OperandType.ShortInlineVar)
             {
-                _code.WriteByte((byte)local.LocalIndex);
+                _code.WriteByte((byte)local.Index);
             }
             else if (operandType == OperandType.InlineVar)
             {
-                WriteInt16((short)local.LocalIndex);
+                WriteInt16((short)local.Index);
             }
         }
 
         // ----- Label/Local support -----
 
-        public override LocalBuilder DeclareLocal(Type type)
+        public override LocalSlot DeclareLocal(Type type)
         {
+            if (type == null)
+            {
+                throw new ArgumentNullException(nameof(type));
+            }
+            var slot = new LocalSlot(_locals.Count, type);
             _locals.Add(GetTypeNameStatic(type));
-
-            var declaredType = type is TypeDelegator ? typeof(object) : type;
-            try
-            {
-                return _localFactory.DeclareLocal(declaredType);
-            }
-            catch (ArgumentException)
-            {
-                // NgoBuilderType / NgoGenericParameterType cannot be declared directly on the scratch ILGenerator.
-                // Keep the serialized local type name intact, but use object for the temporary builder slot.
-                return _localFactory.DeclareLocal(typeof(object));
-            }
+            return slot;
         }
 
-        public override Label DefineLabel()
+        public override LabelSlot DefineLabel()
         {
-            var label = _labelFactory.DefineLabel();
+            var slot = new LabelSlot(_nextLabelId);
             _nextLabelId++;
-            return label;
+            return slot;
         }
 
-        public override void MarkLabel(Label label)
+        public override void MarkLabel(LabelSlot label)
         {
-            var labelId = GetLabelId(label);
-            _labelOffsets[labelId] = (int)_code.Position;
+            if (label == null)
+            {
+                throw new ArgumentNullException(nameof(label));
+            }
+            _labelOffsets[label.Id] = (int)_code.Position;
         }
 
         // ----- Exception handling -----
@@ -628,9 +637,13 @@ namespace Ngo.Compiler.Archive
                 return scopedGenericToken;
             }
 
-            if (type is NgoGenericParameterType)
+            if (type is NgoGenericParameterType ngoGenericParam)
             {
-                throw CreateMissingGenericParameterException(type);
+                if (ngoGenericParam.IsMethodGenericParam)
+                {
+                    return TypeToken.CreateGenericMethodParam(ngoGenericParam.Index);
+                }
+                return TypeToken.CreateGenericTypeParam(ngoGenericParam.Index);
             }
 
             if (type is NgoBuilderType)
@@ -668,7 +681,11 @@ namespace Ngo.Compiler.Archive
 
             if (type.IsGenericParameter)
             {
-                throw CreateMissingGenericParameterException(type);
+                if (type.DeclaringMethod != null)
+                {
+                    return TypeToken.CreateGenericMethodParam(type.GenericParameterPosition);
+                }
+                return TypeToken.CreateGenericTypeParam(type.GenericParameterPosition);
             }
 
             if (type.IsArray)
@@ -962,6 +979,18 @@ namespace Ngo.Compiler.Archive
                     return MethodToken.CreateMethodDef(
                         declaringTypeToken, ".ctor", parameterTokens, returnTypeToken);
                 }
+                case CtorRefKind.MemberRef:
+                {
+                    var declaringTypeToken = BuildTypeTokenFromRef(ctorRef.DeclaringType!);
+                    var parameterTokens = new TypeToken[ctorRef.MemberParameterTypes.Length];
+                    for (int index = 0; index < ctorRef.MemberParameterTypes.Length; index++)
+                    {
+                        parameterTokens[index] = BuildTypeTokenFromRef(ctorRef.MemberParameterTypes[index]);
+                    }
+                    var returnTypeToken = TypeToken.CreatePrimitive(PrimitiveTypeKind.Void);
+                    return MethodToken.CreateMemberRef(
+                        declaringTypeToken, ".ctor", parameterTokens, returnTypeToken);
+                }
                 default:
                 {
                     throw new InvalidOperationException(
@@ -1017,8 +1046,9 @@ namespace Ngo.Compiler.Archive
             }
 
             var declaringType = method.DeclaringType;
-            var parameterTokens = BuildParameterTypeTokens(method.GetParameters(), declaringType);
-            var returnTypeToken = BuildTypeToken(method.ReturnType);
+            var substitution = new SignatureSubstitution(declaringType);
+            var parameterTokens = BuildParameterTypeTokens(method.GetParameters(), substitution);
+            var returnTypeToken = BuildTypeToken(substitution.Substitute(method.ReturnType));
 
             if (declaringType is NgoBuilderType)
             {
@@ -1036,7 +1066,8 @@ namespace Ngo.Compiler.Archive
             }
 
             var declaringType = constructor.DeclaringType!;
-            var parameterTokens = BuildParameterTypeTokens(constructor.GetParameters(), declaringType);
+            var substitution = new SignatureSubstitution(declaringType);
+            var parameterTokens = BuildParameterTypeTokens(constructor.GetParameters(), substitution);
             var returnTypeToken = TypeToken.CreatePrimitive(PrimitiveTypeKind.Void);
 
             if (declaringType is NgoBuilderType)
@@ -1059,36 +1090,18 @@ namespace Ngo.Compiler.Archive
             return FieldToken.CreateMemberRef(BuildTypeToken(declaringType), field.Name);
         }
 
-        private TypeToken[] BuildParameterTypeTokens(ParameterInfo[] parameters, Type? declaringType)
+        private TypeToken[] BuildParameterTypeTokens(ParameterInfo[] parameters, SignatureSubstitution substitution)
         {
-            Type[]? declaringTypeArguments = null;
-            Type[]? declaringTypeDefParameters = null;
-            if (declaringType != null && declaringType.IsGenericType && !declaringType.IsGenericTypeDefinition)
-            {
-                try
-                {
-                    declaringTypeArguments = declaringType.GetGenericArguments();
-                    declaringTypeDefParameters = declaringType.GetGenericTypeDefinition().GetGenericArguments();
-                }
-                catch (NotSupportedException)
-                {
-                    // TypeBuilderInstantiation may not support GetGenericTypeDefinition.
-                    // Try to extract type args directly from the type name or fall through.
-                }
-            }
-
             var parameterTokens = new TypeToken[parameters.Length];
             for (int index = 0; index < parameters.Length; index++)
             {
-                var parameterType = parameters[index].ParameterType;
-                parameterType = SubstituteGenericParameters(parameterType, declaringType,
-                    declaringTypeArguments, declaringTypeDefParameters);
+                var parameterType = substitution.Substitute(parameters[index].ParameterType);
                 parameterTokens[index] = BuildTypeToken(parameterType);
             }
             return parameterTokens;
         }
 
-        private static Type SubstituteGenericParameters(Type type, Type? declaringType,
+        internal static Type SubstituteSignatureType(Type type, Type? declaringType,
             Type[]? declaringTypeArguments, Type[]? declaringTypeDefParameters)
         {
             if (type.IsGenericParameter)
@@ -1120,7 +1133,7 @@ namespace Ngo.Compiler.Archive
             if (type.IsArray)
             {
                 var elementType = type.GetElementType()!;
-                var substituted = SubstituteGenericParameters(elementType, declaringType,
+                var substituted = SubstituteSignatureType(elementType, declaringType,
                     declaringTypeArguments, declaringTypeDefParameters);
                 if (substituted != elementType)
                 {
@@ -1131,7 +1144,7 @@ namespace Ngo.Compiler.Archive
             if (type.IsByRef)
             {
                 var elementType = type.GetElementType()!;
-                var substituted = SubstituteGenericParameters(elementType, declaringType,
+                var substituted = SubstituteSignatureType(elementType, declaringType,
                     declaringTypeArguments, declaringTypeDefParameters);
                 if (substituted != elementType)
                 {
@@ -1146,7 +1159,7 @@ namespace Ngo.Compiler.Archive
                 var newArgs = new Type[genericArgs.Length];
                 for (int i = 0; i < genericArgs.Length; i++)
                 {
-                    newArgs[i] = SubstituteGenericParameters(genericArgs[i], declaringType,
+                    newArgs[i] = SubstituteSignatureType(genericArgs[i], declaringType,
                         declaringTypeArguments, declaringTypeDefParameters);
                     if (newArgs[i] != genericArgs[i])
                     {
@@ -1293,17 +1306,6 @@ namespace Ngo.Compiler.Archive
         }
 
         // ----- Private helpers -----
-
-        private static ILGenerator CreateFactory()
-        {
-            var dynamicMethod = new DynamicMethod("ngo_factory_" + Guid.NewGuid().ToString("N"), typeof(void), Type.EmptyTypes);
-            return dynamicMethod.GetILGenerator();
-        }
-
-        private static int GetLabelId(Label label)
-        {
-            return label.GetHashCode();
-        }
 
         private void TrackStack(OpCode op, int extraPush = 0, int extraPop = 0)
         {

@@ -248,6 +248,12 @@ namespace Ngo.Runtime.Reflect
         public bool CanSet() => _canSet;
         public bool CanInterface() => true;
 
+        [GoMethod]
+        public bool Comparable()
+        {
+            return Type().Comparable();
+        }
+
         public void Set(GoReflectValue x)
         {
             if (!_canSet)

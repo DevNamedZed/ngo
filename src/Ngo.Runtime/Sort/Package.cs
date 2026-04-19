@@ -157,6 +157,12 @@ namespace Ngo.Runtime.Sort
             return BinarySearch(slice, value, (a, b) => string.Compare(a, b, StringComparison.Ordinal));
         }
 
+        [GoFunc]
+        public static long SearchFloat64s(Slice<double> slice, double value)
+        {
+            return BinarySearch(slice, value, (a, b) => a.CompareTo(b));
+        }
+
         private static void SortSlice<T>(Slice<T> slice, Comparison<T> comparison)
         {
             if (slice.Len <= 1)

@@ -269,7 +269,9 @@ namespace Ngo.Compiler.Emit
                         }
                         catch (Exception ex)
                         {
-                            compilation.Log.Warn($"cgo: failed to apply //export to {func.Symbol.Name}: {ex.Message}");
+                            compilation.Diagnostics.ReportError(new Language.TextSpan(0, 0), ErrorCode.InternalError,
+                                $"cgo: failed to apply //export to '{func.Symbol.Name}': {ex.GetType().Name}: {ex.Message}");
+                            compilation.Log.Error($"cgo: failed to apply //export to '{func.Symbol.Name}':\n{ex}");
                         }
                     }
                 }
@@ -590,6 +592,8 @@ namespace Ngo.Compiler.Emit
                     }
                 }
             }
+
+            ctx.Mapper.PromoteTypeBuilders();
 
             // Pass 2: Define all function and method signatures
             foreach (var func in root.Functions)

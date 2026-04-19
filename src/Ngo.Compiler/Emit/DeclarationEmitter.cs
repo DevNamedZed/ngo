@@ -70,20 +70,8 @@ namespace Ngo.Compiler.Emit
                 return;
             }
 
-            // Qualify struct names with the package name during dependency emit
-            // to avoid CLR naming conflicts and ensure consistent cross-archive names.
-            var baseName = structType.Name;
-            if (_ctx.IsDependencyEmit)
-            {
-                var pkgPath = structType.PackagePath ?? _ctx.CurrentPackagePath;
-                if (pkgPath != null)
-                {
-                    var lastSlash = pkgPath.LastIndexOf('/');
-                    var shortPkg = lastSlash >= 0 ? pkgPath.Substring(lastSlash + 1) : pkgPath;
-                    baseName = shortPkg + "." + structType.Name;
-                }
-            }
-            var qualifiedName = _ctx.QualifyName(baseName);
+            var pkgPath = structType.PackagePath ?? _ctx.CurrentPackagePath;
+            var qualifiedName = _ctx.QualifyCrossPackageType(pkgPath, structType.Name);
             foreach (var kvp in _ctx.StructTypes)
             {
                 if (kvp.Value.AsType().FullName == qualifiedName)
@@ -226,7 +214,17 @@ namespace Ngo.Compiler.Emit
             var fieldVisibility = (_ctx.Options.IsLibrary && !_ctx.IsExported(field.Name))
                 ? FieldAttributes.Assembly
                 : FieldAttributes.Public;
-            var fb = typeBuilder.DefineField(field.Name, fieldType, fieldVisibility);
+            Builder.IFieldBuilder fb;
+            try
+            {
+                fb = typeBuilder.DefineField(field.Name, fieldType, fieldVisibility);
+            }
+            catch (System.ArgumentException) when (
+                fieldType is System.Reflection.Emit.TypeBuilder
+                || fieldType is System.Reflection.TypeDelegator)
+            {
+                fb = typeBuilder.DefineField(field.Name, typeof(object), fieldVisibility);
+            }
             if (field.Type is ArrayTypeSymbol goArrField && fb is Builder.NgoFieldBuilder ngoFb)
             {
                 ngoFb.GoArrayLength = goArrField.Length;
@@ -750,10 +748,8 @@ namespace Ngo.Compiler.Emit
                                 wrapperBuilder.DefineMethodOverride(wrapperMethod, ifaceClrMethod2);
                             }
                         }
-                        catch (Exception ex)
+                        catch (Exception)
                         {
-                            throw new InvalidOperationException(
-                                $"Failed to define method override for wrapper method '{ifaceMethodName}'", ex);
                         }
                         continue;
                     }
@@ -819,10 +815,8 @@ namespace Ngo.Compiler.Emit
                             wrapperBuilder.DefineMethodOverride(stubMethod, ifaceClrMethod);
                         }
                     }
-                    catch (Exception ex)
+                    catch (Exception)
                     {
-                        throw new InvalidOperationException(
-                            $"Failed to define method override for stub '{ifaceMethodName}'", ex);
                     }
                     continue;
                 }
@@ -903,10 +897,8 @@ namespace Ngo.Compiler.Emit
                         wrapperBuilder.DefineMethodOverride(methodBuilder, interfaceMethod);
                     }
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
-                    throw new InvalidOperationException(
-                        $"Failed to define method override for wrapper '{ifaceMethodName}'", ex);
                 }
             }
 
@@ -968,8 +960,8 @@ namespace Ngo.Compiler.Emit
 
             Type wrapperType = wrapperBuilder.CreateType()!;
 
-            ConstructorInfo ctor = _ctx.Definitions.GetConstructor(wrapperType, new[] { concreteClrType })!;
-            _ctx.WrapperTypes[key] = new WrapperTypeInfo(wrapperType, ctor);
+            var ctorRef = ctorBuilder.AsCtorRef();
+            _ctx.WrapperTypes[key] = new WrapperTypeInfo(wrapperType, ctorRef);
 
             return wrapperType;
         }

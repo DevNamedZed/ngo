@@ -17,7 +17,7 @@
 // -----------------------------------------------------------------------
 
 using System;
-using System.Reflection.Emit;
+using Ngo.Compiler.Emit.Builder;
 
 namespace Ngo.Compiler.Emit
 {
@@ -30,7 +30,7 @@ namespace Ngo.Compiler.Emit
     /// </summary>
     internal sealed class SliceElementPointer
     {
-        public SliceElementPointer(LocalBuilder sliceLocal, LocalBuilder indexLocal,
+        public SliceElementPointer(LocalSlot sliceLocal, LocalSlot indexLocal,
             Type sliceClrType, Type elementClrType)
         {
             SliceLocal = sliceLocal;
@@ -39,9 +39,9 @@ namespace Ngo.Compiler.Emit
             ElementClrType = elementClrType;
         }
 
-        public LocalBuilder SliceLocal { get; }
+        public LocalSlot SliceLocal { get; }
 
-        public LocalBuilder IndexLocal { get; }
+        public LocalSlot IndexLocal { get; }
 
         public Type SliceClrType { get; }
 

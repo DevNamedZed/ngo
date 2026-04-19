@@ -91,10 +91,21 @@ namespace Ngo.Compiler.Symbols
                     return new PromotedMethodResult(Fields[i], method);
                 }
 
-                // Unwrap generic instantiation for deeper search
-                var resolvedEmbedded = embeddedType is InstantiatedTypeSymbol inst2
-                    ? inst2.Resolved() : embeddedType;
-                // Recurse into embedded structs for deeper promoted methods
+                if (method == null && lookupType.UnderlyingType != null)
+                {
+                    method = lookupType.UnderlyingType.LookupMethod(name);
+                    if (method != null)
+                    {
+                        return new PromotedMethodResult(Fields[i], method);
+                    }
+                }
+
+                var resolvedEmbedded = lookupType is InstantiatedTypeSymbol inst2
+                    ? inst2.Resolved() : lookupType;
+                if (resolvedEmbedded is not StructTypeSymbol && resolvedEmbedded.Resolved() is StructTypeSymbol)
+                {
+                    resolvedEmbedded = resolvedEmbedded.Resolved();
+                }
                 if (resolvedEmbedded is StructTypeSymbol embeddedStruct)
                 {
                     var deep = embeddedStruct.LookupPromotedMethod(name, visited);

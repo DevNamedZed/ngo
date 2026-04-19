@@ -159,6 +159,11 @@ namespace Ngo.Compiler.Semantics
             if (type is TypeParameterSymbol tp && tp.Constraint.IsComparable)
                 return true;
 
+            if (type is InstantiatedTypeSymbol inst)
+            {
+                return IsComparable(inst.GenericType);
+            }
+
             switch (type.TypeKind)
             {
                 case TypeKind.Bool:

@@ -243,7 +243,7 @@ namespace Ngo.Runtime.Crypto.Elliptic
 
     // elliptic.CurveParams struct
     [GoType("struct", Name = "CurveParams", Package = "crypto/elliptic")]
-    public class GoCurveParams
+    public class GoCurveParams : Package.ICurve
     {
         [GoField(Name = "P", Type = "*big.Int")] public object? P;
         [GoField(Name = "N", Type = "*big.Int")] public object? N;
@@ -252,5 +252,28 @@ namespace Ngo.Runtime.Crypto.Elliptic
         [GoField(Name = "Gy", Type = "*big.Int")] public object? Gy;
         [GoField(Name = "BitSize")] public long BitSize;
         [GoField(Name = "Name")] public string Name = "";
+
+        [GoMethod]
+        [return: GoReturn("*elliptic.CurveParams")]
+        public object? Params() => this;
+
+        [GoMethod]
+        public bool IsOnCurve([GoParam("*math/big.Int")] object? x, [GoParam("*math/big.Int")] object? y) => false;
+
+        [GoMethod]
+        [return: GoReturn("*math/big.Int", "*math/big.Int")]
+        public (object?, object?) Add([GoParam("*math/big.Int")] object? x1, [GoParam("*math/big.Int")] object? y1, [GoParam("*math/big.Int")] object? x2, [GoParam("*math/big.Int")] object? y2) => (null, null);
+
+        [GoMethod]
+        [return: GoReturn("*math/big.Int", "*math/big.Int")]
+        public (object?, object?) Double([GoParam("*math/big.Int")] object? x1, [GoParam("*math/big.Int")] object? y1) => (null, null);
+
+        [GoMethod]
+        [return: GoReturn("*math/big.Int", "*math/big.Int")]
+        public (object?, object?) ScalarMult([GoParam("*math/big.Int")] object? Bx, [GoParam("*math/big.Int")] object? By, Slice<byte> k) => (null, null);
+
+        [GoMethod]
+        [return: GoReturn("*math/big.Int", "*math/big.Int")]
+        public (object?, object?) ScalarBaseMult(Slice<byte> k) => (null, null);
     }
 }

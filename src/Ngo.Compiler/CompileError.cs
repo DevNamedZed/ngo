@@ -66,6 +66,7 @@ namespace Ngo.Compiler
         CgoCompilerNotFound,
         CgoDisabled,
         CgoProbeFailed,
+        InternalError,
     }
 
     public sealed class CompileError

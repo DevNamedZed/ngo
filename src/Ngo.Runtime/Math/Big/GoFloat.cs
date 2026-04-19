@@ -159,6 +159,34 @@ namespace Ngo.Runtime.Math.Big
         }
 
         [GoMethod]
+        public Slice<byte> Append(Slice<byte> buf, byte fmt, long prec)
+        {
+            var formatted = _value.ToString("G");
+            var bytes = System.Text.Encoding.UTF8.GetBytes(formatted);
+            return Slice<byte>.Append(buf, bytes);
+        }
+
+        [GoMethod]
+        public object? UnmarshalText(Slice<byte> text)
+        {
+            var str = System.Text.Encoding.UTF8.GetString(text.AsReadOnlySpan());
+            if (double.TryParse(str, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var result))
+            {
+                _value = result;
+                return null;
+            }
+            return (object)$"math/big: cannot unmarshal \"{str}\" into a *big.Float";
+        }
+
+        [GoMethod]
+        public (Slice<byte>, object?) MarshalText()
+        {
+            var formatted = _value.ToString("G");
+            var bytes = System.Text.Encoding.UTF8.GetBytes(formatted);
+            return (new Slice<byte>(bytes), null);
+        }
+
+        [GoMethod]
         public bool Signbit()
         {
             return double.IsNegativeInfinity(_value) || (_value < 0) || (1.0 / _value == double.NegativeInfinity);

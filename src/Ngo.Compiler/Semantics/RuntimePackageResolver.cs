@@ -39,17 +39,24 @@ namespace Ngo.Compiler.Semantics
 
         private readonly Dictionary<string, PackageSymbol> _packages;
         private readonly Dictionary<ClrTypeKey, Type> _clrTypes;
+        private readonly HashSet<string> _typeOnlyPackages;
 
         private RuntimePackageResolver(
             Dictionary<string, PackageSymbol> packages,
-            Dictionary<ClrTypeKey, Type> clrTypes)
+            Dictionary<ClrTypeKey, Type> clrTypes,
+            HashSet<string> typeOnlyPackages)
         {
             _packages = packages;
             _clrTypes = clrTypes;
+            _typeOnlyPackages = typeOnlyPackages;
         }
 
         public PackageSymbol? Resolve(string importPath)
         {
+            if (_typeOnlyPackages.Contains(importPath))
+            {
+                return null;
+            }
             _packages.TryGetValue(importPath, out var pkg);
             return pkg;
         }
@@ -181,6 +188,43 @@ namespace Ngo.Compiler.Semantics
                 packageBuildInfo[importPath] = new PackageBuildInfo(clrType, pkg, typeMap);
             }
 
+            var typeOnlyPackages = new HashSet<string>();
+            foreach (var kvp in typesByPackage)
+            {
+                if (packageBuildInfo.ContainsKey(kvp.Key))
+                {
+                    continue;
+                }
+                var importPath = kvp.Key;
+                var pkgName = GetPackageName(importPath);
+                var pkg = new PackageSymbol(pkgName, importPath);
+                var typeMap = new Dictionary<string, TypeSymbol>();
+                foreach (var extType in kvp.Value)
+                {
+                    var attr = extType.GetCustomAttribute<GoTypeAttribute>();
+                    if (attr == null)
+                    {
+                        continue;
+                    }
+                    var entry = new GoTypeEntry(extType, attr);
+                    var typeName = attr.Name ?? extType.Name;
+                    if (attr.Kind == "struct")
+                    {
+                        var structType = new StructTypeSymbol(typeName, System.Array.Empty<FieldSymbol>());
+                        structType.PackagePath = importPath;
+                        typeMap[typeName] = structType;
+                        pkg.AddExport(structType);
+                        clrTypes[new ClrTypeKey(importPath, typeName)] = extType;
+                    }
+                }
+                if (typeMap.Count > 0)
+                {
+                    packages[importPath] = pkg;
+                    packageBuildInfo[importPath] = new PackageBuildInfo(typeof(object), pkg, typeMap);
+                    typeOnlyPackages.Add(importPath);
+                }
+            }
+
             // Pass 1b: Populate struct fields and type methods (all type names now registered across packages)
             foreach (var kvp in packageBuildInfo)
             {
@@ -197,7 +241,7 @@ namespace Ngo.Compiler.Semantics
                 BuildPackageMembers(info.ClrType, importPath, info.Package, info.TypeMap, packages);
             }
 
-            return new RuntimePackageResolver(packages, clrTypes);
+            return new RuntimePackageResolver(packages, clrTypes, typeOnlyPackages);
         }
 
         private static void BuildPackageMembers(Type clrType, string importPath,

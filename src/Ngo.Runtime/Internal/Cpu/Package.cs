@@ -17,6 +17,9 @@ namespace Ngo.Runtime.Internal.Cpu
         [GoVar(Type = "cpu.s390x")]
         public static readonly GoS390X S390X = new GoS390X();
 
+        [GoConst]
+        public static readonly long CacheLinePadSize = 64;
+
         [GoVar(Type = "uintptr")]
         public static readonly nuint CacheLineSize = 64;
 
@@ -46,6 +49,13 @@ namespace Ngo.Runtime.Internal.Cpu
                     }
                 }
             }
+        }
+
+        [GoFunc]
+        [return: GoReturn("string")]
+        public static string Name()
+        {
+            return "";
         }
     }
 

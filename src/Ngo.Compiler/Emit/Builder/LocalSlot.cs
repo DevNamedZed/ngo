@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------
-// <copyright file="CapturedLocal.cs" company="Ziad">
+// <copyright file="LocalSlot.cs" company="Ziad">
 //  Copyright 2016 Ziad
 //
 //  Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,24 +17,28 @@
 // -----------------------------------------------------------------------
 
 using System;
-using Ngo.Compiler.Emit.Builder;
 
-namespace Ngo.Compiler.Emit
+namespace Ngo.Compiler.Emit.Builder
 {
-    /// <summary>
-    /// A local variable paired with its CLR type, used for eagerly evaluated
-    /// defer/go arguments in closure emission.
-    /// </summary>
-    public sealed class CapturedLocal
+    internal sealed class LocalSlot
     {
-        internal CapturedLocal(LocalSlot local, Type type)
+        public LocalSlot(int index, Type type)
         {
-            Local = local;
-            Type = type;
+            if (index < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(index));
+            }
+            Index = index;
+            Type = type ?? throw new ArgumentNullException(nameof(type));
         }
 
-        internal LocalSlot Local { get; }
+        public int Index { get; }
 
         public Type Type { get; }
+
+        public override string ToString()
+        {
+            return $"local[{Index}]:{Type.FullName ?? Type.Name}";
+        }
     }
 }

@@ -208,15 +208,28 @@ namespace Ngo.Compiler.Semantics
                         return ResolveConversion(syntax.Arguments[0], exportType, span);
                     }
 
-                    // Package variable with function type: bufio.ScanLines(data, atEOF)
                     FunctionTypeSymbol? pkgFuncType = null;
-                    if (export is PackageVarSymbol pkgVar && pkgVar.Type is FunctionTypeSymbol pvft)
+                    if (export is PackageVarSymbol pkgVar)
                     {
-                        pkgFuncType = pvft;
+                        if (pkgVar.Type is FunctionTypeSymbol pvft)
+                        {
+                            pkgFuncType = pvft;
+                        }
+                        else if (pkgVar.Type is TypeSymbol pvNamedType && pvNamedType.UnderlyingType is FunctionTypeSymbol pvuft)
+                        {
+                            pkgFuncType = pvuft;
+                        }
                     }
-                    else if (export is LocalSymbol localVar && localVar.Type is FunctionTypeSymbol lvft)
+                    else if (export is LocalSymbol localVar)
                     {
-                        pkgFuncType = lvft;
+                        if (localVar.Type is FunctionTypeSymbol lvft)
+                        {
+                            pkgFuncType = lvft;
+                        }
+                        else if (localVar.Type is TypeSymbol lvNamedType && lvNamedType.UnderlyingType is FunctionTypeSymbol lvuft)
+                        {
+                            pkgFuncType = lvuft;
+                        }
                     }
                     if (pkgFuncType != null)
                     {
@@ -291,11 +304,14 @@ namespace Ngo.Compiler.Semantics
                                 if (promoted != null)
                                 {
                                     method = promoted;
-                                    // Rewrite target to access embedded field first
                                     var embType = methodInstTypeParams != null
                                         ? TypeSubstituter.Substitute(f.Type, methodInstTypeParams, methodInstTypeArgs!)
                                         : f.Type;
                                     target = new SelectorExpression(target, f, embType, target.Span);
+                                    isPointerTarget = embType is PointerTypeSymbol;
+                                    lookupType = isPointerTarget
+                                        ? ((PointerTypeSymbol)embType).ElementType
+                                        : embType;
                                     break;
                                 }
                             }
@@ -991,12 +1007,20 @@ namespace Ngo.Compiler.Semantics
                 for (int i = 0; i < typeArgs.Count; i++)
                     merged[i] = typeArgs[i];
 
-                // Try to infer remaining type args from arguments
-                var inferredAll = TypeInferrer.InferTypeArguments(partialFunc, partialArgs);
+                // Try to infer remaining type args from arguments.
+                // InferTypeArguments may return null if it can't infer ALL params,
+                // but the explicitly-provided ones are already in merged[].
+                // Use partial results even when full inference fails.
+                var inferredAll = TypeInferrer.InferPartialTypeArguments(partialFunc, partialArgs);
                 if (inferredAll != null)
                 {
                     for (int i = typeArgs.Count; i < funcSymbol.TypeParameters.Count; i++)
-                        merged[i] = inferredAll[i];
+                    {
+                        if (inferredAll[i] != null)
+                        {
+                            merged[i] = inferredAll[i]!;
+                        }
+                    }
                 }
 
                 // For any still-missing type params, try to infer from constraint

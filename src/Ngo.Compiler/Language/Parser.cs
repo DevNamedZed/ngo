@@ -324,6 +324,13 @@ namespace Ngo.Compiler.Language
                     {
                         // [ident]Type — array with constant-length identifier (e.g., [Size]byte)
                     }
+                    else if (insideBracket == SyntaxKind.IdentifierToken
+                        && Peek(offset + 2).Kind == SyntaxKind.DotToken
+                        && Peek(offset + 3).Kind == SyntaxKind.IdentifierToken
+                        && Peek(offset + 4).Kind == SyntaxKind.CloseBracketToken)
+                    {
+                        // [pkg.Const]Type — array with package-qualified constant length
+                    }
                     else
                     {
                         // Looks like generic instantiation — fall through to unnamed param

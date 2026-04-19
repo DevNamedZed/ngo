@@ -21,6 +21,7 @@ using System.Collections.Generic;
 using System.Reflection;
 using System.Reflection.Emit;
 using Ngo.Compiler.Ast;
+using Ngo.Compiler.Emit.Builder;
 using Ngo.Compiler.Symbols;
 using Ngo.Runtime;
 using Ngo.Runtime.GoRuntimePkg;
@@ -28,7 +29,6 @@ using Ngo.Runtime.Io;
 using Ngo.Runtime.Os;
 using Ngo.Runtime.Reflect;
 using Ngo.Runtime.Time;
-using Ngo.Compiler.Emit.Builder;
 
 namespace Ngo.Compiler.Emit
 {
@@ -211,8 +211,8 @@ namespace Ngo.Compiler.Emit
             }
 
             // Phase 1: Evaluate all channel expressions and send values, store in locals
-            var chanLocals = new LocalBuilder?[caseCount];
-            var sendValLocals = new LocalBuilder?[caseCount];
+            var chanLocals = new LocalSlot?[caseCount];
+            var sendValLocals = new LocalSlot?[caseCount];
 
             for (int i = 0; i < caseCount; i++)
             {
@@ -237,7 +237,7 @@ namespace Ngo.Compiler.Emit
 
             // Phase 2: Polling loop
             var loopLabel = _ctx.IL.DefineLabel();
-            var bodyLabels = new Label[caseCount];
+            var bodyLabels = new LabelSlot[caseCount];
             for (int i = 0; i < caseCount; i++)
             {
                 bodyLabels[i] = _ctx.IL.DefineLabel();
@@ -435,7 +435,6 @@ namespace Ngo.Compiler.Emit
                     // Function variable call: defer cleanup() where cleanup is a local var
                     // Capture the function value and invoke it in the lambda
                     var funcType = _ctx.Mapper.Map(call.CallTarget.Type);
-                    var invokeMethod = _ctx.Definitions.GetMethod(funcType, "Invoke");
 
                     // Add function value as first parameter to the lambda
                     var newParamTypes = new Type[paramTypes.Length + 1];
@@ -444,15 +443,60 @@ namespace Ngo.Compiler.Emit
                     lambdaMethod.SetParameters(newParamTypes);
                     paramTypes = newParamTypes;
 
-                    // Emit: load func arg, load remaining args, Callvirt Invoke
-                    lambdaIL.Emit(OpCodes.Ldarg_0); // func value
-                    for (int i = 0; i < argLocals.Count; i++)
-                        lambdaIL.Emit(OpCodes.Ldarg, i + 1);
-                    lambdaIL.Emit(OpCodes.Callvirt, invokeMethod);
-                    if (call.Function.ReturnType != BuiltinTypes.Void)
-                        lambdaIL.Emit(OpCodes.Pop);
+                    if (funcType == typeof(object) || funcType == typeof(Delegate))
+                    {
+                        // Dynamic callable (any-typed variable holding a delegate): dispatch
+                        // through Delegate.DynamicInvoke at runtime so we don't need a
+                        // compile-time Invoke signature.
+                        var dynamicInvoke = typeof(Delegate).GetMethod(
+                            "DynamicInvoke", new[] { typeof(object[]) })!;
 
-                    // Also capture the function value as a local
+                        lambdaIL.Emit(OpCodes.Ldarg_0);
+                        if (funcType != typeof(Delegate))
+                        {
+                            lambdaIL.Emit(OpCodes.Castclass, typeof(Delegate));
+                        }
+
+                        lambdaIL.Emit(OpCodes.Ldc_I4, argLocals.Count);
+                        lambdaIL.Emit(OpCodes.Newarr, typeof(object));
+                        for (int i = 0; i < argLocals.Count; i++)
+                        {
+                            lambdaIL.Emit(OpCodes.Dup);
+                            lambdaIL.Emit(OpCodes.Ldc_I4, i);
+                            lambdaIL.Emit(OpCodes.Ldarg, i + 1);
+                            var argCapturedType = argLocals[i].Type;
+                            if (argCapturedType.IsValueType)
+                            {
+                                lambdaIL.Emit(OpCodes.Box, argCapturedType);
+                            }
+                            lambdaIL.Emit(OpCodes.Stelem_Ref);
+                        }
+
+                        lambdaIL.Emit(OpCodes.Callvirt, dynamicInvoke);
+                        lambdaIL.Emit(OpCodes.Pop);
+                    }
+                    else
+                    {
+                        var invokeMethod = _ctx.Definitions.GetMethod(funcType, "Invoke");
+                        if (invokeMethod == null)
+                        {
+                            throw new InvalidOperationException(
+                                $"DeferGoEmitter: Invoke method not found on delegate type '{funcType}' " +
+                                $"(isGeneric={funcType.IsGenericType}, clrName={funcType.GetType().Name})");
+                        }
+
+                        lambdaIL.Emit(OpCodes.Ldarg_0);
+                        for (int i = 0; i < argLocals.Count; i++)
+                        {
+                            lambdaIL.Emit(OpCodes.Ldarg, i + 1);
+                        }
+                        lambdaIL.Emit(OpCodes.Callvirt, invokeMethod);
+                        if (call.Function.ReturnType != BuiltinTypes.Void)
+                        {
+                            lambdaIL.Emit(OpCodes.Pop);
+                        }
+                    }
+
                     _body.EmitExpression(call.CallTarget);
                     var funcLocal = _ctx.IL.DeclareLocal(funcType);
                     _ctx.IL.Emit(OpCodes.Stloc, funcLocal);
@@ -525,20 +569,48 @@ namespace Ngo.Compiler.Emit
                     lambdaIL.Emit(OpCodes.Ldarg, i);
                 }
 
-                if (_ctx.Methods.TryGetValue(methodCall.Method, out var targetMethod))
+                if (!_ctx.Methods.TryGetValue(methodCall.Method, out var targetMethod))
+                {
+                    var receiverTypeName = methodCall.Method.ReceiverType?.Name;
+                    foreach (var kvp in _ctx.Methods)
+                    {
+                        if (kvp.Key is MethodSymbol candidate
+                            && candidate.Name == methodCall.Method.Name
+                            && candidate.Parameters.Count == methodCall.Method.Parameters.Count
+                            && candidate.ReceiverType?.Name == receiverTypeName)
+                        {
+                            targetMethod = kvp.Value;
+                            break;
+                        }
+                    }
+                }
+
+                if (targetMethod != null)
                 {
                     lambdaIL.Emit(OpCodes.Call, targetMethod.AsMethodRef());
                 }
-                else if (!recvType.IsValueType)
+                else
                 {
-                    // Runtime type method call (e.g. sync.WaitGroup.Done)
                     var methodArgTypes = new Type[methodCall.Method.Parameters.Count];
                     for (int i = 0; i < methodArgTypes.Length; i++)
-                        methodArgTypes[i] = _ctx.Mapper.Map(methodCall.Method.Parameters[i].Type);
-                    var clrMethod = recvType.GetMethod(methodCall.Method.Name, methodArgTypes);
-                    if (clrMethod != null)
                     {
-                        lambdaIL.Emit(OpCodes.Callvirt, clrMethod);
+                        methodArgTypes[i] = _ctx.Mapper.Map(methodCall.Method.Parameters[i].Type);
+                    }
+
+                    Refs.MethodRef? runtimeMethod = null;
+                    if (!recvType.IsValueType)
+                    {
+                        runtimeMethod = _ctx.Definitions.GetMethod(
+                            recvType, methodCall.Method.Name, methodArgTypes);
+                    }
+
+                    if (runtimeMethod != null)
+                    {
+                        lambdaIL.Emit(OpCodes.Callvirt, runtimeMethod);
+                    }
+                    else
+                    {
+                        EmitCrossPackageStaticCall(lambdaIL, methodCall);
                     }
                 }
 
@@ -570,15 +642,140 @@ namespace Ngo.Compiler.Emit
             }
         }
 
+        private static TypeSymbol? ResolveReceiverForPackageLookup(TypeSymbol? typeSymbol)
+        {
+            if (typeSymbol == null)
+            {
+                return null;
+            }
+
+            if (typeSymbol is PointerTypeSymbol pointer && pointer.ElementType != null)
+            {
+                return ResolveReceiverForPackageLookup(pointer.ElementType);
+            }
+
+            if (typeSymbol is InstantiatedTypeSymbol instantiated)
+            {
+                var genericBase = ResolveReceiverForPackageLookup(instantiated.GenericType);
+                if (genericBase != null && genericBase.PackagePath != null)
+                {
+                    return genericBase;
+                }
+            }
+
+            if (typeSymbol.PackagePath != null)
+            {
+                return typeSymbol;
+            }
+
+            var resolved = typeSymbol.Resolved();
+            if (resolved != typeSymbol && resolved.PackagePath != null)
+            {
+                return resolved;
+            }
+
+            return typeSymbol;
+        }
+
+        private void EmitCrossPackageStaticCall(Builder.CilWriter lambdaIL, MethodCallExpression methodCall)
+        {
+            var receiverBase = ResolveReceiverForPackageLookup(methodCall.Method.ReceiverType);
+
+            if (receiverBase == null || receiverBase.PackagePath == null)
+            {
+                receiverBase = ResolveReceiverForPackageLookup(methodCall.Receiver.Type);
+            }
+
+            if (receiverBase == null || receiverBase.PackagePath == null)
+            {
+                var structType = receiverBase as Symbols.StructTypeSymbol;
+                if (structType == null && receiverBase is Symbols.PointerTypeSymbol ptrLookup)
+                {
+                    structType = ResolveReceiverForPackageLookup(ptrLookup.ElementType) as Symbols.StructTypeSymbol;
+                }
+                if (structType != null)
+                {
+                    var promoted = structType.LookupPromotedMethod(methodCall.Method.Name);
+                    if (promoted != null)
+                    {
+                        var promotedReceiver = ResolveReceiverForPackageLookup(promoted.Method.ReceiverType);
+                        if (promotedReceiver != null && promotedReceiver.PackagePath != null)
+                        {
+                            receiverBase = promotedReceiver;
+                        }
+                    }
+                }
+            }
+
+            if (receiverBase == null || receiverBase.PackagePath == null)
+            {
+                throw new InvalidOperationException(
+                    $"DeferGoEmitter: cannot resolve method '{methodCall.Method.Name}' " +
+                    $"on receiver '{methodCall.Receiver.Type}' in defer/go lambda — " +
+                    $"method has no declared receiver type and no package-qualified receiver");
+            }
+
+            var staticName = receiverBase.Name + "_" + methodCall.Method.Name;
+            var packagePath = receiverBase.PackagePath;
+
+            if (_ctx.Module is Builder.LiveModuleBuilder)
+            {
+                MethodBuilder? linkedMethod = null;
+                if (!_ctx.LinkedMethods.TryGetValue(staticName, out linkedMethod) && packagePath != null)
+                {
+                    var lastSlash = packagePath.LastIndexOf('/');
+                    var shortPkg = lastSlash >= 0 ? packagePath.Substring(lastSlash + 1) : packagePath;
+                    _ctx.LinkedMethods.TryGetValue(shortPkg + "." + staticName, out linkedMethod);
+                }
+                if (linkedMethod == null)
+                {
+                    var suffix = "." + staticName;
+                    foreach (var (key, candidate) in _ctx.LinkedMethods)
+                    {
+                        if (key.EndsWith(suffix) || key == staticName)
+                        {
+                            linkedMethod = candidate;
+                            break;
+                        }
+                    }
+                }
+                if (linkedMethod == null)
+                {
+                    throw new InvalidOperationException(
+                        $"DeferGoEmitter: method '{staticName}' not found in linked methods " +
+                        $"(receiver '{receiverBase.Name}', package '{packagePath ?? "<null>"}')");
+                }
+                lambdaIL.Emit(OpCodes.Call, linkedMethod);
+                return;
+            }
+
+            var allParams = new ParameterSymbol[1 + methodCall.Method.Parameters.Count];
+            allParams[0] = new ParameterSymbol("recv", methodCall.Receiver.Type, 0);
+            for (int i = 0; i < methodCall.Method.Parameters.Count; i++)
+            {
+                allParams[i + 1] = methodCall.Method.Parameters[i];
+            }
+            var crossPkgFunc = new FunctionSymbol(staticName, allParams,
+                methodCall.Method.ReturnTypes, methodCall.Method.IsVariadic, packagePath);
+            var crossPkgMethodRef = _ctx.GetCrossPackageMethod(crossPkgFunc, _ctx.Mapper);
+            lambdaIL.Emit(OpCodes.Call, crossPkgMethodRef);
+        }
+
         private void EmitClosureAction(IMethodBuilder lambdaMethod, List<CapturedLocal> argLocals)
         {
-            // Create a closure class with instance fields to capture arg values.
-            // Each call site gets its own instance, so defer in loops works correctly.
             var closureName = _ctx.QualifyWithPackage($"__defer_closure_{_body.LambdaCounter++}");
             var closureBuilder = _ctx.Module.DefineType(
                 closureName,
                 TypeAttributes.Public | TypeAttributes.Sealed);
             _ctx.Definitions.RegisterType(closureName, closureBuilder);
+
+            var closureConstructor = closureBuilder.DefineConstructor(
+                MethodAttributes.Public, CallingConventions.Standard, Type.EmptyTypes);
+            _ctx.Definitions.RegisterConstructor(closureName, Type.EmptyTypes, closureConstructor);
+            var ctorIl = closureConstructor.GetILWriter();
+            ctorIl.Emit(OpCodes.Ldarg_0);
+            ctorIl.Emit(OpCodes.Call, typeof(object).GetConstructor(Type.EmptyTypes)!);
+            ctorIl.Emit(OpCodes.Ret);
 
             var argFields = new List<IFieldBuilder>();
             for (int i = 0; i < argLocals.Count; i++)
@@ -589,7 +786,6 @@ namespace Ngo.Compiler.Emit
                 argFields.Add(argField);
             }
 
-            // Invoke(): loads captured args and calls the lambda
             var invokeMethod = closureBuilder.DefineMethod(
                 "Invoke",
                 MethodAttributes.Public,
@@ -606,25 +802,47 @@ namespace Ngo.Compiler.Emit
             invokeIL.Emit(OpCodes.Call, lambdaMethod.AsMethodRef());
             invokeIL.Emit(OpCodes.Ret);
 
-            var closureType = closureBuilder.CreateType()!;
+            closureBuilder.CreateType();
+            var closureType = closureBuilder.AsType();
 
-            // Create closure instance and populate fields with eagerly-evaluated args
             var closureLocal = _ctx.IL.DeclareLocal(closureType);
-            _ctx.IL.Emit(OpCodes.Newobj, closureType.GetConstructor(Type.EmptyTypes)!);
+            var resolvedCtor = _ctx.Definitions.GetConstructor(closureType, Type.EmptyTypes);
+            if (resolvedCtor == null)
+            {
+                throw new InvalidOperationException(
+                    $"DeferGoEmitter: default constructor not resolved on closure '{closureName}'");
+            }
+            _ctx.IL.Emit(OpCodes.Newobj, resolvedCtor);
             _ctx.IL.Emit(OpCodes.Stloc, closureLocal);
 
             for (int i = 0; i < argLocals.Count; i++)
             {
                 _ctx.IL.Emit(OpCodes.Ldloc, closureLocal);
                 _ctx.IL.Emit(OpCodes.Ldloc, argLocals[i].Local);
-                _ctx.IL.Emit(OpCodes.Stfld, closureType.GetField($"_a{i}")!);
+                var argFieldRef = _ctx.Definitions.GetField(closureType, $"_a{i}");
+                if (argFieldRef == null)
+                {
+                    throw new InvalidOperationException(
+                        $"DeferGoEmitter: capture field '_a{i}' not resolved on closure '{closureName}'");
+                }
+                _ctx.IL.Emit(OpCodes.Stfld, argFieldRef);
             }
 
-            // Create Action from closure.Invoke
-            var runtimeInvoke = closureType.GetMethod("Invoke")!;
+            var invokeRef = _ctx.Definitions.GetMethod(closureType, "Invoke", Type.EmptyTypes);
+            if (invokeRef == null)
+            {
+                throw new InvalidOperationException(
+                    $"DeferGoEmitter: Invoke method not resolved on closure '{closureName}'");
+            }
             _ctx.IL.Emit(OpCodes.Ldloc, closureLocal);
-            _ctx.IL.Emit(OpCodes.Ldftn, runtimeInvoke);
-            var actionCtor = typeof(Action).GetConstructor(new[] { typeof(object), typeof(IntPtr) })!;
+            _ctx.IL.Emit(OpCodes.Ldftn, invokeRef);
+            var actionCtor = _ctx.Definitions.GetConstructor(
+                typeof(Action), new[] { typeof(object), typeof(IntPtr) });
+            if (actionCtor == null)
+            {
+                throw new InvalidOperationException(
+                    "DeferGoEmitter: Action(object, IntPtr) constructor not resolved");
+            }
             _ctx.IL.Emit(OpCodes.Newobj, actionCtor);
         }
 
@@ -667,6 +885,18 @@ namespace Ngo.Compiler.Emit
                 argFields.Add(argField);
             }
 
+            // Default constructor: chains to object..ctor — must be defined explicitly
+            // so archive emit has a concrete ctor to reference at Newobj.
+            var wrapperCtor = wrapperBuilder.DefineConstructor(
+                MethodAttributes.Public,
+                CallingConventions.Standard,
+                Type.EmptyTypes);
+            _ctx.Definitions.RegisterConstructor(wrapperName, Type.EmptyTypes, wrapperCtor);
+            var ctorIL = wrapperCtor.GetILWriter();
+            ctorIL.Emit(OpCodes.Ldarg_0);
+            ctorIL.Emit(OpCodes.Call, typeof(object).GetConstructor(Type.EmptyTypes)!);
+            ctorIL.Emit(OpCodes.Ret);
+
             // Invoke(): calls _fn.Invoke(_a0, _a1, ...)
             var invokeMethod = wrapperBuilder.DefineMethod(
                 "Invoke",
@@ -693,25 +923,30 @@ namespace Ngo.Compiler.Emit
 
             // Create and populate wrapper instance
             var wrapperLocal = _ctx.IL.DeclareLocal(wrapperType);
-            _ctx.IL.Emit(OpCodes.Newobj, wrapperType.GetConstructor(Type.EmptyTypes)!);
+            _ctx.IL.Emit(OpCodes.Newobj, wrapperCtor.AsCtorRef());
             _ctx.IL.Emit(OpCodes.Stloc, wrapperLocal);
 
             _ctx.IL.Emit(OpCodes.Ldloc, wrapperLocal);
             _ctx.IL.Emit(OpCodes.Ldloc, delegateLocal);
-            _ctx.IL.Emit(OpCodes.Stfld, wrapperType.GetField("_fn")!);
+            _ctx.IL.Emit(OpCodes.Stfld, fnField.AsFieldRef());
 
             for (int i = 0; i < eagerLocals.Count; i++)
             {
                 _ctx.IL.Emit(OpCodes.Ldloc, wrapperLocal);
                 _ctx.IL.Emit(OpCodes.Ldloc, eagerLocals[i].Local);
-                _ctx.IL.Emit(OpCodes.Stfld, wrapperType.GetField($"_a{i}")!);
+                _ctx.IL.Emit(OpCodes.Stfld, argFields[i].AsFieldRef());
             }
 
             // Create Action from wrapper.Invoke
-            var runtimeInvoke = wrapperType.GetMethod("Invoke")!;
             _ctx.IL.Emit(OpCodes.Ldloc, wrapperLocal);
-            _ctx.IL.Emit(OpCodes.Ldftn, runtimeInvoke);
-            var actionCtor = typeof(Action).GetConstructor(new[] { typeof(object), typeof(IntPtr) })!;
+            _ctx.IL.Emit(OpCodes.Ldftn, invokeMethod.AsMethodRef());
+            var actionCtor = _ctx.Definitions.GetConstructor(
+                typeof(Action), new[] { typeof(object), typeof(IntPtr) });
+            if (actionCtor == null)
+            {
+                throw new InvalidOperationException(
+                    "DeferGoEmitter: Action(object, IntPtr) constructor not resolved");
+            }
             _ctx.IL.Emit(OpCodes.Newobj, actionCtor);
         }
 
@@ -732,9 +967,11 @@ namespace Ngo.Compiler.Emit
             if (name == "close" && paramTypes.Length == 1)
             {
                 il.Emit(OpCodes.Ldarg_0);
-                var closeMethod = paramTypes[0].GetMethod("Close");
+                var closeMethod = _ctx.Definitions.GetMethod(paramTypes[0], "Close", Type.EmptyTypes);
                 if (closeMethod != null)
+                {
                     il.Emit(OpCodes.Call, closeMethod);
+                }
                 return;
             }
 

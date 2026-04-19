@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------
-// <copyright file="CapturedLocal.cs" company="Ziad">
+// <copyright file="GoCertificateRequestInfo.cs" company="Ziad">
 //  Copyright 2016 Ziad
 //
 //  Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,25 +16,20 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
-using System;
-using Ngo.Compiler.Emit.Builder;
+using Ngo.Runtime.Discovery;
 
-namespace Ngo.Compiler.Emit
+namespace Ngo.Runtime.Crypto.Tls
 {
-    /// <summary>
-    /// A local variable paired with its CLR type, used for eagerly evaluated
-    /// defer/go arguments in closure emission.
-    /// </summary>
-    public sealed class CapturedLocal
+    [GoType("struct", Name = "CertificateRequestInfo", Package = "crypto/tls")]
+    public class GoCertificateRequestInfo
     {
-        internal CapturedLocal(LocalSlot local, Type type)
-        {
-            Local = local;
-            Type = type;
-        }
+        [GoField(Name = "AcceptableCAs", Type = "[][]byte")]
+        public Slice<Slice<byte>> AcceptableCAs;
 
-        internal LocalSlot Local { get; }
+        [GoField(Name = "SignatureSchemes", Type = "[]tls.SignatureScheme")]
+        public Slice<long> SignatureSchemes;
 
-        public Type Type { get; }
+        [GoField(Name = "Version")]
+        public long Version;
     }
 }

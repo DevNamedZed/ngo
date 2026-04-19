@@ -58,6 +58,24 @@ namespace Ngo.Runtime.Crypto.Tls
         public const long TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA = 0xc00a;
         [GoConst(Type = "uint16")]
         public const long TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA = 0xc009;
+        [GoConst(Type = "uint16")]
+        public const long TLS_RSA_WITH_RC4_128_SHA = 0x0005;
+        [GoConst(Type = "uint16")]
+        public const long TLS_RSA_WITH_3DES_EDE_CBC_SHA = 0x000A;
+        [GoConst(Type = "uint16")]
+        public const long TLS_ECDHE_ECDSA_WITH_RC4_128_SHA = 0xC007;
+        [GoConst(Type = "uint16")]
+        public const long TLS_ECDHE_RSA_WITH_RC4_128_SHA = 0xC011;
+        [GoConst(Type = "uint16")]
+        public const long TLS_ECDHE_RSA_WITH_3DES_EDE_CBC_SHA = 0xC012;
+        [GoConst(Type = "uint16")]
+        public const long TLS_FALLBACK_SCSV = 0x5600;
+        [GoConst(Type = "uint16")]
+        public const long TLS_RSA_WITH_AES_128_CBC_SHA256 = 0x003C;
+        [GoConst(Type = "uint16")]
+        public const long TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256 = 0xC023;
+        [GoConst(Type = "uint16")]
+        public const long TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256 = 0xC027;
 
         // Client auth type constants
         [GoConst(Type = "tls.ClientAuthType")]
@@ -78,6 +96,32 @@ namespace Ngo.Runtime.Crypto.Tls
         public const long RenegotiateOnceAsClient = 1;
         [GoConst(Type = "tls.RenegotiationSupport")]
         public const long RenegotiateFreelyAsClient = 2;
+
+        // SignatureScheme constants
+        [GoConst(Type = "tls.SignatureScheme")]
+        public const long PKCS1WithSHA256 = 0x0401;
+        [GoConst(Type = "tls.SignatureScheme")]
+        public const long PKCS1WithSHA384 = 0x0501;
+        [GoConst(Type = "tls.SignatureScheme")]
+        public const long PKCS1WithSHA512 = 0x0601;
+        [GoConst(Type = "tls.SignatureScheme")]
+        public const long PSSWithSHA256 = 0x0804;
+        [GoConst(Type = "tls.SignatureScheme")]
+        public const long PSSWithSHA384 = 0x0805;
+        [GoConst(Type = "tls.SignatureScheme")]
+        public const long PSSWithSHA512 = 0x0806;
+        [GoConst(Type = "tls.SignatureScheme")]
+        public const long ECDSAWithP256AndSHA256 = 0x0403;
+        [GoConst(Type = "tls.SignatureScheme")]
+        public const long ECDSAWithP384AndSHA384 = 0x0503;
+        [GoConst(Type = "tls.SignatureScheme")]
+        public const long ECDSAWithP521AndSHA512 = 0x0603;
+        [GoConst(Type = "tls.SignatureScheme")]
+        public const long Ed25519 = 0x0807;
+        [GoConst(Type = "tls.SignatureScheme")]
+        public const long PKCS1WithSHA1 = 0x0201;
+        [GoConst(Type = "tls.SignatureScheme")]
+        public const long ECDSAWithSHA1 = 0x0203;
 
         // CurveID constants
         [GoConst(Type = "tls.CurveID")]

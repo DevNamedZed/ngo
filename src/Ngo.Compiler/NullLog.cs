@@ -16,17 +16,29 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
+using System;
+
 namespace Ngo.Compiler
 {
     /// <summary>
-    /// No-op log implementation. Used when no logging is configured (e.g., tests).
+    /// Default log implementation used when no explicit log is configured.
+    /// Error and Warn go to stderr so that compilation problems are never hidden.
+    /// Info and Debug are discarded — those are verbose-only output channels.
     /// </summary>
     public sealed class NullLog : ICompilerLog
     {
         public static readonly NullLog Instance = new();
 
-        public void Error(string message) { }
-        public void Warn(string message) { }
+        public void Error(string message)
+        {
+            Console.Error.WriteLine($"error: {message}");
+        }
+
+        public void Warn(string message)
+        {
+            Console.Error.WriteLine($"warning: {message}");
+        }
+
         public void Info(string message) { }
         public void Debug(string message) { }
     }

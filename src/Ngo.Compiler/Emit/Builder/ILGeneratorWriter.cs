@@ -17,6 +17,7 @@
 // -----------------------------------------------------------------------
 
 using System;
+using System.Collections.Generic;
 using System.Reflection;
 using System.Reflection.Emit;
 using Ngo.Compiler.Emit.Refs;
@@ -25,13 +26,18 @@ namespace Ngo.Compiler.Emit.Builder
 {
     /// <summary>
     /// CilWriter that forwards all calls to a real ILGenerator.
-    /// Used for main package emission (ngo run / ngo build).
+    /// Maintains private LocalBuilder/Label instances indexed by LocalSlot.Index / LabelSlot.Id.
     /// </summary>
     internal sealed class ILGeneratorWriter : CilWriter
     {
         private readonly ILGenerator _il;
+        private readonly List<LocalBuilder> _locals = new();
+        private readonly List<Label> _labels = new();
 
-        public ILGeneratorWriter(ILGenerator il) => _il = il;
+        public ILGeneratorWriter(ILGenerator il)
+        {
+            _il = il ?? throw new ArgumentNullException(nameof(il));
+        }
 
         public override void Emit(OpCode op) => _il.Emit(op);
         public override void Emit(OpCode op, int arg) => _il.Emit(op, arg);
@@ -57,9 +63,25 @@ namespace Ngo.Compiler.Emit.Builder
             _il.Emit(op, ResolveFieldForEmit(field));
         }
 
-        public override void Emit(OpCode op, Label label) => _il.Emit(op, label);
-        public override void Emit(OpCode op, Label[] labels) => _il.Emit(op, labels);
-        public override void Emit(OpCode op, LocalBuilder local) => _il.Emit(op, local);
+        public override void Emit(OpCode op, LabelSlot label)
+        {
+            _il.Emit(op, GetLabel(label));
+        }
+
+        public override void Emit(OpCode op, LabelSlot[] labels)
+        {
+            var resolved = new Label[labels.Length];
+            for (int index = 0; index < labels.Length; index++)
+            {
+                resolved[index] = GetLabel(labels[index]);
+            }
+            _il.Emit(op, resolved);
+        }
+
+        public override void Emit(OpCode op, LocalSlot local)
+        {
+            _il.Emit(op, GetLocal(local));
+        }
 
         public override void Emit(OpCode op, TypeRef typeRef)
         {
@@ -79,6 +101,74 @@ namespace Ngo.Compiler.Emit.Builder
         public override void Emit(OpCode op, FieldRef fieldRef)
         {
             _il.Emit(op, ResolveFieldForEmit(ResolveFieldRef(fieldRef)));
+        }
+
+        public override LocalSlot DeclareLocal(Type type)
+        {
+            if (type == null)
+            {
+                throw new ArgumentNullException(nameof(type));
+            }
+            var builder = _il.DeclareLocal(type);
+            var slot = new LocalSlot(_locals.Count, type);
+            _locals.Add(builder);
+            return slot;
+        }
+
+        public override LabelSlot DefineLabel()
+        {
+            var label = _il.DefineLabel();
+            var slot = new LabelSlot(_labels.Count);
+            _labels.Add(label);
+            return slot;
+        }
+
+        public override void MarkLabel(LabelSlot label)
+        {
+            _il.MarkLabel(GetLabel(label));
+        }
+
+        public override void BeginExceptionBlock()
+        {
+            _il.BeginExceptionBlock();
+        }
+
+        public override void BeginCatchBlock(Type type)
+        {
+            _il.BeginCatchBlock(type);
+        }
+
+        public override void BeginFinallyBlock() => _il.BeginFinallyBlock();
+        public override void BeginFaultBlock() => _il.BeginFaultBlock();
+        public override void BeginExceptFilterBlock() => _il.BeginExceptFilterBlock();
+        public override void EndExceptionBlock() => _il.EndExceptionBlock();
+
+        private LocalBuilder GetLocal(LocalSlot slot)
+        {
+            if (slot == null)
+            {
+                throw new ArgumentNullException(nameof(slot));
+            }
+            if (slot.Index < 0 || slot.Index >= _locals.Count)
+            {
+                throw new InvalidOperationException(
+                    $"ILGeneratorWriter: local slot {slot.Index} is out of range (declared {_locals.Count})");
+            }
+            return _locals[slot.Index];
+        }
+
+        private Label GetLabel(LabelSlot slot)
+        {
+            if (slot == null)
+            {
+                throw new ArgumentNullException(nameof(slot));
+            }
+            if (slot.Id < 0 || slot.Id >= _labels.Count)
+            {
+                throw new InvalidOperationException(
+                    $"ILGeneratorWriter: label slot {slot.Id} is out of range (defined {_labels.Count})");
+            }
+            return _labels[slot.Id];
         }
 
         private static Type ResolveTypeRef(TypeRef typeRef)
@@ -144,6 +234,11 @@ namespace Ngo.Compiler.Emit.Builder
                 {
                     if (methodRef.Builder is LiveMethodBuilder liveBuilder)
                     {
+                        if (methodRef.DeclaringType?.Kind == TypeRefKind.GenericInstantiation)
+                        {
+                            var closedType = ResolveTypeRef(methodRef.DeclaringType);
+                            return TypeBuilder.GetMethod(closedType, liveBuilder.Inner);
+                        }
                         return liveBuilder.Inner;
                     }
                     throw new NotSupportedException(
@@ -184,6 +279,11 @@ namespace Ngo.Compiler.Emit.Builder
                 {
                     if (ctorRef.Builder is LiveConstructorBuilder liveBuilder)
                     {
+                        if (ctorRef.DeclaringType?.Kind == TypeRefKind.GenericInstantiation)
+                        {
+                            var closedType = ResolveTypeRef(ctorRef.DeclaringType);
+                            return TypeBuilder.GetConstructor(closedType, liveBuilder.Inner);
+                        }
                         return liveBuilder.Inner;
                     }
                     throw new NotSupportedException(
@@ -213,6 +313,11 @@ namespace Ngo.Compiler.Emit.Builder
                 {
                     if (fieldRef.Builder is LiveFieldBuilder liveBuilder)
                     {
+                        if (fieldRef.DeclaringType?.Kind == TypeRefKind.GenericInstantiation)
+                        {
+                            var closedType = ResolveTypeRef(fieldRef.DeclaringType);
+                            return TypeBuilder.GetField(closedType, liveBuilder.Inner);
+                        }
                         return liveBuilder.Inner;
                     }
                     throw new NotSupportedException(
@@ -225,17 +330,6 @@ namespace Ngo.Compiler.Emit.Builder
                 }
             }
         }
-
-        public override LocalBuilder DeclareLocal(Type type) => _il.DeclareLocal(type);
-        public override Label DefineLabel() => _il.DefineLabel();
-        public override void MarkLabel(Label label) => _il.MarkLabel(label);
-
-        public override void BeginExceptionBlock() => _il.BeginExceptionBlock();
-        public override void BeginCatchBlock(Type type) => _il.BeginCatchBlock(type);
-        public override void BeginFinallyBlock() => _il.BeginFinallyBlock();
-        public override void BeginFaultBlock() => _il.BeginFaultBlock();
-        public override void BeginExceptFilterBlock() => _il.BeginExceptFilterBlock();
-        public override void EndExceptionBlock() => _il.EndExceptionBlock();
 
         private static bool IsTypeBuilderGenericInstantiation(Type type)
         {

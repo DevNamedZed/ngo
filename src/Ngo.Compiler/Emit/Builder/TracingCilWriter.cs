@@ -199,41 +199,41 @@ namespace Ngo.Compiler.Emit.Builder
             _inner.Emit(op, fieldRef);
         }
 
-        public override void Emit(OpCode op, Label label)
+        public override void Emit(OpCode op, LabelSlot label)
         {
-            Log($"{op.Name} label#{label.GetHashCode()}");
+            Log($"{op.Name} label#{label.Id}");
             _inner.Emit(op, label);
         }
 
-        public override void Emit(OpCode op, Label[] labels)
+        public override void Emit(OpCode op, LabelSlot[] labels)
         {
             Log($"{op.Name} [{labels.Length} labels]");
             _inner.Emit(op, labels);
         }
 
-        public override void Emit(OpCode op, LocalBuilder local)
+        public override void Emit(OpCode op, LocalSlot local)
         {
-            Log($"{op.Name} local_{local.LocalIndex} ({local.LocalType?.Name ?? "?"})");
+            Log($"{op.Name} local_{local.Index} ({local.Type.Name})");
             _inner.Emit(op, local);
         }
 
-        public override LocalBuilder DeclareLocal(Type type)
+        public override LocalSlot DeclareLocal(Type type)
         {
             var local = _inner.DeclareLocal(type);
-            _trace.Add($"  .locals: [{local.LocalIndex}] {type.FullName ?? type.Name}");
+            _trace.Add($"  .locals: [{local.Index}] {type.FullName ?? type.Name}");
             return local;
         }
 
-        public override Label DefineLabel()
+        public override LabelSlot DefineLabel()
         {
             var label = _inner.DefineLabel();
-            _trace.Add($"  .label: defined label#{label.GetHashCode()}");
+            _trace.Add($"  .label: defined label#{label.Id}");
             return label;
         }
 
-        public override void MarkLabel(Label label)
+        public override void MarkLabel(LabelSlot label)
         {
-            _trace.Add($"  label#{label.GetHashCode()}:");
+            _trace.Add($"  label#{label.Id}:");
             _inner.MarkLabel(label);
         }
 

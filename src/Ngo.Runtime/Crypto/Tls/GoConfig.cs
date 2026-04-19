@@ -19,6 +19,7 @@ namespace Ngo.Runtime.Crypto.Tls
         [GoField(Name = "CurvePreferences")] public Slice<ushort> CurvePreferences;
         [GoField(Name = "PreferServerCipherSuites")] public bool PreferServerCipherSuites;
         [GoField(Name = "GetCertificate", Type = "func(*tls.ClientHelloInfo) (*tls.Certificate, error)")] public object? GetCertificate;
+        [GoField(Name = "GetClientCertificate", Type = "func(*tls.CertificateRequestInfo) (*tls.Certificate, error)")] public object? GetClientCertificate;
         [GoField(Name = "GetConfigForClient", Type = "func(*tls.ClientHelloInfo) (*tls.Config, error)")] public object? GetConfigForClient;
         [GoField(Name = "VerifyPeerCertificate", Type = "func([][]byte, [][]*x509.Certificate) error")] public object? VerifyPeerCertificate;
         [GoField(Name = "VerifyConnection", Type = "func(tls.ConnectionState) error")] public object? VerifyConnection;
@@ -46,6 +47,7 @@ namespace Ngo.Runtime.Crypto.Tls
                 CurvePreferences = CurvePreferences,
                 PreferServerCipherSuites = PreferServerCipherSuites,
                 GetCertificate = GetCertificate,
+                GetClientCertificate = GetClientCertificate,
                 GetConfigForClient = GetConfigForClient,
                 VerifyPeerCertificate = VerifyPeerCertificate,
                 VerifyConnection = VerifyConnection,

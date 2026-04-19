@@ -134,14 +134,17 @@ namespace Ngo.Compiler.Semantics
                     else if (member is VarDeclarationSyntax varSyntax)
                     {
                         varSyntaxes.Add(varSyntax);
+                        syntaxToFile[varSyntax] = file;
                     }
                     else if (member is TypeDeclarationSyntax typeSyntax)
                     {
                         typeSyntaxes.Add(typeSyntax);
+                        syntaxToFile[typeSyntax] = file;
                     }
                     else if (member is ConstDeclarationSyntax constSyntax)
                     {
                         constSyntaxes.Add(constSyntax);
+                        syntaxToFile[constSyntax] = file;
                     }
                 }
             }
@@ -212,10 +215,12 @@ namespace Ngo.Compiler.Semantics
             var types = new List<TypeDeclaration>();
             foreach (var typeSyntax in typeSyntaxes)
             {
+                PushFileScopedImports(typeSyntax, syntaxToFile);
                 foreach (var spec in typeSyntax.Specs)
                 {
                     types.Add(ResolveTypeDeclaration(spec));
                 }
+                PopFileScopedImports(typeSyntax, syntaxToFile);
             }
 
             // Post-process: fixup interfaces with embedded interfaces that had empty method sets
@@ -1571,10 +1576,14 @@ namespace Ngo.Compiler.Semantics
                         else if (member is ExpressionSyntax embeddedSyntax)
                         {
                             var embeddedType = _typeResolver.ResolveType(embeddedSyntax);
-                            // Unwrap type aliases (e.g., ExtensionDescriptor = FieldDescriptor)
                             while (embeddedType != null && embeddedType.IsAlias && embeddedType.UnderlyingType != null)
                             {
                                 embeddedType = embeddedType.UnderlyingType;
+                            }
+                            if (embeddedType != null && embeddedType is not InterfaceTypeSymbol
+                                && embeddedType.Resolved() is InterfaceTypeSymbol resolvedIface)
+                            {
+                                embeddedType = resolvedIface;
                             }
                             if (embeddedType is InterfaceTypeSymbol embeddedIface)
                             {
@@ -1802,7 +1811,7 @@ namespace Ngo.Compiler.Semantics
             if (syntax.Names.Count > 1 && syntax.Values.HasValue && syntax.Values.Value.Count == 1)
             {
                 var rhs = _expressionResolver.ResolveExpression(syntax.Values.Value[0]);
-                var returnTypes = _context.GetCallReturnTypes(rhs);
+                var returnTypes = _context.GetCallReturnTypes(rhs, syntax.Names.Count);
                 if (returnTypes != null && returnTypes.Count == syntax.Names.Count)
                 {
                     var symbols = new LocalSymbol?[syntax.Names.Count];

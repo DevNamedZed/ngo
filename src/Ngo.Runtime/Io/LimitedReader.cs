@@ -24,8 +24,10 @@ namespace Ngo.Runtime.Io
     [GoType("struct", Package = "io", Name = "LimitedReader")]
     public sealed class LimitedReader : IGoReader
     {
-        private readonly IGoReader _inner;
+        private IGoReader _inner;
         private long _remaining;
+
+        public LimitedReader() { _inner = null!; }
 
         public LimitedReader(IGoReader inner, long n)
         {
@@ -33,9 +35,12 @@ namespace Ngo.Runtime.Io
             _remaining = n;
         }
 
-        /// <summary>Go field: R Reader</summary>
         [GoField(Name = "R", Type = "io.Reader")]
-        public IGoReader R => _inner;
+        public IGoReader R
+        {
+            get => _inner;
+            set => _inner = value;
+        }
 
         /// <summary>Go field: N int64</summary>
         [GoField(Name = "N")]

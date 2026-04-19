@@ -40,5 +40,6 @@ namespace Ngo.Runtime.Syscall
         [GoField] public Slice<long> GidMappings;
         [GoField] public bool GidMappingsEnableSetgroups;
         [GoField] public Slice<long> AmbientCaps;
+        [GoField(Type = "*int")] public Ptr<long>? PidFD;
     }
 }

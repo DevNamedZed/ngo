@@ -47,17 +47,17 @@ namespace Ngo.Runtime.Reflect
     public sealed class GoReflectStructField
     {
         [GoField(Name = "Name")]
-        public string Name { get; }
+        public string Name { get; set; }
         [GoField(Name = "Type")]
-        public GoReflectType Type { get; }
+        public GoReflectType Type { get; set; }
         [GoField(Name = "Tag", Type = "StructTag")]
-        public string Tag { get; }
+        public string Tag { get; set; }
         [GoField(Name = "Index", Type = "[]int")]
-        public Slice<long> Index { get; }
+        public Slice<long> Index { get; set; }
         [GoField(Name = "Anonymous")]
-        public bool Anonymous { get; }
+        public bool Anonymous { get; set; }
         [GoField(Name = "PkgPath")]
-        public string PkgPath { get; } = "";
+        public string PkgPath { get; set; } = "";
         [GoField(Name = "Offset")]
         public long Offset { get; set; }
 
