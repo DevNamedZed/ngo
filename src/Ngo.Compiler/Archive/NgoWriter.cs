@@ -34,7 +34,7 @@ namespace Ngo.Compiler.Archive
     {
         private readonly MemoryStream _code = new();
         private readonly List<ILTokenEntry> _tokens = new();
-        private readonly List<string> _locals = new();
+        private readonly List<TypeToken> _locals = new();
         private readonly List<ExceptionClause> _exceptionClauses = new();
 
         private int _nextLabelId;
@@ -85,7 +85,6 @@ namespace Ngo.Compiler.Archive
             return _code.ToArray();
         }
 
-        public string[] GetLocalTypes() => _locals.ToArray();
         public List<ILTokenEntry> GetTokenEntries() => _tokens;
         public List<ExceptionClause> GetExceptionClauses() => _exceptionClauses;
 
@@ -388,7 +387,7 @@ namespace Ngo.Compiler.Archive
                 throw new ArgumentNullException(nameof(type));
             }
             var slot = new LocalSlot(_locals.Count, type);
-            _locals.Add(GetTypeNameStatic(type));
+            _locals.Add(BuildTypeToken(type));
             return slot;
         }
 
@@ -442,6 +441,7 @@ namespace Ngo.Compiler.Archive
                 TryLength = tryLength,
                 HandlerOffset = _currentHandlerStart,
                 CatchTypeName = GetTypeNameStatic(type),
+                CatchTypeToken = BuildTypeToken(type),
             });
         }
 
@@ -551,7 +551,7 @@ namespace Ngo.Compiler.Archive
             writer.Write(_locals.Count);
             foreach (var local in _locals)
             {
-                writer.Write(local);
+                local.Write(writer);
             }
 
             writer.Write(ilBytes.Length);
@@ -573,10 +573,14 @@ namespace Ngo.Compiler.Archive
                 writer.Write(clause.HandlerLength);
                 writer.Write(clause.FilterOffset);
                 writer.Write(clause.CatchTypeName ?? "");
+                if (!string.IsNullOrEmpty(clause.CatchTypeName))
+                {
+                    clause.CatchTypeToken!.Write(writer);
+                }
             }
         }
 
-        private TypeToken BuildTypeToken(Type type)
+        internal TypeToken BuildTypeToken(Type type)
         {
             return BuildTypeToken(type, new HashSet<Type>(ReferenceEqualityComparer.Instance));
         }
@@ -641,9 +645,17 @@ namespace Ngo.Compiler.Archive
             {
                 if (ngoGenericParam.IsMethodGenericParam)
                 {
-                    return TypeToken.CreateGenericMethodParam(ngoGenericParam.Index);
+                    if (ngoGenericParam.Index < _serializationContext.MethodGenericParams.Length)
+                    {
+                        return TypeToken.CreateGenericMethodParam(ngoGenericParam.Index);
+                    }
+                    return TypeToken.CreatePrimitive(PrimitiveTypeKind.Object);
                 }
-                return TypeToken.CreateGenericTypeParam(ngoGenericParam.Index);
+                if (ngoGenericParam.Index < _serializationContext.TypeGenericParams.Length)
+                {
+                    return TypeToken.CreateGenericTypeParam(ngoGenericParam.Index);
+                }
+                return TypeToken.CreatePrimitive(PrimitiveTypeKind.Object);
             }
 
             if (type is NgoBuilderType)
@@ -683,9 +695,17 @@ namespace Ngo.Compiler.Archive
             {
                 if (type.DeclaringMethod != null)
                 {
-                    return TypeToken.CreateGenericMethodParam(type.GenericParameterPosition);
+                    if (type.GenericParameterPosition < _serializationContext.MethodGenericParams.Length)
+                    {
+                        return TypeToken.CreateGenericMethodParam(type.GenericParameterPosition);
+                    }
+                    return TypeToken.CreatePrimitive(PrimitiveTypeKind.Object);
                 }
-                return TypeToken.CreateGenericTypeParam(type.GenericParameterPosition);
+                if (type.GenericParameterPosition < _serializationContext.TypeGenericParams.Length)
+                {
+                    return TypeToken.CreateGenericTypeParam(type.GenericParameterPosition);
+                }
+                return TypeToken.CreatePrimitive(PrimitiveTypeKind.Object);
             }
 
             if (type.IsArray)
@@ -736,39 +756,8 @@ namespace Ngo.Compiler.Archive
                 return TypeToken.CreateGenericInst(BuildTypeToken(genericDefinition, inProgress), argumentTokens);
             }
 
-            // Last-resort check for constructed generic types that bypassed the IsGenericType check
-            // (e.g., TypeBuilderInstantiation or types with NgoBuilderType arguments where
-            // reflection doesn't report IsGenericType correctly)
             var typeName = type.FullName ?? type.Name;
             var backtickIndex = typeName.IndexOf('`');
-            if (backtickIndex > 0 && typeName.IndexOf('[', backtickIndex) > 0
-                && !typeName.EndsWith("[]") && !type.IsGenericTypeDefinition)
-            {
-                try
-                {
-                    var genericDefinition = type.GetGenericTypeDefinition();
-                    var genericArguments = type.GetGenericArguments();
-                    var argumentTokens = new TypeToken[genericArguments.Length];
-                    for (int i = 0; i < genericArguments.Length; i++)
-                    {
-                        argumentTokens[i] = BuildTypeToken(genericArguments[i], inProgress);
-                    }
-                    return TypeToken.CreateGenericInst(BuildTypeToken(genericDefinition, inProgress), argumentTokens);
-                }
-                catch (NotSupportedException)
-                {
-                    // Constructed generic whose arguments are NgoBuilderType / NgoGenericParameterType —
-                    // GetGenericArguments refuses to enumerate, so parse the name instead.
-                    // Format: "Namespace.Type`N[[ArgFullName, Assembly], ...]"
-                    var defName = typeName.Substring(0, typeName.IndexOf('[', backtickIndex));
-                    var defToken = TypeToken.CreatePackageTypeRef(GetPackageImportPath(type), defName);
-
-                    // Parse type arguments from the FullName string
-                    var argsStr = typeName.Substring(typeName.IndexOf('[', backtickIndex));
-                    var argTokens = ParseGenericArgumentsFromName(argsStr, inProgress);
-                    return TypeToken.CreateGenericInst(defToken, argTokens);
-                }
-            }
 
             // For generic definitions, strip the type arg brackets: "Slice`1[[T]]" → "Slice`1"
             if (backtickIndex > 0 && type.IsGenericTypeDefinition)
@@ -1451,6 +1440,7 @@ namespace Ngo.Compiler.Archive
             public int HandlerLength;
             public int FilterOffset;
             public string? CatchTypeName;
+            public TypeToken? CatchTypeToken;
         }
 
         private struct BranchFixup

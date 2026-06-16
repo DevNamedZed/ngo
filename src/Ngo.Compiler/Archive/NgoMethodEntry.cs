@@ -27,7 +27,8 @@ namespace Ngo.Compiler.Archive
     internal sealed class NgoMethodEntry
     {
         public NgoMethodEntry(string methodName, MethodAttributes attributes, string returnType,
-            string[] paramTypes, int bodyIndex, string[] genericParamNames)
+            string[] paramTypes, int bodyIndex, string[] genericParamNames,
+            TypeToken returnTypeToken, TypeToken[] paramTypeTokens)
         {
             MethodName = methodName;
             Attributes = attributes;
@@ -35,6 +36,8 @@ namespace Ngo.Compiler.Archive
             ParamTypes = paramTypes;
             BodyIndex = bodyIndex;
             GenericParamNames = genericParamNames;
+            ReturnTypeToken = returnTypeToken;
+            ParamTypeTokens = paramTypeTokens;
         }
 
         public string MethodName { get; }
@@ -44,6 +47,10 @@ namespace Ngo.Compiler.Archive
         public string ReturnType { get; }
 
         public string[] ParamTypes { get; }
+
+        public TypeToken ReturnTypeToken { get; }
+
+        public TypeToken[] ParamTypeTokens { get; }
 
         public string[] GenericParamNames { get; }
 

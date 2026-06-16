@@ -230,6 +230,7 @@ namespace Ngo.Compiler.Emit
                 ngoFb.GoArrayLength = goArrField.Length;
                 var elemClr = _ctx.Mapper.Map(goArrField.ElementType);
                 ngoFb.GoArrayElementTypeName = NgoWriter.GetTypeNameStatic(elemClr);
+                ngoFb.GoArrayElementType = elemClr;
             }
             if (field.Tag != null)
             {
@@ -286,6 +287,25 @@ namespace Ngo.Compiler.Emit
                 null!, System.Type.EmptyTypes);
 
             _ctx.Definitions.RegisterType(qualifiedIfaceName, typeBuilder);
+
+            // Define generic type parameters if this is a generic interface, so its method
+            // signatures (which reference the interface's own parameters) resolve — mirrors
+            // DefineStructType / EmitFunction.
+            if (interfaceType.TypeParameters.Count > 0)
+            {
+                var paramNames = new string[interfaceType.TypeParameters.Count];
+                for (int i = 0; i < interfaceType.TypeParameters.Count; i++)
+                {
+                    paramNames[i] = interfaceType.TypeParameters[i].Name;
+                }
+
+                var genericParams = typeBuilder.DefineGenericParameters(paramNames);
+                for (int i = 0; i < interfaceType.TypeParameters.Count; i++)
+                {
+                    _ctx.Mapper.Register(interfaceType.TypeParameters[i], genericParams[i]);
+                    ApplyConstraints(genericParams[i], interfaceType.TypeParameters[i].Constraint);
+                }
+            }
 
             foreach (var method in interfaceType.Methods)
             {
@@ -552,7 +572,10 @@ namespace Ngo.Compiler.Emit
             var concreteClrType = _ctx.Mapper.Map(concreteType);
             var interfaceClrType = _ctx.Mapper.Map(interfaceType);
 
-            var concreteTypeName = concreteType.Name.TrimStart('*');
+            // The concrete type name can be a generic instantiation (e.g. nistCurve[*P256Point])
+            // whose '[', ']', '*' are reserved in the .NET type-name grammar — escape to a legal
+            // identifier so the wrapper type name (and tokens referencing it) round-trip correctly.
+            var concreteTypeName = ClrTypeName.Escape(concreteType.Name.TrimStart('*'));
             var wrapperName = $"{concreteTypeName}__{interfaceType.Name}__Wrapper";
             if (interfaceType.Methods.Count == 0)
             {

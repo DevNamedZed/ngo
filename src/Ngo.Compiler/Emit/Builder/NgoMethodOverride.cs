@@ -16,6 +16,8 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
+using System;
+
 namespace Ngo.Compiler.Emit.Builder
 {
     /// <summary>
@@ -24,15 +26,18 @@ namespace Ngo.Compiler.Emit.Builder
     /// </summary>
     internal sealed class NgoMethodOverride
     {
-        public NgoMethodOverride(string bodyMethodName, string declarationTypeName, string declarationMethodName)
+        public NgoMethodOverride(string bodyMethodName, string declarationTypeName,
+            string declarationMethodName, Type declarationType)
         {
             BodyMethodName = bodyMethodName;
             DeclarationTypeName = declarationTypeName;
             DeclarationMethodName = declarationMethodName;
+            DeclarationType = declarationType;
         }
 
         public string BodyMethodName { get; }
         public string DeclarationTypeName { get; }
         public string DeclarationMethodName { get; }
+        public Type DeclarationType { get; }
     }
 }

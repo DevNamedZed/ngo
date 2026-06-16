@@ -16,6 +16,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 
+using System.Collections.Generic;
 using Ngo.Compiler.Symbols;
 
 namespace Ngo.Compiler.Semantics
@@ -24,7 +25,11 @@ namespace Ngo.Compiler.Semantics
     {
         public static bool Satisfies(TypeSymbol typeArg, ConstraintInfo constraint)
         {
-            if (constraint == ConstraintInfo.Any)
+            // The empty constraint is `any` — satisfied by every type. Check this semantically, not
+            // by reference to the ConstraintInfo.Any singleton: a constraint deserialized from a .ngo
+            // archive is a distinct instance with the same (empty) content.
+            if (constraint == ConstraintInfo.Any
+                || (constraint.Methods.Count == 0 && constraint.TypeElements.Count == 0 && !constraint.IsComparable))
                 return true;
 
 
@@ -128,9 +133,12 @@ namespace Ngo.Compiler.Semantics
                     var element = constraint.TypeElements[i];
                     if (element.IsTilde)
                     {
-                        // ~int matches any type whose underlying type is int
+                        // ~int matches any type whose underlying type is int. When the element type
+                        // contains the constraint's own type parameters (e.g. ~[]S), they act as
+                        // wildcards: [][]uintptr satisfies ~[]S with S = []uintptr.
                         var underlying = typeArg.UnderlyingType ?? typeArg;
-                        if (underlying == element.Type || underlying.Name == element.Type.Name)
+                        if (underlying == element.Type || underlying.Name == element.Type.Name
+                            || TypeMatchesPattern(underlying, element.Type, new Dictionary<TypeParameterSymbol, TypeSymbol>()))
                         {
                             matchesAny = true;
                             break;
@@ -151,6 +159,43 @@ namespace Ngo.Compiler.Semantics
             }
 
             return true;
+        }
+
+        // Structurally matches an actual type against a pattern whose type parameters are free
+        // wildcards — each binds on first occurrence and must then stay consistent. Lets a "~[]S"
+        // constraint element (mentioning the constraint's own type parameter S) accept [][]uintptr.
+        private static bool TypeMatchesPattern(TypeSymbol actual, TypeSymbol pattern, Dictionary<TypeParameterSymbol, TypeSymbol> bindings)
+        {
+            if (pattern is TypeParameterSymbol patternParam)
+            {
+                if (bindings.TryGetValue(patternParam, out var bound))
+                {
+                    return bound == actual || bound.Name == actual.Name;
+                }
+                bindings[patternParam] = actual;
+                return true;
+            }
+            switch (pattern)
+            {
+                case SliceTypeSymbol slicePattern:
+                    return actual is SliceTypeSymbol actualSlice
+                        && TypeMatchesPattern(actualSlice.ElementType, slicePattern.ElementType, bindings);
+                case ArrayTypeSymbol arrayPattern:
+                    return actual is ArrayTypeSymbol actualArray && actualArray.Length == arrayPattern.Length
+                        && TypeMatchesPattern(actualArray.ElementType, arrayPattern.ElementType, bindings);
+                case PointerTypeSymbol pointerPattern:
+                    return actual is PointerTypeSymbol actualPointer
+                        && TypeMatchesPattern(actualPointer.ElementType, pointerPattern.ElementType, bindings);
+                case ChannelTypeSymbol channelPattern:
+                    return actual is ChannelTypeSymbol actualChannel
+                        && TypeMatchesPattern(actualChannel.ElementType, channelPattern.ElementType, bindings);
+                case MapTypeSymbol mapPattern:
+                    return actual is MapTypeSymbol actualMap
+                        && TypeMatchesPattern(actualMap.KeyType, mapPattern.KeyType, bindings)
+                        && TypeMatchesPattern(actualMap.ValueType, mapPattern.ValueType, bindings);
+                default:
+                    return actual == pattern || actual.Name == pattern.Name;
+            }
         }
 
         private static bool IsComparable(TypeSymbol type)

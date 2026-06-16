@@ -27,23 +27,47 @@ namespace Ngo.Compiler.Symbols
 
         private List<MethodSymbol>? _methods;
 
-        public TypeSymbol(string name, TypeKind typeKind, TypeSymbol? underlyingType)
+        public TypeSymbol(string name, TypeKind typeKind, TypeSymbol? underlyingType, string? packagePath = null)
             : base(name, SymbolKind.Type)
         {
             TypeKind = typeKind;
             UnderlyingType = underlyingType;
+            _packagePath = packagePath;
         }
 
         public TypeKind TypeKind { get; set; }
 
         public TypeSymbol? UnderlyingType { get; set; }
 
+        private string? _packagePath;
+
         /// <summary>
         /// The Go import path of the package that defines this type.
         /// e.g. "time" for time.Duration, "sync" for sync.Mutex.
         /// Null for builtin types and types defined in the current package being compiled.
+        /// Identity-bearing and write-once: set at construction, or stamped exactly once via
+        /// <see cref="StampPackagePath"/>. It must never change after first assignment.
         /// </summary>
-        public string? PackagePath { get; set; }
+        public string? PackagePath => _packagePath;
+
+        /// <summary>
+        /// Stamps the defining package import path exactly once, for types materialized from
+        /// an archive or finalized during caching where the path is unknown at construction.
+        /// Re-stamping to a different value is a bug (cross-package identity collision) and throws.
+        /// </summary>
+        internal void StampPackagePath(string importPath)
+        {
+            if (_packagePath == importPath)
+            {
+                return;
+            }
+            if (_packagePath != null)
+            {
+                throw new InvalidOperationException(
+                    $"PackagePath for type '{Name}' is already '{_packagePath}' and cannot be re-stamped to '{importPath}'.");
+            }
+            _packagePath = importPath;
+        }
 
         /// <summary>
         /// Deferred underlying type string for named types whose underlying type

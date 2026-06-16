@@ -140,7 +140,7 @@ public class CgoDwarfSymbolSourceTests
 
         List<string> goSourceFiles = Directory
             .EnumerateFiles(packageDirectory, "*.go", SearchOption.TopDirectoryOnly)
-            .Where(path => !Ngo.Compiler.Semantics.GoPackageResolver.ShouldSkipGoFile(path))
+            .Where(path => !Ngo.Compiler.Semantics.GoPackageResolver.ShouldSkipGoFile(path, Ngo.Compiler.Semantics.CompilationContext.LatestGoVersion))
             .OrderBy(path => path, StringComparer.Ordinal)
             .ToList();
         if (goSourceFiles.Count == 0)

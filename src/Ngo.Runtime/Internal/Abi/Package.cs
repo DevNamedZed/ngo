@@ -193,6 +193,11 @@ namespace Ngo.Runtime.Internal.Abi
         [GoMethod] public string String() => ClrType?.Name ?? "";
         [GoMethod] [return: GoReturn("[]byte")] public Slice<byte> GcSlice([GoParam("uintptr")] long begin, [GoParam("uintptr")] long end) => default;
         [GoMethod] [return: GoReturn("*Type")] public GoType Common() => this;
+
+        // Go's (*Type).MapType() reinterprets a map Type's header as *MapType
+        // ((*MapType)(unsafe.Pointer(t))). GoMapType derives from GoType, so the
+        // reinterpret is a downcast; a non-map Type yields nil, as in Go.
+        [GoMethod] [return: GoReturn("*MapType")] public GoMapType? MapType() => this as GoMapType;
     }
 
     // abi.Name — type name descriptor

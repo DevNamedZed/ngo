@@ -24,11 +24,11 @@ namespace Ngo.Compiler.Archive
     /// Serialized method metadata read from an .ngo archive, before
     /// the MethodBuilder is created (types may not be resolved yet).
     /// </summary>
-    public sealed class SerializedMethodInfo
+    internal sealed class SerializedMethodInfo
     {
         public SerializedMethodInfo(string methodName, MethodAttributes attributes,
             string returnTypeName, string[] paramTypeNames, int bodyIndex,
-            string[] genericParamNames)
+            string[] genericParamNames, TypeToken returnType, TypeToken[] paramTypes)
         {
             MethodName = methodName;
             Attributes = attributes;
@@ -36,15 +36,24 @@ namespace Ngo.Compiler.Archive
             ParamTypeNames = paramTypeNames;
             BodyIndex = bodyIndex;
             GenericParamNames = genericParamNames;
+            ReturnType = returnType;
+            ParamTypes = paramTypes;
         }
 
         public string MethodName { get; }
 
         public MethodAttributes Attributes { get; }
 
+        // Name strings: kept for the method key (BuildMethodKey) and error messages.
         public string ReturnTypeName { get; }
 
         public string[] ParamTypeNames { get; }
+
+        // Structured signature tokens (index-based generic params, the .NET VAR/MVAR encoding):
+        // the source of truth for resolving the signature at link time.
+        public TypeToken ReturnType { get; }
+
+        public TypeToken[] ParamTypes { get; }
 
         public int BodyIndex { get; }
 

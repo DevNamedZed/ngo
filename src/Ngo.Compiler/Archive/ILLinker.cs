@@ -36,6 +36,11 @@ namespace Ngo.Compiler.Archive
         private readonly PackageSymbol _package;
         private readonly EmitContext _emitContext;
         private readonly Dictionary<string, TypeBuilder> _typeBuilders;
+
+        // The linker's own type table (only types defined during archive linking), kept
+        // separate from the emitter's EmitContext.Definitions to avoid source/linked
+        // cross-contamination. (spec/PHASE-1-ILLINKER.md P1.1)
+        private readonly Ngo.Compiler.Emit.DefinitionTable _definitions = new();
         private readonly Dictionary<string, Dictionary<string, Type>> _typeGenericParams;
         private readonly Dictionary<string, FieldBuilder> _fieldBuilders;
         private readonly Dictionary<string, MethodBuilder> _methodBuilders;
@@ -46,8 +51,6 @@ namespace Ngo.Compiler.Archive
         private readonly HashSet<string> _currentArchiveTypes;
         private readonly List<string> _deferredClassTypes;
         private readonly HashSet<string> _sourceCompiledTypes;
-
-        private readonly Assembly _runtimeAssembly;
 
         private Type[] _currentMethodGenericParameters;
         private Type[] _currentTypeGenericParameters;
@@ -74,7 +77,6 @@ namespace Ngo.Compiler.Archive
             _currentArchiveTypes = new HashSet<string>();
             _deferredClassTypes = new List<string>();
             _sourceCompiledTypes = new HashSet<string>();
-            _runtimeAssembly = typeof(Ngo.Runtime.Slice<>).Assembly;
             _currentMethodGenericParameters = Type.EmptyTypes;
             _currentTypeGenericParameters = Type.EmptyTypes;
         }
@@ -106,12 +108,18 @@ namespace Ngo.Compiler.Archive
                 var fullTypeName = metaReader.ReadString();
                 var typeAttributes = (TypeAttributes)metaReader.ReadInt32();
                 var baseTypeName = metaReader.ReadString();
+                TypeToken? baseTypeToken = string.IsNullOrEmpty(baseTypeName) ? null : TypeToken.Read(metaReader);
 
                 int interfaceCount = metaReader.ReadInt32();
                 var interfaceNames = new string[interfaceCount];
                 for (int interfaceIndex = 0; interfaceIndex < interfaceCount; interfaceIndex++)
                 {
                     interfaceNames[interfaceIndex] = metaReader.ReadString();
+                }
+                var interfaceTokens = new TypeToken[interfaceCount];
+                for (int interfaceIndex = 0; interfaceIndex < interfaceCount; interfaceIndex++)
+                {
+                    interfaceTokens[interfaceIndex] = TypeToken.Read(metaReader);
                 }
 
                 int typeGenericParamCount = metaReader.ReadInt32();
@@ -127,12 +135,47 @@ namespace Ngo.Compiler.Archive
                     continue;
                 }
 
-                // Check if this type was already compiled from source.
+                // Check if this type was already compiled from source or a prior archive.
                 // Skip DefineType to avoid creating a conflicting partial type.
+                string? originalShortName = null;
+
+                // If a DIFFERENT package already linked this short name, qualify with the import path
+                // to avoid a CLR name collision.
+                if (_emitContext.LinkedTypes.ContainsKey(fullTypeName)
+                    && _emitContext.LinkedTypePackages.TryGetValue(fullTypeName, out var existingPkg)
+                    && existingPkg != _package.ImportPath)
+                {
+                    originalShortName = fullTypeName;
+                    fullTypeName = _package.ImportPath.Replace('/', '.') + "." + fullTypeName;
+                }
+
+                // Reuse an already-linked builder for the FINAL name — covers a same-package re-link of
+                // the short name AND a re-link of the qualified name (a dependency pulled in via more
+                // than one path). Defining it again leaves an uncreated duplicate type. (spec/A4 §A4.3)
                 if (_emitContext.LinkedTypes.TryGetValue(fullTypeName, out var existingLinkedType))
                 {
                     _typeBuilders[fullTypeName] = existingLinkedType;
+                    if (originalShortName != null)
+                    {
+                        _typeBuilders[originalShortName] = existingLinkedType;
+                    }
                     _sourceCompiledTypes.Add(fullTypeName);
+
+                    if (typeGenericParamCount > 0 && existingLinkedType.IsGenericTypeDefinition)
+                    {
+                        var existingGenericArgs = existingLinkedType.GetGenericArguments();
+                        var genericParamMap = new Dictionary<string, Type>(typeGenericParamCount);
+                        for (int genericIndex = 0; genericIndex < Math.Min(typeGenericParamCount, existingGenericArgs.Length); genericIndex++)
+                        {
+                            genericParamMap[typeGenericParamNames[genericIndex]] = existingGenericArgs[genericIndex];
+                        }
+                        _typeGenericParams[fullTypeName] = genericParamMap;
+                    }
+                    else
+                    {
+                        _typeGenericParams[fullTypeName] = new Dictionary<string, Type>();
+                    }
+
                     SkipTypeData(metaReader);
                     continue;
                 }
@@ -150,20 +193,21 @@ namespace Ngo.Compiler.Archive
                         resolvedInterfaces = new Type[interfaceNames.Length];
                         for (int interfaceIndex = 0; interfaceIndex < interfaceNames.Length; interfaceIndex++)
                         {
-                            resolvedInterfaces[interfaceIndex] = ILSerializer.ResolveType(interfaceNames[interfaceIndex], _typeBuilders);
+                            resolvedInterfaces[interfaceIndex] = ResolveTypeToken(interfaceTokens[interfaceIndex]);
                         }
                     }
 
+                    var liveModule = (LiveModuleBuilder)_emitContext.Module;
                     if (isStaticClass || isInterface)
                     {
-                        typeBuilder = ((LiveModuleBuilder)_emitContext.Module).Inner.DefineType(fullTypeName, typeAttributes);
+                        typeBuilder = liveModule.DefineTypeTracked(fullTypeName, typeAttributes);
                     }
                     else
                     {
                         Type parent;
                         if (!string.IsNullOrEmpty(baseTypeName))
                         {
-                            parent = ILSerializer.ResolveType(baseTypeName);
+                            parent = ResolveTypeToken(baseTypeToken!);
                         }
                         else
                         {
@@ -174,11 +218,11 @@ namespace Ngo.Compiler.Archive
                         var linkAttributes = typeAttributes;
                         if (resolvedInterfaces != null)
                         {
-                            typeBuilder = ((LiveModuleBuilder)_emitContext.Module).Inner.DefineType(fullTypeName, linkAttributes, parent, resolvedInterfaces);
+                            typeBuilder = liveModule.DefineTypeTracked(fullTypeName, linkAttributes, parent, resolvedInterfaces);
                         }
                         else
                         {
-                            typeBuilder = ((LiveModuleBuilder)_emitContext.Module).Inner.DefineType(fullTypeName, linkAttributes, parent);
+                            typeBuilder = liveModule.DefineTypeTracked(fullTypeName, linkAttributes, parent);
                         }
                     }
                 }
@@ -196,6 +240,15 @@ namespace Ngo.Compiler.Archive
 
                 _typeBuilders[fullTypeName] = typeBuilder;
                 _emitContext.LinkedTypes[fullTypeName] = typeBuilder;
+                _emitContext.LinkedTypePackages[fullTypeName] = _package.ImportPath;
+                _definitions.RegisterType(fullTypeName, new LiveTypeBuilder(typeBuilder));
+
+                // For cross-package name collisions, also register under the
+                // original short name so this archive's IL can resolve it
+                if (originalShortName != null)
+                {
+                    _typeBuilders[originalShortName] = typeBuilder;
+                }
 
                 if (typeGenericParamCount > 0)
                 {
@@ -222,7 +275,9 @@ namespace Ngo.Compiler.Archive
                     var fieldTypeName = metaReader.ReadString();
                     var goArrayLength = metaReader.ReadInt32();
                     var elementTypeName = metaReader.ReadString();
-                    fields.Add(new SerializedFieldInfo(fieldName, fieldAttributes, fieldTypeName, goArrayLength, elementTypeName));
+                    var fieldTypeToken = TypeToken.Read(metaReader);
+                    TypeToken? elementTypeToken = goArrayLength > 0 ? TypeToken.Read(metaReader) : null;
+                    fields.Add(new SerializedFieldInfo(fieldName, fieldAttributes, fieldTypeName, goArrayLength, elementTypeName, fieldTypeToken, elementTypeToken));
                 }
 
                 int methodCount = metaReader.ReadInt32();
@@ -244,8 +299,16 @@ namespace Ngo.Compiler.Archive
                     {
                         paramTypeNames[paramIndex] = metaReader.ReadString();
                     }
+
+                    var returnTypeToken = TypeToken.Read(metaReader);
+                    var paramTypeTokens = new TypeToken[paramCount];
+                    for (int paramIndex = 0; paramIndex < paramCount; paramIndex++)
+                    {
+                        paramTypeTokens[paramIndex] = TypeToken.Read(metaReader);
+                    }
+
                     var bodyIndex = metaReader.ReadInt32();
-                    methodInfos.Add(new SerializedMethodInfo(methodName, methodAttributes, returnTypeName, paramTypeNames, bodyIndex, methodGenericParamNames));
+                    methodInfos.Add(new SerializedMethodInfo(methodName, methodAttributes, returnTypeName, paramTypeNames, bodyIndex, methodGenericParamNames, returnTypeToken, paramTypeTokens));
                 }
 
                 int interfaceImplCount = metaReader.ReadInt32();
@@ -269,40 +332,51 @@ namespace Ngo.Compiler.Archive
             foreach (var typeInfo in _typeInfos)
             {
                 int blankFieldIndex = 0;
+
+                // The declaring type's generic parameters in definition order, so index-based
+                // GenericTypeParam tokens in each field type resolve through ResolveTypeToken.
+                // A field has no method-level generic parameters.
+                _currentMethodGenericParameters = Type.EmptyTypes;
+                _currentTypeGenericParameters = typeInfo.TypeBuilder.IsGenericTypeDefinition
+                    ? typeInfo.TypeBuilder.GetGenericArguments()
+                    : Type.EmptyTypes;
+
                 foreach (var field in typeInfo.Fields)
                 {
                     Type fieldType;
 
-                    if (field.GoArrayLength > 0 && !string.IsNullOrEmpty(field.ElementTypeName))
+                    if (field.GoArrayLength > 0)
                     {
-                        var elementType = ILSerializer.ResolveType(field.ElementTypeName, _typeBuilders);
+                        // Go inline array [N]T: resolve the element type token (index-based, so a
+                        // generic element like 'K' resolves correctly) and synthesize the inline array.
+                        Type elementType;
+                        try
+                        {
+                            elementType = ResolveTypeToken(field.ElementTypeToken!);
+                        }
+                        catch (InvalidOperationException ex)
+                        {
+                            throw new InvalidOperationException(
+                                $"LinkIL: failed to resolve inline-array element type '{field.ElementTypeName}' for " +
+                                $"'{typeInfo.FullTypeName}.{field.Name}'", ex);
+                        }
                         fieldType = _emitContext.Mapper.GetOrCreateInlineArrayType(elementType, field.GoArrayLength);
-                    }
-                    else if (field.GoArrayLength > 0 && field.TypeName.Contains("GoArray_"))
-                    {
-                        var arrayTypeName = field.TypeName.EndsWith("[]")
-                            ? field.TypeName.Substring(0, field.TypeName.Length - 2)
-                            : field.TypeName;
-                        var parsedElementName = arrayTypeName.Replace("GoArray_", "").Replace($"_{field.GoArrayLength}", "").Replace('_', '.');
-                        var elementType = ILSerializer.ResolveType(parsedElementName, _typeBuilders);
-                        fieldType = _emitContext.Mapper.GetOrCreateInlineArrayType(elementType, field.GoArrayLength);
+                        if (fieldType is System.Reflection.Emit.TypeBuilder inlineTypeBuilder)
+                        {
+                            _typeBuilders[inlineTypeBuilder.Name] = inlineTypeBuilder;
+                        }
                     }
                     else
                     {
-                        fieldType = ILSerializer.ResolveType(field.TypeName, _typeBuilders, GetTypeGenericParams(typeInfo.FullTypeName));
-
-                        if (fieldType.IsArray && field.GoArrayLength > 0)
+                        try
                         {
-                            var elementType = fieldType.GetElementType()!;
-                            var inlineType = _emitContext.Mapper.GetOrCreateInlineArrayType(elementType, field.GoArrayLength);
-                            if (!inlineType.IsArray)
-                            {
-                                fieldType = inlineType;
-                                if (inlineType is System.Reflection.Emit.TypeBuilder inlineTypeBuilder)
-                                {
-                                    _typeBuilders[inlineTypeBuilder.Name] = inlineTypeBuilder;
-                                }
-                            }
+                            fieldType = ResolveTypeToken(field.FieldTypeToken);
+                        }
+                        catch (InvalidOperationException ex)
+                        {
+                            throw new InvalidOperationException(
+                                $"LinkIL: failed to resolve field type '{field.TypeName}' for " +
+                                $"'{typeInfo.FullTypeName}.{field.Name}'", ex);
                         }
                     }
 
@@ -343,6 +417,12 @@ namespace Ngo.Compiler.Archive
             {
                 var typeGenericParamMap = GetTypeGenericParams(typeInfo.FullTypeName);
 
+                // The declaring type's generic parameters in definition order, so the index-based
+                // GenericTypeParam tokens in each signature resolve through ResolveTypeToken.
+                _currentTypeGenericParameters = typeInfo.TypeBuilder.IsGenericTypeDefinition
+                    ? typeInfo.TypeBuilder.GetGenericArguments()
+                    : Type.EmptyTypes;
+
                 foreach (var methodInfo in typeInfo.Methods)
                 {
                     MethodBuilder methodBuilder;
@@ -356,12 +436,9 @@ namespace Ngo.Compiler.Archive
                             methodGenericParamMap[methodInfo.GenericParamNames[genericIndex]] = genericParams[genericIndex];
                         }
 
-                        var returnType = ILSerializer.ResolveTypeWithGenericParams(methodInfo.ReturnTypeName, _typeBuilders, methodGenericParamMap);
-                        var paramTypes = new Type[methodInfo.ParamTypeNames.Length];
-                        for (int paramIndex = 0; paramIndex < methodInfo.ParamTypeNames.Length; paramIndex++)
-                        {
-                            paramTypes[paramIndex] = ILSerializer.ResolveTypeWithGenericParams(methodInfo.ParamTypeNames[paramIndex], _typeBuilders, methodGenericParamMap);
-                        }
+                        _currentMethodGenericParameters = genericParams;
+                        var returnType = ResolveSignatureToken(methodInfo.ReturnType, typeInfo.FullTypeName, methodInfo, methodInfo.ReturnTypeName, "return type");
+                        var paramTypes = ResolveParameterTokens(methodInfo, typeInfo.FullTypeName);
                         methodBuilder.SetReturnType(returnType);
                         methodBuilder.SetParameters(paramTypes);
 
@@ -370,31 +447,9 @@ namespace Ngo.Compiler.Archive
                     }
                     else
                     {
-                        Type returnType;
-                        try
-                        {
-                            returnType = ILSerializer.ResolveType(methodInfo.ReturnTypeName, _typeBuilders, typeGenericParamMap);
-                        }
-                        catch (InvalidOperationException ex)
-                        {
-                            throw new InvalidOperationException(
-                                $"LinkIL: failed to resolve return type '{methodInfo.ReturnTypeName}' for non-generic method " +
-                                $"'{typeInfo.FullTypeName}.{methodInfo.MethodName}' (GenericParamNames={methodInfo.GenericParamNames.Length})", ex);
-                        }
-                        var paramTypes = new Type[methodInfo.ParamTypeNames.Length];
-                        for (int paramIndex = 0; paramIndex < methodInfo.ParamTypeNames.Length; paramIndex++)
-                        {
-                            try
-                            {
-                                paramTypes[paramIndex] = ILSerializer.ResolveType(methodInfo.ParamTypeNames[paramIndex], _typeBuilders, typeGenericParamMap);
-                            }
-                            catch (InvalidOperationException ex)
-                            {
-                                throw new InvalidOperationException(
-                                    $"LinkIL: failed to resolve param type '{methodInfo.ParamTypeNames[paramIndex]}' (param {paramIndex}) for non-generic method " +
-                                    $"'{typeInfo.FullTypeName}.{methodInfo.MethodName}' (GenericParamNames={methodInfo.GenericParamNames.Length})", ex);
-                            }
-                        }
+                        _currentMethodGenericParameters = Type.EmptyTypes;
+                        var returnType = ResolveSignatureToken(methodInfo.ReturnType, typeInfo.FullTypeName, methodInfo, methodInfo.ReturnTypeName, "return type");
+                        var paramTypes = ResolveParameterTokens(methodInfo, typeInfo.FullTypeName);
                         methodBuilder = typeInfo.TypeBuilder.DefineMethod(methodInfo.MethodName, methodInfo.Attributes, returnType, paramTypes);
                     }
 
@@ -415,6 +470,34 @@ namespace Ngo.Compiler.Archive
                         }
                     }
                 }
+            }
+        }
+
+        private Type[] ResolveParameterTokens(SerializedMethodInfo methodInfo, string declaringTypeName)
+        {
+            var paramTypes = new Type[methodInfo.ParamTypes.Length];
+            for (int paramIndex = 0; paramIndex < paramTypes.Length; paramIndex++)
+            {
+                paramTypes[paramIndex] = ResolveSignatureToken(methodInfo.ParamTypes[paramIndex],
+                    declaringTypeName, methodInfo, methodInfo.ParamTypeNames[paramIndex],
+                    $"parameter {paramIndex} type");
+            }
+            return paramTypes;
+        }
+
+        private Type ResolveSignatureToken(TypeToken token, string declaringTypeName,
+            SerializedMethodInfo methodInfo, string nameForDiagnostics, string role)
+        {
+            try
+            {
+                return ResolveTypeToken(token);
+            }
+            catch (InvalidOperationException ex)
+            {
+                throw new InvalidOperationException(
+                    $"LinkIL: failed to resolve {role} '{nameForDiagnostics}' for method " +
+                    $"'{declaringTypeName}.{methodInfo.MethodName}' " +
+                    $"(generic arity {methodInfo.GenericParamNames.Length})", ex);
             }
         }
 
@@ -502,6 +585,7 @@ namespace Ngo.Compiler.Archive
 
                 var declName = builder.DeclaringType?.FullName ?? builder.DeclaringType?.Name;
                 if (declName != declaringTypeName
+                    && !(declName != null && declName.EndsWith("." + declaringTypeName))
                     && !(declName != null && declaringTypeName.EndsWith("." + declName)))
                 {
                     continue;
@@ -519,12 +603,137 @@ namespace Ngo.Compiler.Archive
                     continue;
                 }
 
-                if (match != null)
+                if (match != null && !ReferenceEquals(match, builder))
                 {
-                    throw new InvalidOperationException(
-                        $"ILLinker: ambiguous method lookup for '{declaringTypeName}.{methodName}'");
+                    return null;
                 }
 
+                match = builder;
+            }
+
+            return match;
+        }
+
+        private MethodBuilder? FindMethodBuilderByNameAndParamCount(string declaringTypeName, string methodName, int paramCount)
+        {
+            MethodBuilder? match = null;
+            foreach (var (key, builder) in _methodBuilders)
+            {
+                if (builder.Name != methodName)
+                {
+                    continue;
+                }
+                var declName = builder.DeclaringType?.FullName ?? builder.DeclaringType?.Name;
+                if (declName != declaringTypeName
+                    && !(declName != null && declName.EndsWith("." + declaringTypeName))
+                    && !(declName != null && declaringTypeName.EndsWith("." + declName)))
+                {
+                    continue;
+                }
+                var paramsStart = key.IndexOf('(');
+                if (paramsStart < 0)
+                {
+                    continue;
+                }
+                var keyParams = key.Substring(paramsStart + 1, key.Length - paramsStart - 2);
+                var keyParamCount = CountTopLevelParams(keyParams);
+                if (keyParamCount != paramCount)
+                {
+                    continue;
+                }
+                if (match != null)
+                {
+                    return null;
+                }
+                match = builder;
+            }
+
+            if (match != null)
+            {
+                return match;
+            }
+
+            foreach (var (key, builder) in _emitContext.LinkedMethods)
+            {
+                if (builder.Name != methodName)
+                {
+                    continue;
+                }
+                var declName = builder.DeclaringType?.FullName ?? builder.DeclaringType?.Name;
+                if (declName != declaringTypeName
+                    && !(declName != null && declName.EndsWith("." + declaringTypeName))
+                    && !(declName != null && declaringTypeName.EndsWith("." + declName)))
+                {
+                    continue;
+                }
+                var paramsStart = key.IndexOf('(');
+                if (paramsStart < 0)
+                {
+                    continue;
+                }
+                var keyParams = key.Substring(paramsStart + 1, key.Length - paramsStart - 2);
+                var keyParamCount = CountTopLevelParams(keyParams);
+                if (keyParamCount != paramCount)
+                {
+                    continue;
+                }
+                if (match != null)
+                {
+                    return null;
+                }
+                match = builder;
+            }
+
+            return match;
+        }
+
+        private static int CountTopLevelParams(string paramString)
+        {
+            if (string.IsNullOrEmpty(paramString))
+            {
+                return 0;
+            }
+            int count = 1;
+            int bracketDepth = 0;
+            for (int index = 0; index < paramString.Length; index++)
+            {
+                char character = paramString[index];
+                if (character == '[')
+                {
+                    bracketDepth++;
+                }
+                else if (character == ']')
+                {
+                    bracketDepth--;
+                }
+                else if (character == ',' && bracketDepth == 0)
+                {
+                    count++;
+                }
+            }
+            return count;
+        }
+
+        private MethodBuilder? FindMethodBuilderByNameOnly(string declaringTypeName, string methodName)
+        {
+            MethodBuilder? match = null;
+            foreach (var (key, builder) in _methodBuilders)
+            {
+                if (builder.Name != methodName)
+                {
+                    continue;
+                }
+                var declName = builder.DeclaringType?.FullName ?? builder.DeclaringType?.Name;
+                if (declName != declaringTypeName
+                    && !(declName != null && declName.EndsWith("." + declaringTypeName))
+                    && !(declName != null && declaringTypeName.EndsWith("." + declName)))
+                {
+                    continue;
+                }
+                if (match != null && !ReferenceEquals(match, builder))
+                {
+                    return null;
+                }
                 match = builder;
             }
 
@@ -646,7 +855,7 @@ namespace Ngo.Compiler.Archive
                     Type interfaceType;
                     try
                     {
-                        interfaceType = ILSerializer.ResolveType(interfaceMapping.InterfaceTypeName, _typeBuilders);
+                        interfaceType = ResolveTypeToken(interfaceMapping.InterfaceTypeToken);
                     }
                     catch (Exception exception)
                     {
@@ -768,10 +977,10 @@ namespace Ngo.Compiler.Archive
                 bodyData.MaxStack = codeReader.ReadInt32();
 
                 int localCount = codeReader.ReadInt32();
-                bodyData.LocalTypes = new string[localCount];
+                bodyData.LocalTypes = new TypeToken[localCount];
                 for (int localIndex = 0; localIndex < localCount; localIndex++)
                 {
-                    bodyData.LocalTypes[localIndex] = codeReader.ReadString();
+                    bodyData.LocalTypes[localIndex] = TypeToken.Read(codeReader);
                 }
 
                 int ilLength = codeReader.ReadInt32();
@@ -788,7 +997,7 @@ namespace Ngo.Compiler.Archive
                 bodyData.ExceptionHandlers = new List<ExceptionHandlerData>(handlerCount);
                 for (int handlerIndex = 0; handlerIndex < handlerCount; handlerIndex++)
                 {
-                    bodyData.ExceptionHandlers.Add(new ExceptionHandlerData
+                    var handlerData = new ExceptionHandlerData
                     {
                         Kind = (ExceptionRegionKind)codeReader.ReadInt32(),
                         TryOffset = codeReader.ReadInt32(),
@@ -796,8 +1005,13 @@ namespace Ngo.Compiler.Archive
                         HandlerOffset = codeReader.ReadInt32(),
                         HandlerLength = codeReader.ReadInt32(),
                         FilterOffset = codeReader.ReadInt32(),
-                        CatchTypeName = codeReader.ReadString()
-                    });
+                        CatchTypeName = codeReader.ReadString(),
+                    };
+                    if (!string.IsNullOrEmpty(handlerData.CatchTypeName))
+                    {
+                        handlerData.CatchTypeToken = TypeToken.Read(codeReader);
+                    }
+                    bodyData.ExceptionHandlers.Add(handlerData);
                 }
 
                 bodies.Add(bodyData);
@@ -931,8 +1145,13 @@ namespace Ngo.Compiler.Archive
                 metaReader.ReadString();  // fieldName
                 metaReader.ReadInt32();   // fieldAttributes
                 metaReader.ReadString();  // fieldTypeName
-                metaReader.ReadInt32();   // goArrayLength
+                int skipGoArrayLength = metaReader.ReadInt32();   // goArrayLength
                 metaReader.ReadString();  // elemTypeName
+                TypeToken.Read(metaReader);  // fieldTypeToken
+                if (skipGoArrayLength > 0)
+                {
+                    TypeToken.Read(metaReader);  // elementTypeToken
+                }
             }
             int methodCount = metaReader.ReadInt32();
             for (int methodIndex = 0; methodIndex < methodCount; methodIndex++)
@@ -950,12 +1169,22 @@ namespace Ngo.Compiler.Archive
                 {
                     metaReader.ReadString();
                 }
+
+                // Structured signature tokens — must be consumed to keep the stream aligned
+                // with the layout written by NgoModuleBuilder (one return token + one per param).
+                TypeToken.Read(metaReader);
+                for (int paramIndex = 0; paramIndex < paramCount; paramIndex++)
+                {
+                    TypeToken.Read(metaReader);
+                }
+
                 metaReader.ReadInt32();
             }
             int interfaceImplCount = metaReader.ReadInt32();
             for (int implIndex = 0; implIndex < interfaceImplCount; implIndex++)
             {
-                metaReader.ReadString();
+                metaReader.ReadString();     // interface type name
+                TypeToken.Read(metaReader);  // interface type token
                 int mappingMethodCount = metaReader.ReadInt32();
                 for (int mappingIndex = 0; mappingIndex < mappingMethodCount; mappingIndex++)
                 {
@@ -988,16 +1217,15 @@ namespace Ngo.Compiler.Archive
 
         private const byte TwoByteOpcodePrefix = 0xFE;
 
-        private void ReplayIL(MethodBuilder methodBuilder, byte[] il, string[] localTypeNames,
+        private void ReplayIL(MethodBuilder methodBuilder, byte[] il, TypeToken[] localTypes,
             List<ILTokenEntry> tokenEntries, List<ExceptionHandlerData> exceptionHandlers,
             Dictionary<string, Type>? genericParams = null)
         {
             var ilGenerator = methodBuilder.GetILGenerator();
 
-            foreach (var localTypeName in localTypeNames)
+            foreach (var localType in localTypes)
             {
-                var localType = ILSerializer.ResolveType(localTypeName, _typeBuilders, genericParams);
-                ilGenerator.DeclareLocal(localType);
+                ilGenerator.DeclareLocal(ResolveTypeToken(localType));
             }
 
             var tokenMap = new Dictionary<int, ILTokenEntry>();
@@ -1264,7 +1492,7 @@ namespace Ngo.Compiler.Archive
                             eventKind = ExceptionEventKind.BeginCatch;
                             if (!string.IsNullOrEmpty(handler.CatchTypeName))
                             {
-                                catchType = ILSerializer.ResolveType(handler.CatchTypeName, _typeBuilders, genericParams);
+                                catchType = ResolveTypeToken(handler.CatchTypeToken!);
                             }
                             catchType ??= typeof(Exception);
                             break;
@@ -1394,19 +1622,35 @@ namespace Ngo.Compiler.Archive
                 {
                     if (_typeBuilders.TryGetValue(token.TypeName, out var typeBuilder))
                     {
-                        // Source-compiled types were skipped during archive linking.
-                        // Use the runtime type from the module so the CLR can load them.
                         if (_sourceCompiledTypes.Contains(token.TypeName)
                             && _emitContext.Module is Emit.Builder.LiveModuleBuilder liveMod)
                         {
-                            var runtimeType = liveMod.Inner.GetType(token.TypeName);
-                            if (runtimeType != null)
+                            try
                             {
-                                return runtimeType;
+                                var runtimeType = liveMod.Inner.GetType(token.TypeName);
+                                if (runtimeType != null)
+                                {
+                                    return runtimeType;
+                                }
+                            }
+                            catch (NotImplementedException)
+                            {
                             }
                         }
                         return typeBuilder;
                     }
+
+                    if (_emitContext.LinkedTypes.TryGetValue(token.TypeName, out var linkedType))
+                    {
+                        return linkedType;
+                    }
+
+                    var runtimeGoType = _emitContext.RuntimeCatalog.ResolveByGoTypeName(token.TypeName);
+                    if (runtimeGoType != null)
+                    {
+                        return runtimeGoType;
+                    }
+
                     throw new InvalidOperationException(
                         $"ILLinker: TypeDef '{token.TypeName}' not found in type builders");
                 }
@@ -1489,6 +1733,14 @@ namespace Ngo.Compiler.Archive
 
         private Type ResolvePackageTypeRef(string packageImportPath, string typeName)
         {
+            // First: the DefinitionTable's two-lookup (package-qualified, then short) over the
+            // types we defined — the prescribed resolution path. (spec/PHASE-1-ILLINKER.md P1.1)
+            var fromDefinitions = _definitions.FindType(packageImportPath, typeName);
+            if (fromDefinitions != null)
+            {
+                return fromDefinitions;
+            }
+
             // typeName may already be fully qualified (e.g., "Ngo.Runtime.GoString")
             // or just a short name (e.g., "GoString"). Try both forms.
             if (_typeBuilders.TryGetValue(typeName, out var directMatch))
@@ -1496,7 +1748,7 @@ namespace Ngo.Compiler.Archive
                 return directMatch;
             }
 
-            var runtimeDirect = _runtimeAssembly.GetType(typeName);
+            var runtimeDirect = _emitContext.RuntimeCatalog.ResolveByClrFullName(typeName);
             if (runtimeDirect != null)
             {
                 return runtimeDirect;
@@ -1509,44 +1761,40 @@ namespace Ngo.Compiler.Archive
                 return typeBuilder;
             }
 
-            if (_typeBuilders.TryGetValue(typeName, out typeBuilder))
+            if (_emitContext.LinkedTypes.TryGetValue(typeName, out var linkedType))
             {
-                return typeBuilder;
+                return linkedType;
+            }
+            if (_emitContext.LinkedTypes.TryGetValue(fullName, out linkedType))
+            {
+                return linkedType;
             }
 
-            foreach (var (key, builder) in _typeBuilders)
-            {
-                if (key.EndsWith("." + typeName))
-                {
-                    return builder;
-                }
-            }
-
-            var runtimeType = _runtimeAssembly.GetType(fullName);
+            var runtimeType = _emitContext.RuntimeCatalog.ResolveByClrFullName(fullName);
             if (runtimeType != null)
             {
                 return runtimeType;
             }
 
-            // Cache GetTypes() result to avoid calling it twice (O(n) each time).
-            var runtimeAssemblyTypes = _runtimeAssembly.GetTypes();
-            foreach (var candidateType in runtimeAssemblyTypes)
+            var packageShortName = packageImportPath;
+            var lastSlash = packageImportPath.LastIndexOf('/');
+            if (lastSlash >= 0)
             {
-                if (candidateType.Name == typeName || candidateType.Name.StartsWith(typeName + "`"))
-                {
-                    var goPackageAttribute = candidateType.GetCustomAttribute(typeof(GoPackageAttribute)) as GoPackageAttribute;
-                    if (goPackageAttribute != null && goPackageAttribute.ImportPath == packageImportPath)
-                    {
-                        return candidateType;
-                    }
-                }
+                packageShortName = packageImportPath.Substring(lastSlash + 1);
             }
 
-            foreach (var candidateType in runtimeAssemblyTypes)
+            var byGoPackage = _emitContext.RuntimeCatalog.ResolveByGoPackageAndName(packageImportPath, typeName);
+            if (byGoPackage != null)
             {
-                if (candidateType.Name == typeName || candidateType.Name.StartsWith(typeName + "`"))
+                return byGoPackage;
+            }
+
+            if (typeName == packageShortName)
+            {
+                var packageClass = _emitContext.RuntimeCatalog.ResolvePackageClass(packageImportPath);
+                if (packageClass != null)
                 {
-                    return candidateType;
+                    return packageClass;
                 }
             }
 
@@ -1565,14 +1813,30 @@ namespace Ngo.Compiler.Archive
                 }
             }
 
-            // Search the dynamic module for types created during compilation
-            // (e.g., InlineArray types that are runtime types, not TypeBuilders)
             if (_emitContext.Module is Emit.Builder.LiveModuleBuilder searchMod)
             {
-                var moduleType = searchMod.Inner.GetType(typeName);
-                if (moduleType != null)
+                try
                 {
-                    return moduleType;
+                    var moduleType = searchMod.Inner.GetType(typeName);
+                    if (moduleType != null)
+                    {
+                        return moduleType;
+                    }
+                }
+                catch (NotImplementedException)
+                {
+                }
+            }
+
+            // Check InlineArray types (GoArray_ElementType_Length pattern)
+            foreach (var (_, inlineArrayType) in _emitContext.InlineArrayTypes)
+            {
+                var inlineName = inlineArrayType is TypeBuilder inlineTb
+                    ? inlineTb.Name
+                    : inlineArrayType.Name;
+                if (inlineName == typeName || inlineName == fullName)
+                {
+                    return inlineArrayType;
                 }
             }
 
@@ -1663,10 +1927,11 @@ namespace Ngo.Compiler.Archive
         private MethodBase? ResolveMethodDef(string declaringTypeName, MethodToken token)
         {
             var resolvedParamTypes = ResolveMethodTokenParameterTypes(token);
-            var methodBuilder = FindMethodBuilderBySignature(declaringTypeName, token.MethodName, resolvedParamTypes);
-            if (methodBuilder != null)
+
+            var signatureMatch = FindMethodBuilderBySignature(declaringTypeName, token.MethodName, resolvedParamTypes);
+            if (signatureMatch != null)
             {
-                return methodBuilder;
+                return signatureMatch;
             }
 
             if (token.MethodName == ".ctor")
@@ -1675,6 +1940,103 @@ namespace Ngo.Compiler.Archive
                 {
                     return constructorBuilder;
                 }
+            }
+
+            if (token.DeclaringType != null)
+            {
+                var declaringType = ResolveTypeToken(token.DeclaringType);
+                if (declaringType is TypeBuilder typeBuilder)
+                {
+                    if (typeBuilder.IsCreated())
+                    {
+                        var runtimeResult = FindMethodOnRuntimeType(typeBuilder, token);
+                        if (runtimeResult != null)
+                        {
+                            return runtimeResult;
+                        }
+                    }
+                }
+                else
+                {
+                    var runtimeResult = FindMethodOnRuntimeType(declaringType, token);
+                    if (runtimeResult != null)
+                    {
+                        return runtimeResult;
+                    }
+                }
+
+                // The resolved type didn't have the method — the TypeDef name may be ambiguous
+                // (e.g. multiple "I__interface" wrapper types). Search methods on the
+                // declaring type's implemented interfaces and also across all TypeBuilders
+                // sharing the same short name.
+                var typeName = token.DeclaringType.TypeName;
+
+                if (declaringType is TypeBuilder declTypeBuilder && declTypeBuilder.IsCreated())
+                {
+                    try
+                    {
+                        foreach (var iface in declTypeBuilder.GetInterfaces())
+                        {
+                            if (iface is TypeBuilder ifaceTb && ifaceTb.IsCreated())
+                            {
+                                var ifaceResult = FindMethodOnRuntimeType(ifaceTb, token);
+                                if (ifaceResult != null)
+                                {
+                                    return ifaceResult;
+                                }
+                            }
+                            else if (!(iface is TypeBuilder))
+                            {
+                                var ifaceResult = FindMethodOnRuntimeType(iface, token);
+                                if (ifaceResult != null)
+                                {
+                                    return ifaceResult;
+                                }
+                            }
+                        }
+                    }
+                    catch (NotSupportedException)
+                    {
+                    }
+                }
+
+                foreach (var (key, candidateMethod) in _methodBuilders)
+                {
+                    if (candidateMethod.Name != token.MethodName)
+                    {
+                        continue;
+                    }
+                    var candidateDeclName = candidateMethod.DeclaringType?.FullName ?? candidateMethod.DeclaringType?.Name;
+                    if (candidateDeclName == typeName && candidateMethod.DeclaringType != declaringType)
+                    {
+                        return candidateMethod;
+                    }
+                }
+
+                var runtimeGoType = _emitContext.RuntimeCatalog.ResolveByGoTypeName(typeName);
+                if (runtimeGoType != null)
+                {
+                    var goResult = FindMethodOnRuntimeType(runtimeGoType, token);
+                    if (goResult != null)
+                    {
+                        return goResult;
+                    }
+                }
+            }
+
+            // Cross-package methods registered by a prior archive live in the shared
+            // EmitContext.LinkedMethods (not this linker's _methodBuilders). FindMethodBuilderByNameAndParamCount
+            // consults it by name + arity; FindMethodBuilderByNameOnly is the final unique-or-null fallback.
+            var byNameAndParamCount = FindMethodBuilderByNameAndParamCount(declaringTypeName, token.MethodName, token.ParameterTypes.Length);
+            if (byNameAndParamCount != null)
+            {
+                return byNameAndParamCount;
+            }
+
+            var byNameOnly = FindMethodBuilderByNameOnly(declaringTypeName, token.MethodName);
+            if (byNameOnly != null)
+            {
+                return byNameOnly;
             }
 
             return null;
@@ -1697,7 +2059,12 @@ namespace Ngo.Compiler.Archive
 
             if (declaringType is TypeBuilder memberRefTypeBuilder)
             {
-                return ResolveMethodOnTypeBuilderByName(memberRefTypeBuilder, token);
+                var result = ResolveMethodOnTypeBuilderByName(memberRefTypeBuilder, token);
+                if (result != null)
+                {
+                    return result;
+                }
+                return ResolveReceiverMethodOnRuntimeType(declaringType, token);
             }
 
             if (declaringType.IsGenericType && EmitContext.HasTypeBuilderArgs(declaringType))
@@ -1705,7 +2072,86 @@ namespace Ngo.Compiler.Archive
                 return ResolveMethodOnGenericBuilderInstantiation(declaringType, token);
             }
 
-            return FindMethodOnRuntimeType(declaringType, token);
+            var directResult = FindMethodOnRuntimeType(declaringType, token);
+            if (directResult != null)
+            {
+                return directResult;
+            }
+            return ResolveReceiverMethodOnRuntimeType(declaringType, token);
+        }
+
+        private MethodBase? ResolveReceiverMethodOnRuntimeType(Type moduleType, MethodToken token)
+        {
+            var underscoreIndex = token.MethodName.IndexOf('_');
+            if (underscoreIndex <= 0 || underscoreIndex >= token.MethodName.Length - 1)
+            {
+                return null;
+            }
+
+            var receiverTypeName = token.MethodName.Substring(0, underscoreIndex);
+            var methodName = token.MethodName.Substring(underscoreIndex + 1);
+
+            var packageImportPath = token.DeclaringType?.PackageImportPath;
+
+            var receiverType = FindReceiverType(moduleType, receiverTypeName, packageImportPath);
+            if (receiverType == null)
+            {
+                return null;
+            }
+
+            foreach (var method in receiverType.GetMethods(AllMethodFlags))
+            {
+                if (method.Name == methodName)
+                {
+                    return method;
+                }
+            }
+
+            return null;
+        }
+
+        private Type? FindReceiverType(Type moduleType, string receiverTypeName, string? packageImportPath)
+        {
+            var moduleNamespace = moduleType.Namespace;
+            if (moduleNamespace != null)
+            {
+                var receiverType = _emitContext.RuntimeCatalog.ResolveByClrFullName(moduleNamespace + "." + receiverTypeName);
+                if (receiverType != null)
+                {
+                    return receiverType;
+                }
+
+                var byShortName = _emitContext.RuntimeCatalog.ResolveByShortNameInNamespace(receiverTypeName, moduleNamespace);
+                if (byShortName != null)
+                {
+                    return byShortName;
+                }
+            }
+
+            var byGoType = _emitContext.RuntimeCatalog.ResolveByGoTypeNameInPackageOrNamespace(
+                receiverTypeName, packageImportPath, moduleNamespace);
+            if (byGoType != null)
+            {
+                return byGoType;
+            }
+
+            if (_typeBuilders.TryGetValue(receiverTypeName, out var typeBuilder))
+            {
+                if (typeBuilder.IsCreated())
+                {
+                    return typeBuilder.CreateTypeInfo()!;
+                }
+            }
+
+            if (_emitContext.LinkedTypes.TryGetValue(receiverTypeName, out var linkedType))
+            {
+                if (linkedType.IsCreated())
+                {
+                    return linkedType.CreateTypeInfo()!;
+                }
+            }
+
+            return null;
         }
 
         private MethodBase? ResolveMemberRefConstructor(Type declaringType, MethodToken token)
@@ -1723,17 +2169,26 @@ namespace Ngo.Compiler.Archive
             if (declaringType.IsGenericType && EmitContext.HasTypeBuilderArgs(declaringType))
             {
                 var genericDefinition = declaringType.GetGenericTypeDefinition();
+
+                if (genericDefinition is TypeBuilder uncreatedGenericCtor && !uncreatedGenericCtor.IsCreated())
+                {
+                    return ResolveConstructorOnUncreatedGenericBuilder(declaringType, uncreatedGenericCtor, token);
+                }
+
+                if (genericDefinition is TypeBuilder createdGenericCtor && createdGenericCtor.IsCreated())
+                {
+                    genericDefinition = createdGenericCtor.CreateTypeInfo()!;
+                }
+
                 var resolvedParamTypes = ResolveMethodTokenParameterTypes(token);
-                foreach (var baseConstructor in genericDefinition.GetConstructors(
-                    AllConstructorFlags))
+                foreach (var baseConstructor in genericDefinition.GetConstructors(AllConstructorFlags))
                 {
                     if (MatchesParameterTypes(baseConstructor, resolvedParamTypes))
                     {
                         return TypeBuilder.GetConstructor(declaringType, baseConstructor);
                     }
                 }
-                foreach (var baseConstructor in genericDefinition.GetConstructors(
-                    AllConstructorFlags))
+                foreach (var baseConstructor in genericDefinition.GetConstructors(AllConstructorFlags))
                 {
                     if (baseConstructor.GetParameters().Length == token.ParameterTypes.Length)
                     {
@@ -1746,8 +2201,7 @@ namespace Ngo.Compiler.Archive
             try
             {
                 var resolvedParamTypes = ResolveMethodTokenParameterTypes(token);
-                foreach (var constructor in declaringType.GetConstructors(
-                    AllConstructorFlags))
+                foreach (var constructor in declaringType.GetConstructors(AllConstructorFlags))
                 {
                     if (MatchesParameterTypes(constructor, resolvedParamTypes))
                     {
@@ -1760,8 +2214,15 @@ namespace Ngo.Compiler.Archive
                 if (declaringType.IsGenericType)
                 {
                     var genericDefinition = declaringType.GetGenericTypeDefinition();
-                    foreach (var baseConstructor in genericDefinition.GetConstructors(
-                        AllConstructorFlags))
+                    if (genericDefinition is TypeBuilder uncreatedFallback && !uncreatedFallback.IsCreated())
+                    {
+                        return ResolveConstructorOnUncreatedGenericBuilder(declaringType, uncreatedFallback, token);
+                    }
+                    if (genericDefinition is TypeBuilder createdFallback && createdFallback.IsCreated())
+                    {
+                        genericDefinition = createdFallback.CreateTypeInfo()!;
+                    }
+                    foreach (var baseConstructor in genericDefinition.GetConstructors(AllConstructorFlags))
                     {
                         if (baseConstructor.GetParameters().Length == token.ParameterTypes.Length)
                         {
@@ -1784,12 +2245,44 @@ namespace Ngo.Compiler.Archive
                 return methodBuilder;
             }
 
+            methodBuilder = FindMethodBuilderByNameAndParamCount(declaringTypeName, token.MethodName, token.ParameterTypes.Length);
+
+            if (methodBuilder != null)
+            {
+                return methodBuilder;
+            }
+
+            methodBuilder = FindMethodBuilderByNameOnly(declaringTypeName, token.MethodName);
+            if (methodBuilder != null)
+            {
+                return methodBuilder;
+            }
+
+
             if (token.MethodName == ".ctor")
             {
                 if (typeBuilder.FullName != null &&
                     _constructorBuilders.TryGetValue(typeBuilder.FullName, out var constructorBuilder))
                 {
                     return constructorBuilder;
+                }
+            }
+
+            // The TypeBuilder may belong to a previously linked archive whose methods
+            // are not in this linker's _methodBuilders. If CreateType has been called,
+            // use runtime reflection to find the method.
+            if (typeBuilder.IsCreated())
+            {
+                var runtimeType = typeBuilder.CreateTypeInfo()!;
+                return FindMethodOnRuntimeType(runtimeType, token);
+            }
+
+            // TypeBuilder not created yet — search global LinkedMethods by name match.
+            foreach (var (linkedKey, linkedMethod) in _emitContext.LinkedMethods)
+            {
+                if (MatchesMethodName(linkedKey, declaringTypeName, token.MethodName))
+                {
+                    return linkedMethod;
                 }
             }
 
@@ -1810,10 +2303,18 @@ namespace Ngo.Compiler.Archive
                 genericParams = Type.EmptyTypes;
             }
 
+            if (genericDefinition is TypeBuilder genericTypeBuilder && !genericTypeBuilder.IsCreated())
+            {
+                return ResolveMethodOnUncreatedGenericBuilder(declaringType, genericTypeBuilder, token);
+            }
+
+            if (genericDefinition is TypeBuilder createdGenericBuilder && createdGenericBuilder.IsCreated())
+            {
+                genericDefinition = createdGenericBuilder.CreateTypeInfo()!;
+            }
+
             var resolvedParamTypes = ResolveMethodTokenParameterTypes(token);
 
-            // First pass: exact match using MatchesParameterTypes (works when
-            // the resolved params happen to match the generic definition params directly).
             foreach (var baseMethod in genericDefinition.GetMethods(AllMethodFlags))
             {
                 if (baseMethod.Name == token.MethodName && MatchesParameterTypes(baseMethod, resolvedParamTypes))
@@ -1822,10 +2323,6 @@ namespace Ngo.Compiler.Archive
                 }
             }
 
-            // Second pass: substitute the generic type parameters (T → concrete type)
-            // in the method's parameter types and then compare. This is needed because
-            // the generic definition's parameters use T, T[], Slice<T>, etc., but the
-            // serialized token has concrete types like Ptr<Regexp>, Ptr<Regexp>[], etc.
             foreach (var baseMethod in genericDefinition.GetMethods(AllMethodFlags))
             {
                 if (baseMethod.Name != token.MethodName)
@@ -1855,7 +2352,6 @@ namespace Ngo.Compiler.Archive
                 }
             }
 
-            // Third pass: match by name + parameter count only (last resort).
             foreach (var baseMethod in genericDefinition.GetMethods(AllMethodFlags))
             {
                 if (baseMethod.Name == token.MethodName &&
@@ -1865,16 +2361,51 @@ namespace Ngo.Compiler.Archive
                 }
             }
 
-            if (genericDefinition is TypeBuilder genericTypeBuilder)
+            return null;
+        }
+
+        private MethodBase? ResolveMethodOnUncreatedGenericBuilder(
+            Type instantiatedType, TypeBuilder genericDefinition, MethodToken token)
+        {
+            var declaringTypeName = genericDefinition.FullName ?? genericDefinition.Name;
+
+            foreach (var (key, builder) in _methodBuilders)
             {
-                var prefix = genericTypeBuilder.FullName + ".";
-                foreach (var (key, builder) in _methodBuilders)
+                if (builder.Name != token.MethodName)
                 {
-                    if (key.StartsWith(prefix) && key.Substring(prefix.Length) == token.MethodName)
-                    {
-                        return TypeBuilder.GetMethod(declaringType, builder);
-                    }
+                    continue;
                 }
+                var builderDeclName = builder.DeclaringType?.FullName ?? builder.DeclaringType?.Name;
+                if (builderDeclName == declaringTypeName)
+                {
+                    return TypeBuilder.GetMethod(instantiatedType, builder);
+                }
+            }
+
+            foreach (var (key, builder) in _emitContext.LinkedMethods)
+            {
+                if (builder.Name != token.MethodName)
+                {
+                    continue;
+                }
+                var builderDeclName = builder.DeclaringType?.FullName ?? builder.DeclaringType?.Name;
+                if (builderDeclName == declaringTypeName)
+                {
+                    return TypeBuilder.GetMethod(instantiatedType, builder);
+                }
+            }
+
+            return null;
+        }
+
+        private MethodBase? ResolveConstructorOnUncreatedGenericBuilder(
+            Type instantiatedType, TypeBuilder genericDefinition, MethodToken token)
+        {
+            var declaringTypeName = genericDefinition.FullName ?? genericDefinition.Name;
+
+            if (_constructorBuilders.TryGetValue(declaringTypeName, out var constructorBuilder))
+            {
+                return TypeBuilder.GetConstructor(instantiatedType, constructorBuilder);
             }
 
             return null;
@@ -1939,14 +2470,67 @@ namespace Ngo.Compiler.Archive
             {
                 return null;
             }
-            foreach (var method in declaringType.GetMethods(
-                AllMethodFlags))
+
+            if (declaringType is TypeBuilder typeBuilder)
+            {
+                if (typeBuilder.IsCreated())
+                {
+                    declaringType = typeBuilder.CreateTypeInfo()!;
+                }
+                else
+                {
+                    return FindGenericMethodBuilderOnType(typeBuilder, token.MethodName);
+                }
+            }
+
+            foreach (var method in declaringType.GetMethods(AllMethodFlags))
             {
                 if (method.Name == token.MethodName && method.IsGenericMethodDefinition)
                 {
                     return method;
                 }
             }
+            return null;
+        }
+
+        private MethodBuilder? FindGenericMethodBuilderOnType(TypeBuilder typeBuilder, string methodName)
+        {
+            var declaringTypeName = typeBuilder.FullName ?? typeBuilder.Name;
+
+            foreach (var (key, builder) in _methodBuilders)
+            {
+                if (builder.Name != methodName)
+                {
+                    continue;
+                }
+                if (!builder.IsGenericMethodDefinition)
+                {
+                    continue;
+                }
+                var builderDeclName = builder.DeclaringType?.FullName ?? builder.DeclaringType?.Name;
+                if (builderDeclName == declaringTypeName)
+                {
+                    return builder;
+                }
+            }
+
+            foreach (var (key, builder) in _emitContext.LinkedMethods)
+            {
+                if (builder.Name != methodName)
+                {
+                    continue;
+                }
+                if (!builder.IsGenericMethodDefinition)
+                {
+                    continue;
+                }
+                var builderDeclName = builder.DeclaringType?.FullName ?? builder.DeclaringType?.Name;
+                if (builderDeclName == declaringTypeName)
+                {
+                    return builder;
+                }
+            }
+
             return null;
         }
 
@@ -1971,6 +2555,28 @@ namespace Ngo.Compiler.Archive
                 }
             }
 
+            // Source-compiled receiver methods include the receiver as the first parameter,
+            // but runtime instance methods do not. Retry with the receiver parameter stripped.
+            if (resolvedParamTypes.Length > 0)
+            {
+                var paramsWithoutReceiver = resolvedParamTypes.Skip(1).ToArray();
+                foreach (var method in declaringType.GetMethods(AllMethodFlags))
+                {
+                    if (method.Name != token.MethodName)
+                    {
+                        continue;
+                    }
+                    if (method.IsGenericMethodDefinition)
+                    {
+                        continue;
+                    }
+                    if (MatchesParameterTypes(method, paramsWithoutReceiver))
+                    {
+                        return method;
+                    }
+                }
+            }
+
             if (declaringType.IsInterface)
             {
                 foreach (var parentInterface in declaringType.GetInterfaces())
@@ -1991,6 +2597,14 @@ namespace Ngo.Compiler.Archive
                             return method;
                         }
                     }
+                }
+            }
+
+            foreach (var method in declaringType.GetMethods(AllMethodFlags))
+            {
+                if (method.Name == token.MethodName && method.IsGenericMethodDefinition)
+                {
+                    return method;
                 }
             }
 
@@ -2018,13 +2632,66 @@ namespace Ngo.Compiler.Archive
             {
                 var candidateType = methodParameters[index].ParameterType;
                 var expectedType = resolvedParamTypes[index];
-                if (candidateType != expectedType
-                    && NgoWriter.GetTypeNameStatic(candidateType) != NgoWriter.GetTypeNameStatic(expectedType))
+                if (candidateType == expectedType)
                 {
-                    return false;
+                    continue;
                 }
+                if (NgoWriter.GetTypeNameStatic(candidateType) == NgoWriter.GetTypeNameStatic(expectedType))
+                {
+                    continue;
+                }
+                if (AreSignedUnsignedEquivalent(candidateType, expectedType))
+                {
+                    continue;
+                }
+                return false;
             }
             return true;
+        }
+
+        private static bool AreSignedUnsignedEquivalent(Type typeA, Type typeB)
+        {
+            if (typeA == typeof(long) && typeB == typeof(ulong))
+            {
+                return true;
+            }
+            if (typeA == typeof(ulong) && typeB == typeof(long))
+            {
+                return true;
+            }
+            if (typeA == typeof(int) && typeB == typeof(uint))
+            {
+                return true;
+            }
+            if (typeA == typeof(uint) && typeB == typeof(int))
+            {
+                return true;
+            }
+            if (typeA == typeof(short) && typeB == typeof(ushort))
+            {
+                return true;
+            }
+            if (typeA == typeof(ushort) && typeB == typeof(short))
+            {
+                return true;
+            }
+            if (typeA == typeof(byte) && typeB == typeof(sbyte))
+            {
+                return true;
+            }
+            if (typeA == typeof(sbyte) && typeB == typeof(byte))
+            {
+                return true;
+            }
+            if (typeA == typeof(nint) && typeB == typeof(nuint))
+            {
+                return true;
+            }
+            if (typeA == typeof(nuint) && typeB == typeof(nint))
+            {
+                return true;
+            }
+            return false;
         }
 
         private FieldInfo? ResolveFieldToken(FieldToken token)
@@ -2315,7 +2982,7 @@ namespace Ngo.Compiler.Archive
         private sealed class MethodBodyData
         {
             public int MaxStack;
-            public string[] LocalTypes = Array.Empty<string>();
+            public TypeToken[] LocalTypes = Array.Empty<TypeToken>();
             public byte[] ILBytes = Array.Empty<byte>();
             public List<ILTokenEntry> TokenEntries = new();
             public List<ExceptionHandlerData> ExceptionHandlers = new();
@@ -2330,6 +2997,7 @@ namespace Ngo.Compiler.Archive
             public int HandlerLength;
             public int FilterOffset;
             public string CatchTypeName;
+            public TypeToken? CatchTypeToken;
         }
     }
 }

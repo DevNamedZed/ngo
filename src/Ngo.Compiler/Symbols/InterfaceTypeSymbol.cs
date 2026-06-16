@@ -23,8 +23,8 @@ namespace Ngo.Compiler.Symbols
 {
     public sealed class InterfaceTypeSymbol : TypeSymbol
     {
-        public InterfaceTypeSymbol(string name, IReadOnlyList<MethodSymbol> methods)
-            : base(name, TypeKind.Interface, null)
+        public InterfaceTypeSymbol(string name, IReadOnlyList<MethodSymbol> methods, string? packagePath = null)
+            : base(name, TypeKind.Interface, null, packagePath)
         {
             Methods = methods;
         }

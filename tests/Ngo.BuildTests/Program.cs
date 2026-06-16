@@ -25,6 +25,7 @@ using System.Linq;
 using System.Net.Http;
 using System.Text.Json;
 using Ngo.Compiler;
+using Ngo.Compiler.Emit;
 using Ngo.Compiler.Language;
 using Ngo.Compiler.Semantics;
 
@@ -84,8 +85,10 @@ static int RunPackages(Options options)
     Console.WriteLine();
 
     var sw = Stopwatch.StartNew();
-    int passed = 0, failed = 0, skipped = 0;
-    var failures = new List<(string label, int errors, string detail)>();
+    int analysisPassed = 0, analysisFailed = 0, skipped = 0;
+    int emitPassed = 0, emitFailed = 0;
+    var analysisFailures = new List<(string label, int errors, string detail)>();
+    var emitFailures = new List<(string label, string error)>();
 
     foreach (var pkg in list)
     {
@@ -95,67 +98,94 @@ static int RunPackages(Options options)
             if (pkg.deps != null)
             {
                 foreach (var dep in pkg.deps)
+                {
                     ModuleCache.EnsureModule(dep.module, dep.version);
+                }
             }
             dir = ModuleCache.EnsureModule(pkg.module, pkg.version, pkg.subPackage);
         }
         catch (Exception ex)
         {
             if (options.Verbose)
+            {
                 Console.WriteLine($"  SKIP  {pkg.label} -- download failed: {ex.Message}");
+            }
             skipped++;
             continue;
         }
 
-        var errors = Analyzer.AnalyzePackageDir(dir);
+        var buildResult = Analyzer.BuildPackageDir(dir);
 
-        bool ok = errors.Count == 0;
-
-        if (ok)
+        if (!buildResult.AnalysisPassed)
         {
-            passed++;
+            analysisFailed++;
+            var grouped = buildResult.AnalysisErrors.GroupBy(e => e.Code)
+                .OrderByDescending(g => g.Count())
+                .Select(g => $"{g.Key}:{g.Count()}");
+            var detail = string.Join(" ", grouped);
+            analysisFailures.Add((pkg.label, buildResult.AnalysisErrors.Count, detail));
+            Console.WriteLine($"  FAIL  {pkg.label} -- {buildResult.AnalysisErrors.Count} errors [{detail}]");
+            if (options.Verbose)
+            {
+                foreach (var err in buildResult.AnalysisErrors.Take(15))
+                {
+                    Console.WriteLine($"         {err.Code}: {err.Message} ({err.Location})");
+                }
+                if (buildResult.AnalysisErrors.Count > 15)
+                {
+                    Console.WriteLine($"         ... and {buildResult.AnalysisErrors.Count - 15} more");
+                }
+            }
+        }
+        else if (buildResult.EmitAttempted && !buildResult.EmitSucceeded)
+        {
+            analysisPassed++;
+            emitFailed++;
+            emitFailures.Add((pkg.label, buildResult.EmitError ?? "unknown"));
+            Console.WriteLine($"  EMIT  {pkg.label} -- {buildResult.EmitError}");
+        }
+        else
+        {
+            analysisPassed++;
+            emitPassed++;
             if (options.Verbose)
             {
                 Console.WriteLine($"  PASS  {pkg.label}");
             }
         }
-        else
-        {
-            failed++;
-            var grouped = errors.GroupBy(e => e.Code)
-                .OrderByDescending(g => g.Count())
-                .Select(g => $"{g.Key}:{g.Count()}");
-            var detail = string.Join(" ", grouped);
-            failures.Add((pkg.label, errors.Count, detail));
-            Console.WriteLine($"  FAIL  {pkg.label} -- {errors.Count} errors [{detail}]");
-            if (options.Verbose)
-            {
-                foreach (var err in errors.Take(15))
-                    Console.WriteLine($"         {err.Code}: {err.Message} ({err.Location})");
-                if (errors.Count > 15)
-                    Console.WriteLine($"         ... and {errors.Count - 15} more");
-            }
-        }
-
     }
 
     sw.Stop();
     Console.WriteLine();
     Console.WriteLine($"Done in {sw.Elapsed.TotalSeconds:F1}s");
-    Console.WriteLine($"  Passed:  {passed}");
-    Console.WriteLine($"  Failed:  {failed}");
-    Console.WriteLine($"  Skipped: {skipped}");
-    Console.WriteLine($"  Total:   {list.Count}");
+    Console.WriteLine($"  Analysis passed: {analysisPassed}");
+    Console.WriteLine($"  Analysis failed: {analysisFailed}");
+    Console.WriteLine($"  Emit passed:     {emitPassed}");
+    Console.WriteLine($"  Emit failed:     {emitFailed}");
+    Console.WriteLine($"  Skipped:         {skipped}");
+    Console.WriteLine($"  Total:           {list.Count}");
 
-    if (failures.Count > 0)
+    if (analysisFailures.Count > 0)
     {
         Console.WriteLine();
-        Console.WriteLine("Failures:");
-        foreach (var (label, errors, detail) in failures)
+        Console.WriteLine("Analysis failures:");
+        foreach (var (label, errors, detail) in analysisFailures)
+        {
             Console.WriteLine($"  {label}: {errors} errors [{detail}]");
+        }
     }
 
-    return failed > 0 ? 1 : 0;
+    if (emitFailures.Count > 0)
+    {
+        Console.WriteLine();
+        Console.WriteLine("Emit failures:");
+        foreach (var (label, error) in emitFailures)
+        {
+            Console.WriteLine($"  {label}: {error}");
+        }
+    }
+
+    return (analysisFailed + emitFailed) > 0 ? 1 : 0;
 }
 
 // -----------------------------------------------------------------------
@@ -198,8 +228,10 @@ static int RunStdlib(Options options)
     Console.WriteLine();
 
     var sw = Stopwatch.StartNew();
-    int passed = 0, failed = 0, skipped = 0;
-    var failures = new List<(string path, int errors, string detail)>();
+    int analysisPassed = 0, analysisFailed = 0, skipped = 0;
+    int emitPassed = 0, emitFailed = 0;
+    var analysisFailures = new List<(string path, int errors, string detail)>();
+    var emitFailures = new List<(string path, string error)>();
 
     foreach (var pkg in list)
     {
@@ -208,81 +240,114 @@ static int RunStdlib(Options options)
         if (!Directory.Exists(pkgDir))
         {
             if (options.Verbose)
+            {
                 Console.WriteLine($"  SKIP  {pkg.path} -- directory not found");
+            }
             skipped++;
             continue;
         }
 
-        IReadOnlyList<CompileError> errors;
+        PackageBuildResult buildResult;
         try
         {
-            errors = Analyzer.AnalyzePackageDir(pkgDir);
+            buildResult = Analyzer.BuildPackageDir(pkgDir);
         }
         catch (Exception ex)
         {
-            failed++;
+            analysisFailed++;
             var detail = $"CRASH:{ex.GetType().Name}";
-            failures.Add((pkg.path, -1, detail));
+            analysisFailures.Add((pkg.path, -1, detail));
             if (options.Verbose)
+            {
                 Console.WriteLine($"  CRASH {pkg.path} -- {ex.GetType().Name}: {ex.Message}");
+            }
             continue;
         }
 
-        if (errors.Count == 0)
+        if (!buildResult.AnalysisPassed)
         {
-            passed++;
-            if (options.Verbose)
-                Console.WriteLine($"  PASS  {pkg.path}");
-        }
-        else
-        {
-            failed++;
-            var grouped = errors.GroupBy(e => e.Code)
+            analysisFailed++;
+            var grouped = buildResult.AnalysisErrors.GroupBy(e => e.Code)
                 .OrderByDescending(g => g.Count())
                 .Select(g => $"{g.Key}:{g.Count()}");
             var detail = string.Join(" ", grouped);
-            failures.Add((pkg.path, errors.Count, detail));
+            analysisFailures.Add((pkg.path, buildResult.AnalysisErrors.Count, detail));
             if (options.Verbose)
             {
-                Console.WriteLine($"  FAIL  {pkg.path} -- {errors.Count} errors [{detail}]");
-                if (errors.Count <= 400)
+                Console.WriteLine($"  FAIL  {pkg.path} -- {buildResult.AnalysisErrors.Count} errors [{detail}]");
+                if (buildResult.AnalysisErrors.Count <= 400)
                 {
-                    foreach (var e in errors.Take(50))
-                        Console.WriteLine($"         {e.Code}: {e.Message} ({e.Location})");
+                    foreach (var err in buildResult.AnalysisErrors.Take(50))
+                    {
+                        Console.WriteLine($"         {err.Code}: {err.Message} ({err.Location})");
+                    }
                 }
             }
         }
-
+        else if (buildResult.EmitAttempted && !buildResult.EmitSucceeded)
+        {
+            analysisPassed++;
+            emitFailed++;
+            emitFailures.Add((pkg.path, buildResult.EmitError ?? "unknown"));
+            Console.WriteLine($"  EMIT  {pkg.path} -- {buildResult.EmitError}");
+        }
+        else
+        {
+            analysisPassed++;
+            emitPassed++;
+            if (options.Verbose)
+            {
+                Console.WriteLine($"  PASS  {pkg.path}");
+            }
+        }
     }
 
     sw.Stop();
 
-    // Summary
     Console.WriteLine();
     Console.WriteLine($"Done in {sw.Elapsed.TotalSeconds:F1}s");
-    Console.WriteLine($"  Passed:  {passed}");
-    Console.WriteLine($"  Failed:  {failed}");
-    Console.WriteLine($"  Skipped: {skipped}");
-    Console.WriteLine($"  Total:   {list.Count}");
+    Console.WriteLine($"  Analysis passed: {analysisPassed}");
+    Console.WriteLine($"  Analysis failed: {analysisFailed}");
+    Console.WriteLine($"  Emit passed:     {emitPassed}");
+    Console.WriteLine($"  Emit failed:     {emitFailed}");
+    Console.WriteLine($"  Skipped:         {skipped}");
+    Console.WriteLine($"  Total:           {list.Count}");
 
-    // Group by impl type
     var goPackages = manifest.packages.Where(p => p.impl == "go").ToList();
     var csharpPackages = manifest.packages.Where(p => p.impl == "csharp").ToList();
     Console.WriteLine();
     Console.WriteLine($"  Target self-hosted (go):  {goPackages.Count}");
     Console.WriteLine($"  Staying in C# (csharp):   {csharpPackages.Count}");
 
-    if (failures.Count > 0)
+    if (analysisFailures.Count > 0)
     {
         Console.WriteLine();
-        Console.WriteLine("Failures (top 30):");
-        foreach (var (path, errors, detail) in failures.Take(30))
+        Console.WriteLine("Analysis failures (top 30):");
+        foreach (var (path, errors, detail) in analysisFailures.Take(30))
+        {
             Console.WriteLine($"  {path}: {errors} errors [{detail}]");
-        if (failures.Count > 30)
-            Console.WriteLine($"  ... and {failures.Count - 30} more");
+        }
+        if (analysisFailures.Count > 30)
+        {
+            Console.WriteLine($"  ... and {analysisFailures.Count - 30} more");
+        }
     }
 
-    return 0; // Don't fail — this is exploratory
+    if (emitFailures.Count > 0)
+    {
+        Console.WriteLine();
+        Console.WriteLine("Emit failures (top 30):");
+        foreach (var (path, error) in emitFailures.Take(30))
+        {
+            Console.WriteLine($"  {path}: {error}");
+        }
+        if (emitFailures.Count > 30)
+        {
+            Console.WriteLine($"  ... and {emitFailures.Count - 30} more");
+        }
+    }
+
+    return 0;
 }
 
 // -----------------------------------------------------------------------
@@ -368,6 +433,16 @@ class StdlibPackageEntry
     public string path { get; set; } = "";
     public string impl { get; set; } = "go"; // "go" = compile from source, "csharp" = keep C# runtime
     public string? reason { get; set; }       // why it stays in C# (if impl=csharp)
+}
+
+class PackageBuildResult
+{
+    public IReadOnlyList<CompileError> AnalysisErrors { get; init; } = Array.Empty<CompileError>();
+    public bool EmitAttempted { get; init; }
+    public bool EmitSucceeded { get; init; }
+    public string? EmitError { get; init; }
+
+    public bool AnalysisPassed => AnalysisErrors.Count == 0;
 }
 
 // -----------------------------------------------------------------------
@@ -643,42 +718,56 @@ static class Analyzer
 
     public static IReadOnlyList<CompileError> AnalyzePackageDir(string dir)
     {
+        return BuildPackageDir(dir).AnalysisErrors;
+    }
+
+    public static PackageBuildResult BuildPackageDir(string dir)
+    {
         if (!Directory.Exists(dir))
-            return Array.Empty<CompileError>();
+        {
+            return new PackageBuildResult();
+        }
 
         var trees = new List<SyntaxTree>();
         foreach (var file in Directory.GetFiles(dir, "*.go"))
         {
             var fileName = Path.GetFileName(file);
             if (fileName.EndsWith("_test.go", StringComparison.OrdinalIgnoreCase))
+            {
                 continue;
+            }
             if (PlatformSuffixes.Any(s => fileName.EndsWith(s, StringComparison.OrdinalIgnoreCase)))
+            {
                 continue;
-            // Handle compound GOOS_GOARCH suffixes: name_darwin_amd64.go
-            // If the second-to-last part is a non-target OS, exclude it.
+            }
             if (HasInactiveCompoundSuffix(fileName))
+            {
                 continue;
+            }
 
             var source = File.ReadAllText(file);
             if (HasPlatformBuildTag(source))
+            {
                 continue;
+            }
 
             trees.Add(SyntaxTree.Parse(source, file));
         }
 
         if (trees.Count == 0)
-            return Array.Empty<CompileError>();
+        {
+            return new PackageBuildResult();
+        }
 
-        // Inject synthetic stubs for generated files that only exist after `go generate`
         InjectSyntheticSources(dir, trees);
 
         var moduleRoot = FindModuleRoot(dir);
         var compilation = new CompilationContext(moduleRoot ?? dir);
 
-        AnalysisResult result;
+        AnalysisResult analysisResult;
         try
         {
-            result = SemanticAnalyzer.Analyze(trees, compilation);
+            analysisResult = SemanticAnalyzer.Analyze(trees, compilation);
         }
         catch (PackageCacheBuildException ex)
         {
@@ -694,12 +783,72 @@ static class Analyzer
             }
             failures.AddRange(compilation.Diagnostics.ToReadOnlyList()
                 .Where(e => e.Severity == ErrorSeverity.Error));
-            return failures;
+            return new PackageBuildResult { AnalysisErrors = failures };
         }
-        var errors = result.Errors.Where(e => e.Severity == ErrorSeverity.Error).ToList();
+
+        var errors = analysisResult.Errors.Where(e => e.Severity == ErrorSeverity.Error).ToList();
         errors.AddRange(compilation.Diagnostics.ToReadOnlyList()
             .Where(e => e.Severity == ErrorSeverity.Error));
-        return errors;
+
+        if (errors.Count > 0)
+        {
+            return new PackageBuildResult { AnalysisErrors = errors };
+        }
+
+        var assemblyName = SanitizeAssemblyName(dir);
+        var tempDir = Path.Combine(Path.GetTempPath(), "ngo", "buildtest");
+        Directory.CreateDirectory(tempDir);
+        var outputPath = Path.Combine(tempDir, assemblyName + ".dll");
+
+        try
+        {
+            AssemblyEmitter.EmitToFile(
+                analysisResult,
+                compilation,
+                outputPath,
+                assemblyName,
+                new EmitOptions { IsLibrary = true });
+
+            return new PackageBuildResult
+            {
+                AnalysisErrors = errors,
+                EmitAttempted = true,
+                EmitSucceeded = true,
+            };
+        }
+        catch (Exception ex)
+        {
+            return new PackageBuildResult
+            {
+                AnalysisErrors = errors,
+                EmitAttempted = true,
+                EmitSucceeded = false,
+                EmitError = ex.Message,
+            };
+        }
+        finally
+        {
+            try { File.Delete(outputPath); } catch { }
+        }
+    }
+
+    private static string SanitizeAssemblyName(string dir)
+    {
+        var name = Path.GetFileName(dir) ?? "package";
+        var sanitized = new char[name.Length];
+        for (int i = 0; i < name.Length; i++)
+        {
+            char character = name[i];
+            if (char.IsLetterOrDigit(character) || character == '_' || character == '.')
+            {
+                sanitized[i] = character;
+            }
+            else
+            {
+                sanitized[i] = '_';
+            }
+        }
+        return new string(sanitized);
     }
 
     private static string? FindModuleRoot(string dir)

@@ -66,6 +66,30 @@ namespace Ngo.Compiler.Emit.Builder
         public NgoWriter? Writer => _writer;
         public IReadOnlyList<string> GenericParamNames => _genericParamNames;
 
+        // Structured, index-based signature tokens (the .NET VAR/MVAR encoding) built from the
+        // method's + declaring type's generic context — replaces the bare-name strings.
+        public TypeToken ReturnTypeToken => BuildSignatureWriter().BuildTypeToken(_returnType);
+
+        public TypeToken[] ParamTypeTokens
+        {
+            get
+            {
+                var writer = BuildSignatureWriter();
+                var tokens = new TypeToken[_paramTypes.Length];
+                for (int i = 0; i < _paramTypes.Length; i++)
+                {
+                    tokens[i] = writer.BuildTypeToken(_paramTypes[i]);
+                }
+                return tokens;
+            }
+        }
+
+        private NgoWriter BuildSignatureWriter()
+        {
+            var typeGenericParams = _declaringTypeBuilder?.GenericParamTypes ?? Type.EmptyTypes;
+            return new NgoWriter(new SerializationContext(_genericParamTypes, typeGenericParams));
+        }
+
         public Type[] DefineGenericParameters(string[] names)
         {
             _genericParamNames = names;

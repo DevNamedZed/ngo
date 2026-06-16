@@ -168,7 +168,7 @@ class Program
                 {
                     continue;
                 }
-                if (GoPackageResolver.ShouldSkipGoFile(file))
+                if (GoPackageResolver.ShouldSkipGoFile(file, CompilationContext.LatestGoVersion))
                 {
                     continue;
                 }

@@ -65,7 +65,8 @@ namespace Ngo.Compiler.Emit
             var asmBuilder = AssemblyBuilder.DefineDynamicAssembly(asmName, AssemblyBuilderAccess.RunAndCollect);
             var moduleBuilder = asmBuilder.DefineDynamicModule(assemblyName);
 
-            var ctx = EmitCore(result, moduleBuilder, options, compilationContext);
+            var session = EmitCore(result, moduleBuilder, options, compilationContext);
+            var ctx = session.Context;
 
             // For ngo run: compile CGo static libs and link to temp directory
             if (compilationContext.CgoPreamble != null && compilationContext.CgoPreamble.HasCSource)
@@ -99,7 +100,8 @@ namespace Ngo.Compiler.Emit
             var ab = new PersistedAssemblyBuilder(asmName, typeof(object).Assembly);
             var moduleBuilder = ab.DefineDynamicModule(assemblyName);
 
-            var ctx = EmitCore(result, moduleBuilder, options, compilationContext);
+            var session = EmitCore(result, moduleBuilder, options, compilationContext);
+            var ctx = session.Context;
 
             // Find main() entry point
             MethodBuilder? entryPointMethod = null;
@@ -109,6 +111,20 @@ namespace Ngo.Compiler.Emit
                 {
                     entryPointMethod = ((LiveMethodBuilder)mb).Inner;
                     break;
+                }
+            }
+
+            // Every TypeBuilder must be created before the module is serialized; otherwise
+            // GenerateMetadata throws the opaque "invoked member is not supported before the type
+            // is created". Assert it here with the offending type name(s) instead (spec/A4 §A4.1).
+            if (ctx.Module is Builder.LiveModuleBuilder liveModule)
+            {
+                var uncreated = liveModule.GetUncreatedTypeNames();
+                if (uncreated.Count > 0)
+                {
+                    throw new InvalidOperationException(
+                        $"AssemblyEmitter: {uncreated.Count} type(s) defined but never created: "
+                        + string.Join(", ", uncreated));
                 }
             }
 
@@ -201,11 +217,10 @@ namespace Ngo.Compiler.Emit
         /// <summary>
         /// Shared 3-pass emit logic used by both Emit and EmitToFile.
         /// </summary>
-        private static EmitContext EmitCore(AnalysisResult result, ModuleBuilder moduleBuilder, EmitOptions? options, Semantics.CompilationContext compilationContext)
+        private static EmitSession EmitCore(AnalysisResult result, ModuleBuilder moduleBuilder, EmitOptions? options, Semantics.CompilationContext compilationContext)
         {
-            var mapper = new TypeMapper(compilationContext);
-            var ctx = new EmitContext(new LiveModuleBuilder(moduleBuilder), mapper, options, compilationContext.Log);
-            mapper.SetEmitContext(ctx);
+            var session = new EmitSession(moduleBuilder, options, compilationContext);
+            var ctx = session.Context;
 
             if (options?.TracedMethodNames != null)
             {
@@ -226,7 +241,7 @@ namespace Ngo.Compiler.Emit
             }
 
             // Emit the main package
-            EmitPackage(result.Root, ctx);
+            EmitPackage(result.Root, ctx, null, false);
 
 
             // Apply [UnmanagedCallersOnly] to //export functions
@@ -235,7 +250,7 @@ namespace Ngo.Compiler.Emit
                 ApplyCgoExports(result.Root, ctx, compilationContext);
             }
 
-            return ctx;
+            return session;
         }
 
         /// <summary>
@@ -376,7 +391,7 @@ namespace Ngo.Compiler.Emit
                 var trees = new List<Language.SyntaxTree>();
                 foreach (var file in System.IO.Directory.GetFiles(dir, "*.go"))
                 {
-                    if (GoPackageResolver.ShouldSkipGoFile(file))
+                    if (GoPackageResolver.ShouldSkipGoFile(file, compilationContext.TargetGoVersion))
                     {
                         continue;
                     }
@@ -403,12 +418,7 @@ namespace Ngo.Compiler.Emit
                 // Recursively link this dependency's own dependencies first
                 LinkDependencies(result.Root, ctx, compilationContext, ctx.LinkedPackages);
 
-                ctx.IsDependencyEmit = true;
-                ctx.CurrentPackagePath = importPath;
-
-                EmitPackage(result.Root, ctx);
-                ctx.IsDependencyEmit = false;
-                ctx.CurrentPackagePath = null;
+                EmitPackage(result.Root, ctx, importPath, isDependency: true);
 
                 // Register the package type in LinkedTypes so archive linking can find it
                 if (ctx.PackageType is Builder.LiveTypeBuilder pkgLiveTb)
@@ -498,12 +508,13 @@ namespace Ngo.Compiler.Emit
             }
         }
 
-        private static void EmitPackage(Ast.SourceFile root, EmitContext ctx)
+        private static void EmitPackage(Ast.SourceFile root, EmitContext ctx, string? importPath, bool isDependency)
         {
             var packageName = root.Package.Symbol.Name;
 
             // Create the package static class (skip if already defined from another dependency)
             var previousPackageType = ctx.PackageType;
+            ctx.CurrentPackage = new PackageEmitContext(importPath, isDependency);
             // For dependencies, use bare package name to avoid cross-package qualification issues.
             // For the main package, use QualifyName to support library namespace.
             var pkgTypeName = ctx.IsDependencyEmit ? packageName : ctx.QualifyName(packageName);

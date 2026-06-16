@@ -46,7 +46,22 @@ namespace Ngo.Compiler.Emit
         public EmitOptions Options { get; }
         public ICompilerLog Log { get; }
         public DefinitionTable Definitions { get; }
-        public ITypeBuilder PackageType { get; set; } = null!;
+
+        private RuntimeTypeCatalog? _runtimeCatalog;
+
+        // Owned, read-only index over the runtime assembly (Ngo.Runtime.dll), built once on first use
+        // — replaces the ad-hoc GetTypes()/GetType() scans. See spec/A1-RUNTIME-CATALOG.md.
+        public RuntimeTypeCatalog RuntimeCatalog =>
+            _runtimeCatalog ??= new RuntimeTypeCatalog(typeof(Ngo.Runtime.Slice<>).Assembly);
+
+        // Per-package state lives on a context created fresh for each package (no toggling).
+        internal PackageEmitContext CurrentPackage { get; set; } = new PackageEmitContext(null, false);
+
+        public ITypeBuilder PackageType
+        {
+            get => CurrentPackage.PackageType;
+            set => CurrentPackage.PackageType = value;
+        }
 
         // Track types that have been finalized (CreateType called) across packages
         public HashSet<TypeSymbol> FinalizedTypes { get; } = new();
@@ -59,21 +74,36 @@ namespace Ngo.Compiler.Emit
 
         public DeclarationEmitter? DeclEmitter { get; set; }
 
-        // Per-method state (reset for each method body)
-        public CilWriter IL { get; set; } = null!;
-        public Dictionary<Symbol, LocalSlot> Locals { get; } = new();
-        public Dictionary<Symbol, int> Parameters { get; } = new();
+        // Per-method state is owned by a context created fresh for each top-level body (no
+        // reset). EmitContext delegates per-method access to the current method context.
+        internal MethodEmitContext CurrentMethod { get; set; } = new MethodEmitContext();
+
+        public CilWriter IL { get => CurrentMethod.IL; set => CurrentMethod.IL = value; }
+        public Dictionary<Symbol, LocalSlot> Locals => CurrentMethod.Locals;
+        public Dictionary<Symbol, int> Parameters => CurrentMethod.Parameters;
 
         // Symbols captured by closures in the current function body (stored in Box<T>)
-        public HashSet<Symbol> CapturedSymbols { get; } = new();
+        public HashSet<Symbol> CapturedSymbols => CurrentMethod.CapturedSymbols;
 
         // Generic parameters of the current enclosing function (for closure/lambda propagation)
-        public string[] EnclosingGenericParamNames { get; set; } = Array.Empty<string>();
-        public Symbols.TypeParameterSymbol[] EnclosingGenericParamSymbols { get; set; } = Array.Empty<Symbols.TypeParameterSymbol>();
-        public Type[] EnclosingGenericParamTypes { get; set; } = Array.Empty<Type>();
+        public string[] EnclosingGenericParamNames
+        {
+            get => CurrentMethod.EnclosingGenericParamNames;
+            set => CurrentMethod.EnclosingGenericParamNames = value;
+        }
+        public Symbols.TypeParameterSymbol[] EnclosingGenericParamSymbols
+        {
+            get => CurrentMethod.EnclosingGenericParamSymbols;
+            set => CurrentMethod.EnclosingGenericParamSymbols = value;
+        }
+        public Type[] EnclosingGenericParamTypes
+        {
+            get => CurrentMethod.EnclosingGenericParamTypes;
+            set => CurrentMethod.EnclosingGenericParamTypes = value;
+        }
 
         // Current package import path (set during dependency emit for external type detection)
-        public string? CurrentPackagePath { get; set; }
+        public string? CurrentPackagePath => CurrentPackage.ImportPath;
 
         // All emitted methods (for resolving calls)
         public Dictionary<Symbol, IMethodBuilder> Methods { get; } = new();
@@ -86,6 +116,9 @@ namespace Ngo.Compiler.Emit
 
         // All linked type builders across all archives (for cross-archive type resolution)
         public Dictionary<string, TypeBuilder> LinkedTypes { get; } = new();
+
+        // Tracks which package import path each LinkedTypes entry came from
+        public Dictionary<string, string> LinkedTypePackages { get; } = new();
 
         // All linked field builders across all archives (for cross-package variable access)
         public Dictionary<string, FieldBuilder> LinkedFields { get; } = new();
@@ -122,10 +155,10 @@ namespace Ngo.Compiler.Emit
         public IMethodBuilder? CgoResolverInitMethod { get; set; }
 
         // Loop label stack for break/continue
-        public Stack<LoopLabel> LoopLabels { get; } = new();
+        public Stack<LoopLabel> LoopLabels => CurrentMethod.LoopLabels;
 
         // Whether we're emitting a dependency package (errors are recoverable)
-        public bool IsDependencyEmit { get; set; }
+        public bool IsDependencyEmit => CurrentPackage.IsDependency;
 
         // IL tracing: set of method names to trace (e.g. "parse"). When non-null,
         // GetILWriter results for matching methods are wrapped in TracingCilWriter.
@@ -138,13 +171,17 @@ namespace Ngo.Compiler.Emit
         public Dictionary<string, ITypeBuilder> PackageTypes { get; } = new();
 
         // Fallthrough target label for switch cases
-        public LabelSlot? FallthroughLabel { get; set; }
+        public LabelSlot? FallthroughLabel
+        {
+            get => CurrentMethod.FallthroughLabel;
+            set => CurrentMethod.FallthroughLabel = value;
+        }
 
         // Goto target labels: "labelName" → IL label
-        public Dictionary<string, LabelSlot> GotoLabels { get; } = new();
+        public Dictionary<string, LabelSlot> GotoLabels => CurrentMethod.GotoLabels;
 
         // Named labels for labeled break/continue: "labelName" → (breakLabel, continueLabel)
-        public Dictionary<string, LoopLabel> NamedLabels { get; } = new();
+        public Dictionary<string, LoopLabel> NamedLabels => CurrentMethod.NamedLabels;
 
         // Package-level fields (var declarations)
         public Dictionary<Symbol, IFieldBuilder> PackageFields { get; } = new();
@@ -163,14 +200,26 @@ namespace Ngo.Compiler.Emit
 
         // Slice-element pointer tracking: symbol → (slice local, index local)
         // for variables assigned &slice[i] on value-type elements.
-        public Dictionary<Symbol, SliceElementPointer> SliceElementPointers { get; } = new();
+        public Dictionary<Symbol, SliceElementPointer> SliceElementPointers => CurrentMethod.SliceElementPointers;
 
         // Defer stack local for the current method (null if no defer statements)
-        public LocalSlot? DeferStack { get; set; }
+        public LocalSlot? DeferStack
+        {
+            get => CurrentMethod.DeferStack;
+            set => CurrentMethod.DeferStack = value;
+        }
 
         // For non-void defer-wrapped functions: store return value here, then leave
-        public LocalSlot? DeferReturnLocal { get; set; }
-        public LabelSlot? DeferExitLabel { get; set; }
+        public LocalSlot? DeferReturnLocal
+        {
+            get => CurrentMethod.DeferReturnLocal;
+            set => CurrentMethod.DeferReturnLocal = value;
+        }
+        public LabelSlot? DeferExitLabel
+        {
+            get => CurrentMethod.DeferExitLabel;
+            set => CurrentMethod.DeferExitLabel = value;
+        }
 
         public string QualifyName(string name) =>
             Options?.Namespace != null ? $"{Options.Namespace}.{name}" : name;
@@ -252,17 +301,5 @@ namespace Ngo.Compiler.Emit
             return false;
         }
 
-        public void ResetMethodState()
-        {
-            Locals.Clear();
-            Parameters.Clear();
-            NamedLabels.Clear();
-            GotoLabels.Clear();
-            LoopLabels.Clear();
-            CapturedSymbols.Clear();
-            SliceElementPointers.Clear();
-            DeferStack = null;
-            DeferReturnLocal = null;
-        }
     }
 }

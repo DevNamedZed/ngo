@@ -57,6 +57,14 @@ namespace Ngo.Compiler.Emit
             {
                 EmitForRangeSlice(forRange);
             }
+            // Go permits ranging over a pointer to an array (*[N]T): it iterates the pointed-to
+            // array. The CLR value is the same T[] reference, so the array path handles it once
+            // the pointer is unwrapped to its element array (see EmitForRangeSlice).
+            else if (resolved is PointerTypeSymbol pointerToArray
+                && pointerToArray.ElementType.Resolved() is ArrayTypeSymbol)
+            {
+                EmitForRangeSlice(forRange);
+            }
             else if (iterableType.TypeKind == TypeKind.String || iterableType.TypeKind == TypeKind.UntypedString)
             {
                 EmitForRangeString(forRange);
@@ -98,6 +106,16 @@ namespace Ngo.Compiler.Emit
             // Unwrap named types for slice/array operations
             var iterSymbol = forRange.Iterable.Type;
             var unwrapped = iterSymbol.Resolved();
+
+            // Ranging over *[N]T iterates the pointed-to array; the pointer's CLR value is the
+            // same T[] reference, so unwrap to the element array and emit as an array.
+            if (unwrapped is PointerTypeSymbol pointerToArray
+                && pointerToArray.ElementType.Resolved() is ArrayTypeSymbol)
+            {
+                iterSymbol = pointerToArray.ElementType.Resolved();
+                unwrapped = iterSymbol;
+            }
+
             bool isArray = unwrapped is ArrayTypeSymbol;
 
             // Emit iterable into a local — use underlying type for Slice<T> operations

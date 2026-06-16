@@ -21,6 +21,14 @@ using System.Collections.Generic;
 
 namespace Ngo.Compiler.Symbols
 {
+    /// <summary>
+    /// Structural identity comparer for any <see cref="Symbol"/> that holds across .ngo
+    /// archive boundaries. Reference equality is the fast path; type symbols delegate to
+    /// <see cref="TypeSymbolEqualityComparer"/>; methods are identified by
+    /// (Name, receiver identity, pointer-receiver); functions by (Name, package). Like the
+    /// type comparer, it relies only on immutable identity fields so a symbol stays stable as
+    /// a dictionary key.
+    /// </summary>
     public sealed class SymbolEqualityComparer : IEqualityComparer<Symbol>
     {
         public static readonly SymbolEqualityComparer Instance = new();
@@ -39,6 +47,13 @@ namespace Ngo.Compiler.Symbols
             {
                 return false;
             }
+
+            if (first is TypeSymbol firstType)
+            {
+                return second is TypeSymbol secondType
+                    && TypeSymbolEqualityComparer.Instance.Equals(firstType, secondType);
+            }
+
             if (first.Name != second.Name)
             {
                 return false;
@@ -46,22 +61,14 @@ namespace Ngo.Compiler.Symbols
 
             if (first is MethodSymbol firstMethod && second is MethodSymbol secondMethod)
             {
-                if (firstMethod.ReceiverType?.Name != secondMethod.ReceiverType?.Name)
-                {
-                    return false;
-                }
-                if (firstMethod.ReceiverType?.PackagePath != secondMethod.ReceiverType?.PackagePath)
-                {
-                    return false;
-                }
+                return firstMethod.IsPointerReceiver == secondMethod.IsPointerReceiver
+                    && TypeSymbolEqualityComparer.Instance.Equals(
+                        firstMethod.ReceiverType, secondMethod.ReceiverType);
             }
 
             if (first is FunctionSymbol firstFunction && second is FunctionSymbol secondFunction)
             {
-                if (firstFunction.PackageName != secondFunction.PackageName)
-                {
-                    return false;
-                }
+                return firstFunction.PackageName == secondFunction.PackageName;
             }
 
             return true;
@@ -69,9 +76,14 @@ namespace Ngo.Compiler.Symbols
 
         public int GetHashCode(Symbol symbol)
         {
+            if (symbol is TypeSymbol type)
+            {
+                return TypeSymbolEqualityComparer.Instance.GetHashCode(type);
+            }
             if (symbol is MethodSymbol method)
             {
-                return HashCode.Combine(symbol.Name, symbol.Kind, method.ReceiverType?.Name);
+                return HashCode.Combine(symbol.Name, symbol.Kind,
+                    TypeSymbolEqualityComparer.Instance.GetHashCode(method.ReceiverType));
             }
             if (symbol is FunctionSymbol function)
             {

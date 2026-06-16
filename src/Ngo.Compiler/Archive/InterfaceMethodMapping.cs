@@ -29,17 +29,20 @@ namespace Ngo.Compiler.Archive
     internal sealed class InterfaceMethodMapping
     {
         public string InterfaceTypeName { get; }
+        public TypeToken InterfaceTypeToken { get; }
         public MethodMapping[] Methods { get; }
 
-        public InterfaceMethodMapping(string interfaceTypeName, MethodMapping[] methods)
+        public InterfaceMethodMapping(string interfaceTypeName, TypeToken interfaceTypeToken, MethodMapping[] methods)
         {
             InterfaceTypeName = interfaceTypeName;
+            InterfaceTypeToken = interfaceTypeToken;
             Methods = methods;
         }
 
         public void Write(BinaryWriter writer)
         {
             writer.Write(InterfaceTypeName);
+            InterfaceTypeToken.Write(writer);
             writer.Write(Methods.Length);
             foreach (var mapping in Methods)
             {
@@ -51,6 +54,7 @@ namespace Ngo.Compiler.Archive
         public static InterfaceMethodMapping Read(BinaryReader reader)
         {
             var interfaceTypeName = reader.ReadString();
+            var interfaceTypeToken = TypeToken.Read(reader);
             var methodCount = reader.ReadInt32();
             var methods = new MethodMapping[methodCount];
             for (int i = 0; i < methodCount; i++)
@@ -59,7 +63,7 @@ namespace Ngo.Compiler.Archive
                 var bodyMethodName = reader.ReadString();
                 methods[i] = new MethodMapping(interfaceMethodName, bodyMethodName);
             }
-            return new InterfaceMethodMapping(interfaceTypeName, methods);
+            return new InterfaceMethodMapping(interfaceTypeName, interfaceTypeToken, methods);
         }
     }
 

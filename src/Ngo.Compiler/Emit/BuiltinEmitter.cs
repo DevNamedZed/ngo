@@ -37,31 +37,6 @@ namespace Ngo.Compiler.Emit
         private readonly EmitContext _ctx;
         private readonly MethodBodyEmitter _body;
 
-        /// <summary>
-        /// Package import path → CLR type mapping, built from [GoPackage] attributes.
-        /// </summary>
-        private static readonly Dictionary<string, Type> _packageTypes = BuildPackageTypeMap();
-
-        private static Dictionary<string, Type> BuildPackageTypeMap()
-        {
-            var map = new Dictionary<string, Type>();
-            var asm = typeof(Ngo.Runtime.Discovery.GoPackageAttribute).Assembly;
-            foreach (var type in asm.GetTypes())
-            {
-                var attr = type.GetCustomAttribute<Ngo.Runtime.Discovery.GoPackageAttribute>();
-                if (attr != null)
-                {
-                    map[attr.ImportPath] = type;
-                    // Also map by short name (e.g., "fmt" for "fmt", "json" for "encoding/json")
-                    var lastSlash = attr.ImportPath.LastIndexOf('/');
-                    var shortName = lastSlash >= 0 ? attr.ImportPath.Substring(lastSlash + 1) : attr.ImportPath;
-                    if (!map.ContainsKey(shortName))
-                        map[shortName] = type;
-                }
-            }
-            return map;
-        }
-
         public BuiltinEmitter(EmitContext ctx, MethodBodyEmitter body)
         {
             _ctx = ctx;
@@ -77,11 +52,10 @@ namespace Ngo.Compiler.Emit
             if (pkg != null && TryEmitSpecialCase(call, pkg, name))
                 return true;
 
-            // Generic package dispatch via [GoPackage] annotations
+            // Generic package dispatch via [GoPackage] annotations (owned runtime catalog).
             if (pkg != null)
             {
-                Type? targetType = null;
-                _packageTypes.TryGetValue(pkg, out targetType);
+                var targetType = _ctx.RuntimeCatalog.ResolvePackageClassByNameOrImportPath(pkg);
                 if (targetType != null)
                 {
                     return EmitStaticCall(call, targetType, name);

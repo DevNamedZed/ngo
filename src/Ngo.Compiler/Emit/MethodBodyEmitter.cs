@@ -71,7 +71,7 @@ namespace Ngo.Compiler.Emit
 
         /// <summary>
         /// Emit function body into the already-set _ctx.IL (used by NgoWriter capture path).
-        /// Caller must set _ctx.IL and call _ctx.ResetMethodState() before calling.
+        /// Caller must set a fresh _ctx.CurrentMethod and _ctx.IL before calling.
         /// </summary>
         public void EmitFunctionBodyInto(FunctionDeclaration func)
         {
@@ -82,6 +82,7 @@ namespace Ngo.Compiler.Emit
         public void EmitFunctionBody(FunctionDeclaration func)
         {
             var method = _ctx.Methods[func.Symbol];
+            _ctx.CurrentMethod = new MethodEmitContext();
             _ctx.IL = method.GetILWriter();
 
             if (_ctx.TracedMethodNames != null && _ctx.TracedMethodNames.Contains(func.Symbol.Name))
@@ -91,7 +92,6 @@ namespace Ngo.Compiler.Emit
                 _ctx.ILTraces[func.Symbol.Name] = tracer.Trace;
             }
 
-            _ctx.ResetMethodState();
             _currentReturnTypes = func.Symbol.ReturnTypes;
 
             // Build the method emit context for generic param resolution
@@ -192,7 +192,7 @@ namespace Ngo.Compiler.Emit
 
         /// <summary>
         /// Emit method body into the already-set _ctx.IL (used by NgoWriter capture path).
-        /// Caller must set _ctx.IL and call _ctx.ResetMethodState() before calling.
+        /// Caller must set a fresh _ctx.CurrentMethod and _ctx.IL before calling.
         /// </summary>
         public void EmitMethodBodyInto(MethodDeclaration decl)
         {
@@ -203,6 +203,7 @@ namespace Ngo.Compiler.Emit
         public void EmitMethodBody(MethodDeclaration decl)
         {
             var method = _ctx.Methods[decl.Symbol];
+            _ctx.CurrentMethod = new MethodEmitContext();
             _ctx.IL = method.GetILWriter();
 
             if (_ctx.TracedMethodNames != null && _ctx.TracedMethodNames.Contains(decl.Symbol.Name))
@@ -215,7 +216,6 @@ namespace Ngo.Compiler.Emit
                 _ctx.ILTraces[traceName] = tracer.Trace;
             }
 
-            _ctx.ResetMethodState();
             _currentReturnTypes = decl.Symbol.ReturnTypes;
 
             var genericSource = decl.Symbol.TypeParameters.Count > 0
@@ -310,7 +310,7 @@ namespace Ngo.Compiler.Emit
 
         /// <summary>
         /// Emit package init body into the already-set _ctx.IL (used by NgoWriter capture path).
-        /// Caller must set _ctx.IL and call _ctx.ResetMethodState() before calling.
+        /// Caller must set a fresh _ctx.CurrentMethod and _ctx.IL before calling.
         /// The static constructor must already be defined.
         /// </summary>
         public void EmitPackageInitInto(IReadOnlyList<VarDeclaration> vars, List<FunctionDeclaration> initFuncs)
@@ -325,8 +325,8 @@ namespace Ngo.Compiler.Emit
                 System.Reflection.CallingConventions.Standard,
                 Type.EmptyTypes);
 
+            _ctx.CurrentMethod = new MethodEmitContext();
             _ctx.IL = cctor.GetILWriter();
-            _ctx.ResetMethodState();
             EmitPackageInitCore(vars, initFuncs);
         }
 
@@ -3166,7 +3166,12 @@ namespace Ngo.Compiler.Emit
                     }
                     var goAttr = method.GetCustomAttribute(
                         typeof(Ngo.Runtime.Discovery.GoMethodAttribute)) as Ngo.Runtime.Discovery.GoMethodAttribute;
-                    if (goAttr != null && goAttr.Name == goMethodName)
+                    if (goAttr == null)
+                    {
+                        continue;
+                    }
+                    if (goAttr.Name == goMethodName
+                        || (goAttr.Name == null && method.Name == goMethodName))
                     {
                         return MethodRef.FromRuntime(method);
                     }
@@ -3207,6 +3212,85 @@ namespace Ngo.Compiler.Emit
                         $"GetMethodRefParameterTypes cannot handle MethodRef kind {methodRef.Kind}");
                 }
             }
+        }
+
+        private readonly record struct NamedTypeWrapperResult(Type WrapperType, MethodInfo Method);
+
+        private static NamedTypeWrapperResult? ResolveNamedTypeWrapperMethod(
+            Symbols.TypeSymbol goType, string methodName, int paramCount)
+        {
+            var runtimeAssembly = typeof(Ngo.Runtime.Slice<>).Assembly;
+            foreach (var runtimeType in runtimeAssembly.GetTypes())
+            {
+                var goTypeAttr = runtimeType.GetCustomAttribute<Ngo.Runtime.Discovery.GoTypeAttribute>();
+                if (goTypeAttr == null)
+                {
+                    continue;
+                }
+                if (goTypeAttr.Name != goType.Name)
+                {
+                    continue;
+                }
+                if (goTypeAttr.Package != null && goTypeAttr.Package != goType.PackagePath)
+                {
+                    continue;
+                }
+
+                foreach (var method in runtimeType.GetMethods(BindingFlags.Public | BindingFlags.Instance))
+                {
+                    if (method.GetParameters().Length != paramCount)
+                    {
+                        continue;
+                    }
+                    var goMethodAttr = method.GetCustomAttribute<Ngo.Runtime.Discovery.GoMethodAttribute>();
+                    if (goMethodAttr != null)
+                    {
+                        var goName = goMethodAttr.Name ?? method.Name;
+                        if (goName == methodName)
+                        {
+                            return new NamedTypeWrapperResult(runtimeType, method);
+                        }
+                    }
+                    else if (method.Name == methodName && method.DeclaringType == runtimeType)
+                    {
+                        return new NamedTypeWrapperResult(runtimeType, method);
+                    }
+                }
+            }
+            return null;
+        }
+
+        private void EmitNamedTypeWrapperCall(MethodCallExpression call, Type wrapperType, MethodInfo method)
+        {
+            var wrapperLocal = _ctx.IL.DeclareLocal(wrapperType);
+
+            if (wrapperType.IsValueType)
+            {
+                _ctx.IL.Emit(OpCodes.Ldloca, wrapperLocal);
+                EmitExpression(call.Receiver);
+                var valueField = wrapperType.GetField("Value");
+                if (valueField != null)
+                {
+                    _ctx.IL.Emit(OpCodes.Stfld, valueField);
+                }
+                else
+                {
+                    _ctx.IL.Emit(OpCodes.Pop);
+                }
+                _ctx.IL.Emit(OpCodes.Ldloca, wrapperLocal);
+            }
+            else
+            {
+                EmitExpression(call.Receiver);
+                _ctx.IL.Emit(OpCodes.Pop);
+                _ctx.IL.Emit(OpCodes.Ldloc, wrapperLocal);
+            }
+
+            for (int index = 0; index < call.Arguments.Count; index++)
+            {
+                EmitExpression(call.Arguments[index]);
+            }
+            _ctx.IL.Emit(OpCodes.Call, method);
         }
 
         private MethodInfo? ResolveRuntimeFunction(string packageName, string funcName, CallExpression call)
@@ -3269,7 +3353,16 @@ namespace Ngo.Compiler.Emit
 
             // Build the variadic slice
             var lastParam = call.Function.Parameters[call.Function.Parameters.Count - 1];
-            var sliceSymbolType = (SliceTypeSymbol)lastParam.Type.Resolved();
+            var variadicSliceSymbol = lastParam.Type.Resolved();
+            // Substitute the call's type arguments so a generic variadic element (e.g. ...T) maps to
+            // the concrete element type rather than the callee's unregistered type parameter.
+            if (call.TypeArguments != null && call.TypeArguments.Count > 0
+                && call.TypeArguments.Count == call.Function.TypeParameters.Count)
+            {
+                variadicSliceSymbol = TypeSubstituter.Substitute(
+                    variadicSliceSymbol, call.Function.TypeParameters, call.TypeArguments).Resolved();
+            }
+            var sliceSymbolType = (SliceTypeSymbol)variadicSliceSymbol;
             var elemClrType = _ctx.Mapper.Map(sliceSymbolType.ElementType);
             var sliceClrType = _ctx.Mapper.Map(sliceSymbolType);
             int variadicCount = call.Arguments.Count - requiredCount;
@@ -3883,22 +3976,43 @@ namespace Ngo.Compiler.Emit
                 }
             }
 
+            // Go types backed by runtime wrapper classes annotated with [GoType].
+            // Covers named types (e.g. time.Duration → GoDuration) and
+            // runtime struct types (e.g. reflect.Value → GoReflectValue).
+            {
+                var goReceiverType = call.Receiver.Type;
+                if (goReceiverType is Symbols.PointerTypeSymbol goReceiverPtr && goReceiverPtr.ElementType != null)
+                {
+                    goReceiverType = goReceiverPtr.ElementType;
+                }
+                if (goReceiverType.PackagePath != null)
+                {
+                    var wrapperResult = ResolveNamedTypeWrapperMethod(goReceiverType, call.Method.Name, call.Method.Parameters.Count);
+                    if (wrapperResult != null)
+                    {
+                        EmitNamedTypeWrapperCall(call, wrapperResult.Value.WrapperType, wrapperResult.Value.Method);
+                        return;
+                    }
+                }
+            }
+
             // Go-source-compiled struct methods: stored as static methods TypeName_MethodName
             // on the linked package class. Try both unqualified and package-qualified keys.
             {
-                var receiverResolved = call.Receiver.Type.Resolved();
-                // Unwrap pointer types: *Scanner → Scanner
-                if (receiverResolved is Symbols.PointerTypeSymbol receiverPtr && receiverPtr.ElementType != null)
-                {
-                    receiverResolved = receiverPtr.ElementType.Resolved();
-                }
-                var staticMethodName = receiverResolved.Name + "_" + call.Method.Name;
+                // Mirror the definition side (DeclarationEmitter names the static method
+                // "{ReceiverType.Name}_{MethodName}" from the method symbol's receiver type).
+                // Using call.Method.ReceiverType — not call.Receiver.Type.Resolved(), which unwraps a
+                // defined type like 'Hash' to its underlying 'uint' and loses the named identity —
+                // keeps the key consistent. IsPointerReceiver is tracked separately, so ReceiverType
+                // is already the base named type (no pointer unwrapping needed).
+                var methodReceiverType = call.Method.ReceiverType;
+                var staticMethodName = methodReceiverType.Name + "_" + call.Method.Name;
                 MethodBuilder? linkedMethod = null;
 
                 if (!_ctx.LinkedMethods.TryGetValue(staticMethodName, out linkedMethod))
                 {
                     // Try package-qualified key: "bufio.Scanner_Scan"
-                    var packagePath = receiverResolved.PackagePath;
+                    var packagePath = methodReceiverType.PackagePath;
                     if (packagePath != null)
                     {
                         var lastSlash = packagePath.LastIndexOf('/');
@@ -3934,11 +4048,9 @@ namespace Ngo.Compiler.Emit
             // TypeName_MethodName(receiver, args...) on the package class.
             if (_ctx.IsDependencyEmit)
             {
-                var crossReceiverType = call.Receiver.Type.Resolved();
-                if (crossReceiverType is Symbols.PointerTypeSymbol crossPtr && crossPtr.ElementType != null)
-                {
-                    crossReceiverType = crossPtr.ElementType.Resolved();
-                }
+                // Named-type identity from the method symbol's receiver (see the note above) — not
+                // call.Receiver.Type.Resolved(), which would unwrap a defined type to its underlying.
+                var crossReceiverType = call.Method.ReceiverType;
                 var packagePath = crossReceiverType.PackagePath;
                 if (packagePath != null)
                 {
@@ -4032,7 +4144,8 @@ namespace Ngo.Compiler.Emit
                 return;
             }
 
-            throw new NotSupportedException($"Cannot resolve method: {call.Method.Name}");
+            throw new NotSupportedException(
+                $"Cannot resolve method: {call.Receiver.Type.Name}.{call.Method.Name}");
         }
 
         private void EmitCompositeLiteral(CompositeLiteralExpression lit)

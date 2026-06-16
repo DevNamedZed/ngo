@@ -35,6 +35,7 @@ namespace Ngo.Compiler.Emit.Builder
         private readonly bool _isValueType;
         private int _genericParamCount;
         private Type[]? _genericTypeArgs;
+        private Type? _genericDefinition;
         private readonly Type? _elementType;
         private readonly bool _isArray;
         private readonly bool _isPointer;
@@ -118,6 +119,7 @@ namespace Ngo.Compiler.Emit.Builder
             }
             var instantiation = new NgoBuilderType($"{_fullName}[{string.Join(",", argNames)}]", _isValueType);
             instantiation._genericTypeArgs = typeArguments;
+            instantiation._genericDefinition = this;
             return instantiation;
         }
 
@@ -127,19 +129,17 @@ namespace Ngo.Compiler.Emit.Builder
         protected override bool HasElementTypeImpl() => _elementType != null;
         public override Type? GetElementType() => _elementType;
 
-        public override bool IsGenericType =>
-            _genericParamCount > 0 || (_fullName.Contains('[') && !_fullName.EndsWith("[]"));
+        // Genericness is explicit state, never inferred from the name string: a generic
+        // definition has type parameters (_genericParamCount), an instantiation has type
+        // arguments (set by MakeGenericType). Inferring from a '[' in the name misfires on
+        // anonymous-struct fingerprints whose Go array/slice fields legitimately contain '['.
+        public override bool IsGenericType => _genericParamCount > 0 || _genericTypeArgs != null;
 
         public override bool IsGenericTypeDefinition => _genericParamCount > 0;
 
         public override Type GetGenericTypeDefinition()
         {
-            var bracketIndex = _fullName.IndexOf('[');
-            if (bracketIndex > 0)
-            {
-                return new NgoBuilderType(_fullName.Substring(0, bracketIndex));
-            }
-            return this;
+            return _genericDefinition ?? this;
         }
 
         public override Type[] GetGenericArguments()

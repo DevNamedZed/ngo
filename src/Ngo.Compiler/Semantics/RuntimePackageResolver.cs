@@ -146,8 +146,7 @@ namespace Ngo.Compiler.Semantics
                     new FieldSymbol("Root", BuiltinTypes.EmptyInterface, 2),
                     new FieldSymbol("Mode", BuiltinTypes.Uint, 3),
                 };
-                var treeStruct = new StructTypeSymbol("Tree", treeFields);
-                treeStruct.PackagePath = "text/template/parse";
+                var treeStruct = new StructTypeSymbol("Tree", treeFields, "text/template/parse");
                 var copyMethod = new MethodSymbol("Copy", treeStruct, true,
                     System.Array.Empty<ParameterSymbol>(),
                     new TypeSymbol[] { new PointerTypeSymbol(treeStruct) });
@@ -210,8 +209,7 @@ namespace Ngo.Compiler.Semantics
                     var typeName = attr.Name ?? extType.Name;
                     if (attr.Kind == "struct")
                     {
-                        var structType = new StructTypeSymbol(typeName, System.Array.Empty<FieldSymbol>());
-                        structType.PackagePath = importPath;
+                        var structType = new StructTypeSymbol(typeName, System.Array.Empty<FieldSymbol>(), importPath);
                         typeMap[typeName] = structType;
                         pkg.AddExport(structType);
                         clrTypes[new ClrTypeKey(importPath, typeName)] = extType;
@@ -364,7 +362,7 @@ namespace Ngo.Compiler.Semantics
                         goType._deferredUnderlying = entry.Attribute.Underlying;
                         break;
                 }
-                goType.PackagePath = importPath;
+                goType.StampPackagePath(importPath);
 
                 // Set type parameters for generic types
                 if (!string.IsNullOrEmpty(entry.Attribute.TypeParams))

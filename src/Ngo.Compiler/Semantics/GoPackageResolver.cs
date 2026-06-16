@@ -435,7 +435,7 @@ namespace Ngo.Compiler.Semantics
                         continue;
                     }
 
-                    var trees = ParseGoFilesInDir(dir);
+                    var trees = ParseGoFilesInDir(dir, _targetGoVersion);
                     if (trees.Count == 0)
                     {
                         continue;
@@ -531,7 +531,7 @@ namespace Ngo.Compiler.Semantics
 
                 // Parse only to extract imports — trees are discarded immediately.
                 // They'll be re-parsed when the package is actually compiled.
-                var imports = ExtractImports(dir);
+                var imports = ExtractImports(dir, _targetGoVersion);
 
                 if (imports != null)
                 {
@@ -551,14 +551,14 @@ namespace Ngo.Compiler.Semantics
         /// Uses line-by-line scanning for import declarations — no Parser, no SyntaxTree, no AST.
         /// Returns null if no valid Go files found.
         /// </summary>
-        private static List<string>? ExtractImports(string dir)
+        private static List<string>? ExtractImports(string dir, int targetGoVersion)
         {
             var imports = new List<string>();
             bool hasFiles = false;
 
             foreach (var file in Directory.GetFiles(dir, "*.go"))
             {
-                if (ShouldSkipGoFile(file))
+                if (ShouldSkipGoFile(file, targetGoVersion))
                 {
                     continue;
                 }
@@ -715,12 +715,12 @@ namespace Ngo.Compiler.Semantics
         /// Parses all Go source files in a directory into SyntaxTrees.
         /// Used when actually compiling a package (not during discovery).
         /// </summary>
-        private static List<SyntaxTree> ParseGoFilesInDir(string dir)
+        private static List<SyntaxTree> ParseGoFilesInDir(string dir, int targetGoVersion)
         {
             var trees = new List<SyntaxTree>();
             foreach (var file in Directory.GetFiles(dir, "*.go"))
             {
-                if (ShouldSkipGoFile(file))
+                if (ShouldSkipGoFile(file, targetGoVersion))
                 {
                     continue;
                 }
@@ -910,7 +910,7 @@ namespace Ngo.Compiler.Semantics
             {
                 if (typeDecl.Symbol.Name.Length > 0 && char.IsUpper(typeDecl.Symbol.Name[0]))
                 {
-                    typeDecl.Symbol.PackagePath = importPath;
+                    typeDecl.Symbol.StampPackagePath(importPath);
                     pkg.AddExport(typeDecl.Symbol);
                 }
             }
@@ -992,7 +992,7 @@ namespace Ngo.Compiler.Semantics
         }
 
         // Current target platform — used for file filtering
-        private static int _targetGoVersion = CompilationContext.LatestGoVersion;
+        private readonly int _targetGoVersion;
 
         private static readonly string _targetOS = System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
             System.Runtime.InteropServices.OSPlatform.Windows) ? "windows"
@@ -1019,7 +1019,7 @@ namespace Ngo.Compiler.Semantics
             "mips64le", "ppc64", "ppc64le", "riscv64", "s390x", "wasm", "loong64",
         };
 
-        public static bool ShouldSkipGoFile(string filePath)
+        public static bool ShouldSkipGoFile(string filePath, int targetGoVersion)
         {
             var fileName = Path.GetFileName(filePath);
             if (fileName.EndsWith("_test.go", StringComparison.OrdinalIgnoreCase))
@@ -1085,7 +1085,7 @@ namespace Ngo.Compiler.Semantics
                 {
                     return true;
                 }
-                return !EvalBuildExpression(goBuildExpr);
+                return !EvalBuildExpression(goBuildExpr, targetGoVersion);
             }
 
             // Old-style: each // +build line must be satisfied (AND across lines)
@@ -1095,7 +1095,7 @@ namespace Ngo.Compiler.Semantics
                 {
                     return true;
                 }
-                if (!EvalBuildExpression(tag))
+                if (!EvalBuildExpression(tag, targetGoVersion))
                 {
                     return true;
                 }
@@ -1104,7 +1104,7 @@ namespace Ngo.Compiler.Semantics
             return false;
         }
 
-        private static bool EvalBuildExpression(string expr)
+        private static bool EvalBuildExpression(string expr, int targetGoVersion)
         {
             // Handle old-style "// +build" with space-separated OR groups and comma-separated AND
             if (!expr.Contains("||") && !expr.Contains("&&") && !expr.Contains("("))
@@ -1117,7 +1117,7 @@ namespace Ngo.Compiler.Semantics
                     bool groupSatisfied = true;
                     foreach (var term in andTerms)
                     {
-                        if (!EvalBuildTerm(term.Trim()))
+                        if (!EvalBuildTerm(term.Trim(), targetGoVersion))
                         {
                             groupSatisfied = false;
                             break;
@@ -1134,19 +1134,19 @@ namespace Ngo.Compiler.Semantics
 
             // New-style "//go:build" expression with ||, &&, !, ()
             int pos = 0;
-            return ParseBuildOr(expr, ref pos);
+            return ParseBuildOr(expr, ref pos, targetGoVersion);
         }
 
-        private static bool ParseBuildOr(string expr, ref int pos)
+        private static bool ParseBuildOr(string expr, ref int pos, int targetGoVersion)
         {
-            bool result = ParseBuildAnd(expr, ref pos);
+            bool result = ParseBuildAnd(expr, ref pos, targetGoVersion);
             while (true)
             {
                 SkipBuildSpaces(expr, ref pos);
                 if (pos + 1 < expr.Length && expr[pos] == '|' && expr[pos + 1] == '|')
                 {
                     pos += 2;
-                    bool right = ParseBuildAnd(expr, ref pos);
+                    bool right = ParseBuildAnd(expr, ref pos, targetGoVersion);
                     result = result || right;
                 }
                 else
@@ -1157,16 +1157,16 @@ namespace Ngo.Compiler.Semantics
             return result;
         }
 
-        private static bool ParseBuildAnd(string expr, ref int pos)
+        private static bool ParseBuildAnd(string expr, ref int pos, int targetGoVersion)
         {
-            bool result = ParseBuildUnary(expr, ref pos);
+            bool result = ParseBuildUnary(expr, ref pos, targetGoVersion);
             while (true)
             {
                 SkipBuildSpaces(expr, ref pos);
                 if (pos + 1 < expr.Length && expr[pos] == '&' && expr[pos + 1] == '&')
                 {
                     pos += 2;
-                    bool right = ParseBuildUnary(expr, ref pos);
+                    bool right = ParseBuildUnary(expr, ref pos, targetGoVersion);
                     result = result && right;
                 }
                 else
@@ -1177,18 +1177,18 @@ namespace Ngo.Compiler.Semantics
             return result;
         }
 
-        private static bool ParseBuildUnary(string expr, ref int pos)
+        private static bool ParseBuildUnary(string expr, ref int pos, int targetGoVersion)
         {
             SkipBuildSpaces(expr, ref pos);
             if (pos < expr.Length && expr[pos] == '!')
             {
                 pos++;
-                return !ParseBuildUnary(expr, ref pos);
+                return !ParseBuildUnary(expr, ref pos, targetGoVersion);
             }
             if (pos < expr.Length && expr[pos] == '(')
             {
                 pos++;
-                bool result = ParseBuildOr(expr, ref pos);
+                bool result = ParseBuildOr(expr, ref pos, targetGoVersion);
                 SkipBuildSpaces(expr, ref pos);
                 if (pos < expr.Length && expr[pos] == ')')
                 {
@@ -1203,7 +1203,7 @@ namespace Ngo.Compiler.Semantics
                 pos++;
             }
             string term = expr.Substring(start, pos - start);
-            return EvalBuildTerm(term);
+            return EvalBuildTerm(term, targetGoVersion);
         }
 
         private static void SkipBuildSpaces(string expr, ref int pos)
@@ -1214,7 +1214,7 @@ namespace Ngo.Compiler.Semantics
             }
         }
 
-        private static bool EvalBuildTerm(string term)
+        private static bool EvalBuildTerm(string term, int targetGoVersion)
         {
             if (string.IsNullOrEmpty(term))
             {
@@ -1224,7 +1224,7 @@ namespace Ngo.Compiler.Semantics
             // Handle negation
             if (term.StartsWith("!"))
             {
-                return !EvalBuildTerm(term.Substring(1));
+                return !EvalBuildTerm(term.Substring(1), targetGoVersion);
             }
 
             if (term is "linux" or "amd64" or "unix")
@@ -1244,7 +1244,7 @@ namespace Ngo.Compiler.Semantics
 
             if (term.StartsWith("go1.") && int.TryParse(term.AsSpan(4), out int version))
             {
-                return version <= _targetGoVersion;
+                return version <= targetGoVersion;
             }
 
             return false;

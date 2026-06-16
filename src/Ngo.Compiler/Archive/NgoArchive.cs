@@ -520,7 +520,7 @@ namespace Ngo.Compiler.Archive
             for (int i = 0; i < namedCount; i++)
             {
                 var t = ReadNamedType(r, typeMap, crossPkgResolver);
-                t.PackagePath = importPath;
+                t.StampPackagePath(importPath);
                 typeMap[t.Name] = t;
                 pkg.AddExport(t);
             }
@@ -530,7 +530,7 @@ namespace Ngo.Compiler.Archive
             for (int i = 0; i < ifaceCount; i++)
             {
                 var iface = ReadInterfaceType(r, typeMap, crossPkgResolver);
-                iface.PackagePath = importPath;
+                iface.StampPackagePath(importPath);
                 typeMap[iface.Name] = iface;
                 pkg.AddExport(iface);
             }
@@ -540,7 +540,7 @@ namespace Ngo.Compiler.Archive
             for (int i = 0; i < structCount; i++)
             {
                 var s = ReadStructType(r, typeMap, crossPkgResolver);
-                s.PackagePath = importPath;
+                s.StampPackagePath(importPath);
                 typeMap[s.Name] = s;
                 pkg.AddExport(s);
             }
@@ -645,6 +645,15 @@ namespace Ngo.Compiler.Archive
         private static void WriteNamedType(BinaryWriter w, TypeSymbol t, string? pkgPath = null)
         {
             w.Write(t.Name);
+            // Declared type parameters first, so the reader has them in scope when it parses the
+            // underlying type (whose body references them by name).
+            var typeParams = t.IsGeneric ? t.TypeParameters : Array.Empty<TypeParameterSymbol>();
+            w.Write(typeParams.Count);
+            foreach (var tp in typeParams)
+            {
+                w.Write(tp.Name);
+                WriteConstraint(w, tp.Constraint, pkgPath);
+            }
             w.Write(t.UnderlyingType != null ? TypeToString(t.UnderlyingType, pkgPath) : "");
             w.Write(t.IsAlias);
             w.Write(t.Methods.Count);
@@ -681,20 +690,21 @@ namespace Ngo.Compiler.Archive
                 constraintData.Add(ReadConstraintData(r));
             }
             ResolveConstraints(typeParameters, constraintData, typeMap, crossPkgResolver);
+            var bodyScope = WithTypeParamsInScope(typeMap, typeParameters);
 
             int paramCount = r.ReadInt32();
             var parameters = new List<ParameterSymbol>(paramCount);
             for (int i = 0; i < paramCount; i++)
             {
                 var pName = r.ReadString();
-                var pType = StringToType(r.ReadString(), typeMap, crossPkgResolver);
+                var pType = StringToType(r.ReadString(), bodyScope, crossPkgResolver);
                 parameters.Add(new ParameterSymbol(pName, pType, i));
             }
             int retCount = r.ReadInt32();
             var returnTypes = new List<TypeSymbol>(retCount);
             for (int i = 0; i < retCount; i++)
             {
-                returnTypes.Add(StringToType(r.ReadString(), typeMap, crossPkgResolver));
+                returnTypes.Add(StringToType(r.ReadString(), bodyScope, crossPkgResolver));
             }
 
             return new FunctionSymbol(name, typeParameters, parameters, returnTypes, isVariadic, packageName);
@@ -737,12 +747,13 @@ namespace Ngo.Compiler.Archive
                 structConstraintData.Add(ReadConstraintData(r));
             }
             ResolveConstraints(structTypeParams, structConstraintData, typeMap, crossPkgResolver);
+            var structBodyScope = WithTypeParamsInScope(typeMap, structTypeParams);
             int fieldCount = r.ReadInt32();
             var fields = new List<FieldSymbol>(fieldCount);
             for (int i = 0; i < fieldCount; i++)
             {
                 var fName = r.ReadString();
-                var fType = StringToType(r.ReadString(), typeMap, crossPkgResolver);
+                var fType = StringToType(r.ReadString(), structBodyScope, crossPkgResolver);
                 var isEmbedded = r.ReadBoolean();
                 fields.Add(new FieldSymbol(fName, fType, i, isEmbedded));
             }
@@ -766,7 +777,7 @@ namespace Ngo.Compiler.Archive
             int methodCount = r.ReadInt32();
             for (int i = 0; i < methodCount; i++)
             {
-                structType.AddMethod(ReadMethod(r, structType, typeMap, crossPkgResolver));
+                structType.AddMethod(ReadMethod(r, structType, structBodyScope, crossPkgResolver));
             }
             return structType;
         }
@@ -784,6 +795,7 @@ namespace Ngo.Compiler.Archive
                 ifaceConstraintData.Add(ReadConstraintData(r));
             }
             ResolveConstraints(ifaceTypeParams, ifaceConstraintData, typeMap, crossPkgResolver);
+            var ifaceBodyScope = WithTypeParamsInScope(typeMap, ifaceTypeParams);
             int methodCount = r.ReadInt32();
 
             InterfaceTypeSymbol iface;
@@ -803,20 +815,53 @@ namespace Ngo.Compiler.Archive
 
             for (int i = 0; i < methodCount; i++)
             {
-                iface.AddMethod(ReadMethod(r, iface, typeMap, crossPkgResolver));
+                iface.AddMethod(ReadMethod(r, iface, ifaceBodyScope, crossPkgResolver));
             }
             return iface;
+        }
+
+        // Returns a type map that additionally resolves the given type parameters' "~Name" references
+        // to those exact symbols. The original map is returned unchanged when there are no parameters.
+        private static Dictionary<string, TypeSymbol> WithTypeParamsInScope(
+            Dictionary<string, TypeSymbol> typeMap, IReadOnlyList<TypeParameterSymbol> typeParameters)
+        {
+            if (typeParameters.Count == 0)
+            {
+                return typeMap;
+            }
+            var scoped = new Dictionary<string, TypeSymbol>(typeMap);
+            foreach (var typeParameter in typeParameters)
+            {
+                scoped["~" + typeParameter.Name] = typeParameter;
+            }
+            return scoped;
         }
 
         private static TypeSymbol ReadNamedType(BinaryReader r, Dictionary<string, TypeSymbol> typeMap,
             Func<string, string, TypeSymbol?>? crossPkgResolver = null)
         {
             var name = r.ReadString();
+
+            int typeParamCount = r.ReadInt32();
+            var typeParameters = new List<TypeParameterSymbol>(typeParamCount);
+            var constraintData = new List<(List<(string typeStr, bool isTilde)> elements, bool isComparable)>(typeParamCount);
+            for (int i = 0; i < typeParamCount; i++)
+            {
+                var typeParamName = r.ReadString();
+                typeParameters.Add(new TypeParameterSymbol(typeParamName, i, ConstraintInfo.Any));
+                constraintData.Add(ReadConstraintData(r));
+            }
+            ResolveConstraints(typeParameters, constraintData, typeMap, crossPkgResolver);
+
+            // Parse the underlying (and methods) with the declared type params in scope so their
+            // "~K" references resolve to these exact symbols (correct ordinal + identity).
+            var bodyScope = WithTypeParamsInScope(typeMap, typeParameters);
+
             var underlyingStr = r.ReadString();
             var isAlias = r.ReadBoolean();
             var underlying = string.IsNullOrEmpty(underlyingStr)
                 ? BuiltinTypes.EmptyInterface
-                : StringToType(underlyingStr, typeMap, crossPkgResolver);
+                : StringToType(underlyingStr, bodyScope, crossPkgResolver);
 
             TypeSymbol namedType;
             if (typeMap.TryGetValue(name, out var existing) && existing.GetType() == typeof(TypeSymbol))
@@ -830,12 +875,16 @@ namespace Ngo.Compiler.Archive
                 namedType = new TypeSymbol(name, underlying.TypeKind, underlying);
             }
             namedType.IsAlias = isAlias;
+            if (typeParameters.Count > 0)
+            {
+                namedType.SetTypeParameters(typeParameters);
+            }
             typeMap[name] = namedType;
 
             int methodCount = r.ReadInt32();
             for (int i = 0; i < methodCount; i++)
             {
-                namedType.AddMethod(ReadMethod(r, namedType, typeMap, crossPkgResolver));
+                namedType.AddMethod(ReadMethod(r, namedType, bodyScope, crossPkgResolver));
             }
             return namedType;
         }

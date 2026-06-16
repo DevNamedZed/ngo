@@ -24,64 +24,22 @@ using Ngo.Compiler.Symbols;
 namespace Ngo.Compiler.Emit
 {
     /// <summary>
-    /// Type-level emit context. Created when entering a struct, interface, closure, or wrapper type.
-    /// Holds the type's generic parameter bindings.
+    /// Per-type emit state — the type being defined and its generic parameter bindings.
+    /// (spec/F4-EMIT-CONTEXT-HIERARCHY.md, step 3.) This level is thin in the current code: the
+    /// active emit path carries type+method generics together as the enclosing generics on
+    /// <see cref="MethodEmitContext"/>, so this is not yet wired into EmitContext. It is kept as
+    /// the clean per-type owner that the emitters will receive when they are switched to take
+    /// contexts directly (step 5).
     /// </summary>
     internal sealed class TypeEmitContext
     {
-        public ModuleEmitContext Module { get; }
-        public ITypeBuilder TypeBuilder { get; }
-        private readonly Dictionary<TypeParameterSymbol, Type> _genericParameters;
-
-        public TypeEmitContext(ModuleEmitContext module, ITypeBuilder typeBuilder,
-            IReadOnlyList<TypeParameterSymbol>? typeParameters = null,
-            Type[]? genericParams = null)
+        public TypeEmitContext(ITypeBuilder typeBuilder)
         {
-            Module = module;
             TypeBuilder = typeBuilder;
-            _genericParameters = new Dictionary<TypeParameterSymbol, Type>();
-
-            if (typeParameters != null && genericParams != null)
-            {
-                for (int i = 0; i < typeParameters.Count && i < genericParams.Length; i++)
-                {
-                    _genericParameters[typeParameters[i]] = genericParams[i];
-                }
-            }
         }
 
-        public IReadOnlyDictionary<TypeParameterSymbol, Type> GenericParameters => _genericParameters;
+        public ITypeBuilder TypeBuilder { get; }
 
-        public bool TryResolveGenericParam(TypeParameterSymbol symbol, out Type type)
-        {
-            return _genericParameters.TryGetValue(symbol, out type);
-        }
-
-        public Type[] GetGenericParamTypes()
-        {
-            var result = new Type[_genericParameters.Count];
-            int index = 0;
-            foreach (var entry in _genericParameters)
-            {
-                result[index++] = entry.Value;
-            }
-            return result;
-        }
-
-        public Type Resolve(TypeSymbol symbol)
-        {
-            if (symbol is TypeParameterSymbol typeParam && _genericParameters.TryGetValue(typeParam, out var resolved))
-            {
-                return resolved;
-            }
-            return Module.Resolve(symbol);
-        }
-
-        public MethodEmitContext CreateMethodContext(IMethodBuilder methodBuilder,
-            IReadOnlyList<TypeParameterSymbol>? methodTypeParameters = null,
-            Type[]? methodGenericParams = null)
-        {
-            return new MethodEmitContext(this, methodBuilder, methodTypeParameters, methodGenericParams);
-        }
+        public Dictionary<TypeParameterSymbol, Type> GenericParameters { get; } = new();
     }
 }

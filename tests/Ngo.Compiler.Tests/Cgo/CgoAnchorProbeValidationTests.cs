@@ -93,7 +93,7 @@ public class CgoAnchorProbeValidationTests
 
         List<string> goSourceFiles = Directory
             .EnumerateFiles(packageDirectory, "*.go", SearchOption.TopDirectoryOnly)
-            .Where(path => !GoPackageResolver.ShouldSkipGoFile(path))
+            .Where(path => !GoPackageResolver.ShouldSkipGoFile(path, CompilationContext.LatestGoVersion))
             .OrderBy(path => path, StringComparer.Ordinal)
             .ToList();
 

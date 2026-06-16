@@ -31,6 +31,13 @@ namespace Ngo.Compiler.Emit
     internal sealed class TypeMapper
     {
         private readonly Dictionary<TypeSymbol, Type> _typeCache = new();
+
+        // Secondary index of FINALIZED types (post-CreateType), keyed by structural value
+        // identity so a symbol re-materialized across an .ngo boundary resolves to the same CLR
+        // type. Separate from _typeCache (reference-keyed, holds in-progress TypeBuilders) to
+        // avoid the phase collision noted in spec/archive/HACK-AUDIT.md.
+        private readonly Dictionary<TypeSymbol, Type> _finalizedTypeIndex
+            = new(TypeSymbolEqualityComparer.Instance);
         private readonly CompilationContext _compilationContext;
         private readonly HashSet<TypeSymbol> _inProgress = new();
         private EmitContext? _emitContext;
@@ -67,7 +74,9 @@ namespace Ngo.Compiler.Emit
             {
                 if (kvp.Value is TypeBuilder typeBuilder && typeBuilder.IsCreated())
                 {
-                    _typeCache[kvp.Key] = typeBuilder.CreateType()!;
+                    var finalized = typeBuilder.CreateType()!;
+                    _typeCache[kvp.Key] = finalized;
+                    _finalizedTypeIndex[kvp.Key] = finalized;
                 }
             }
         }
@@ -77,6 +86,10 @@ namespace Ngo.Compiler.Emit
             if (type != null)
             {
                 _typeCache[symbol] = type;
+                if (type is not TypeBuilder)
+                {
+                    _finalizedTypeIndex[symbol] = type;
+                }
             }
         }
 
@@ -140,6 +153,13 @@ namespace Ngo.Compiler.Emit
             {
                 return cached;
             }
+            // Cross-boundary fallback: a symbol re-materialized from an .ngo archive is a
+            // different instance, so the reference-keyed lookup above misses. Resolve it by
+            // structural value identity against finalized types.
+            if (_finalizedTypeIndex.TryGetValue(symbol, out var finalizedByValue))
+            {
+                return finalizedByValue;
+            }
 
             if (!_inProgress.Add(symbol))
             {
@@ -159,6 +179,10 @@ namespace Ngo.Compiler.Emit
                 if (!ContainsGenericParameter(result))
                 {
                     _typeCache[symbol] = result;
+                    if (result is not TypeBuilder)
+                    {
+                        _finalizedTypeIndex[symbol] = result;
+                    }
                 }
                 return result;
             }
@@ -173,6 +197,23 @@ namespace Ngo.Compiler.Emit
             // Instantiated generic type: Stack[int] → Stack<int>
             if (symbol is InstantiatedTypeSymbol inst)
             {
+                // Go named function types (e.g. iter.Seq2[K,V] = func(...)) map to structural
+                // delegates (Func<>/Action<>), which have no instantiable .NET generic definition.
+                // Substitute the type arguments for the definition's parameters in the underlying
+                // function type and map the concrete result. (The substitution produces a distinct
+                // symbol per instantiation, so the type cache stays correct across instantiations.)
+                if (inst.GenericType.UnderlyingType is FunctionTypeSymbol underlyingFunc
+                    && inst.GenericType.TypeParameters.Count == inst.TypeArguments.Count
+                    && inst.GenericType.TypeParameters.Count > 0)
+                {
+                    var bindings = new Dictionary<TypeParameterSymbol, TypeSymbol>();
+                    for (int i = 0; i < inst.TypeArguments.Count; i++)
+                    {
+                        bindings[inst.GenericType.TypeParameters[i]] = inst.TypeArguments[i];
+                    }
+                    return Map(SubstituteTypeParameters(underlyingFunc, bindings));
+                }
+
                 var genericType = Map(inst.GenericType);
                 if (!genericType.IsGenericTypeDefinition)
                 {
@@ -319,45 +360,23 @@ namespace Ngo.Compiler.Emit
                         }
                     }
 
-                    // Name-based fallback: during dependency emission, type symbols from
-                    // re-analysis may differ from those registered in ctx.StructTypes.
-                    // Search by name to find the already-finalized CLR type.
-                    if (_emitContext != null && symbol is StructTypeSymbol)
-                    {
-                        Type? bestMatch = null;
-                        foreach (var kvp in _typeCache)
-                        {
-                            if (kvp.Key is StructTypeSymbol cached
-                                && cached.Name == symbol.Name
-                                && kvp.Value != null
-                                && kvp.Value is not System.Reflection.Emit.TypeBuilder)
-                            {
-                                if (cached.PackagePath == symbol.PackagePath)
-                                {
-                                    bestMatch = kvp.Value;
-                                    break;
-                                }
-                                if (symbol.PackagePath == null && cached.PackagePath != null && bestMatch == null)
-                                {
-                                    bestMatch = kvp.Value;
-                                }
-                            }
-                        }
-                        if (bestMatch != null)
-                        {
-                            _typeCache[symbol] = bestMatch;
-                            return bestMatch;
-                        }
-                    }
+                    // Cross-boundary struct resolution is handled by the value-keyed
+                    // _finalizedTypeIndex (consulted in Map before MapCore); the old
+                    // name-only scan that could match a same-named type from the wrong
+                    // package has been removed.
 
                     // Generate a CLR value type for anonymous/unresolved structs
                     if (symbol is StructTypeSymbol anonStruct && anonStruct.Fields.Count > 0 && _emitContext != null)
                     {
+                        // The struct fingerprint is a Go type name (e.g. "struct{table [32]T;...}")
+                        // whose '[', ']', '{', ';' etc. are reserved in the .NET type-name grammar.
+                        // Encode it to a legal identifier segment before it becomes a CLR type name,
+                        // deterministically so the definition and every reference resolve to the same name.
                         string qualifiedName;
                         if (!string.IsNullOrEmpty(anonStruct.Name) && anonStruct.Name != "struct{}")
                         {
                             var pkgPath = anonStruct.PackagePath ?? _emitContext.CurrentPackagePath;
-                            qualifiedName = _emitContext.QualifyCrossPackageType(pkgPath, anonStruct.Name);
+                            qualifiedName = _emitContext.QualifyCrossPackageType(pkgPath, ClrTypeName.Escape(anonStruct.Name));
                         }
                         else
                         {
@@ -369,7 +388,7 @@ namespace Ngo.Compiler.Emit
                                 nameBuilder.Append(field.Type.Name);
                                 nameBuilder.Append('_');
                             }
-                            qualifiedName = _emitContext.QualifyName(nameBuilder.ToString());
+                            qualifiedName = _emitContext.QualifyName(ClrTypeName.Escape(nameBuilder.ToString()));
                         }
 
                         foreach (var cached in _typeCache.Values)
@@ -474,11 +493,12 @@ namespace Ngo.Compiler.Emit
                     }
 
                     // Check if we've already registered a CLR type for a different
-                    // InterfaceTypeSymbol instance with the same name (symbol identity issue)
+                    // InterfaceTypeSymbol instance with the same method set (symbol identity issue)
                     foreach (var kv in _typeCache)
                     {
                         if (kv.Key is InterfaceTypeSymbol cachedIface
                             && cachedIface.Name == symbol.Name
+                            && InterfaceMethodSetsMatch(cachedIface, ifaceType)
                             && kv.Value != typeof(object))
                         {
                             return kv.Value;
@@ -495,9 +515,7 @@ namespace Ngo.Compiler.Emit
                     // generate a .NET interface type so wrapper types can implement it.
                     if (ifaceType.Methods.Count > 0 && _emitContext != null)
                     {
-                        var ifaceName = !string.IsNullOrEmpty(ifaceType.Name)
-                            ? $"I__{ifaceType.Name}"
-                            : $"I__anon_{ifaceType.GetHashCode():X8}";
+                        var ifaceName = BuildAnonymousInterfaceName(ifaceType);
                         var qualifiedIfaceName = _emitContext.QualifyName(ifaceName);
                         var ifaceBuilder = _emitContext.Module.DefineType(
                             qualifiedIfaceName,
@@ -546,21 +564,6 @@ namespace Ngo.Compiler.Emit
                     return typeof(object);
 
                 case TypeKind.TypeParameter:
-                    // Try name+ordinal matching for type params that have identity mismatch
-                    if (symbol is TypeParameterSymbol missingTp)
-                    {
-                        foreach (var kv in _typeCache)
-                        {
-                            if (kv.Key is TypeParameterSymbol cachedTp
-                                && cachedTp.Name == missingTp.Name
-                                && cachedTp.Ordinal == missingTp.Ordinal
-                                && kv.Value != typeof(object))
-                            {
-                                _typeCache[symbol] = kv.Value;
-                                return kv.Value;
-                            }
-                        }
-                    }
                     // During dependency emit, unregistered type params come from OTHER
                     // generic contexts (e.g., a referenced generic type's definition).
                     // These represent "any type" in that position — map to object.
@@ -583,6 +586,47 @@ namespace Ngo.Compiler.Emit
                     throw new InvalidOperationException(
                         $"Unknown type kind '{symbol.TypeKind}' for type '{symbol.Name}'");
             }
+        }
+
+        private static bool InterfaceMethodSetsMatch(InterfaceTypeSymbol first, InterfaceTypeSymbol second)
+        {
+            if (first.Methods.Count != second.Methods.Count)
+            {
+                return false;
+            }
+            for (int index = 0; index < first.Methods.Count; index++)
+            {
+                if (first.Methods[index].Name != second.Methods[index].Name)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private static string BuildAnonymousInterfaceName(InterfaceTypeSymbol ifaceType)
+        {
+            if (string.IsNullOrEmpty(ifaceType.Name) || ifaceType.Name == "interface")
+            {
+                var sortedMethodNames = new List<string>(ifaceType.Methods.Count);
+                foreach (var method in ifaceType.Methods)
+                {
+                    sortedMethodNames.Add(method.Name);
+                }
+                sortedMethodNames.Sort(StringComparer.Ordinal);
+                return $"I__anon_{string.Join("_", sortedMethodNames)}";
+            }
+
+            // Encode the wrapped interface's declaring package so that two distinct named interfaces
+            // sharing a short name (e.g. go/ast's Expr vs go/build/constraint's Expr) get distinct
+            // wrapper types — otherwise both become "I__Expr" and a method token resolves to whichever
+            // was registered, losing identity. Explicit identity from the symbol, not a name guess.
+            if (!string.IsNullOrEmpty(ifaceType.PackagePath))
+            {
+                var sanitizedPackage = ifaceType.PackagePath!.Replace('/', '_').Replace('.', '_');
+                return $"I__{sanitizedPackage}_{ifaceType.Name}";
+            }
+            return $"I__{ifaceType.Name}";
         }
 
         public Type MapReturnType(IReadOnlyList<TypeSymbol> returnTypes)
@@ -640,6 +684,51 @@ namespace Ngo.Compiler.Emit
             allTypes[7] = restType;
 
             return typeof(ValueTuple<,,,,,,,>).MakeGenericType(allTypes);
+        }
+
+        // Produces a copy of a structural type with the given type parameters replaced by their
+        // bound arguments. Used to instantiate a generic named function type (whose body references
+        // its own type parameters) before mapping it to a concrete .NET delegate.
+        private static TypeSymbol SubstituteTypeParameters(TypeSymbol type, Dictionary<TypeParameterSymbol, TypeSymbol> bindings)
+        {
+            switch (type)
+            {
+                case TypeParameterSymbol typeParameter:
+                    return bindings.TryGetValue(typeParameter, out var bound) ? bound : type;
+                case SliceTypeSymbol slice:
+                    return new SliceTypeSymbol(SubstituteTypeParameters(slice.ElementType, bindings));
+                case ArrayTypeSymbol array:
+                    return new ArrayTypeSymbol(SubstituteTypeParameters(array.ElementType, bindings), array.Length);
+                case PointerTypeSymbol pointer:
+                    return new PointerTypeSymbol(SubstituteTypeParameters(pointer.ElementType, bindings));
+                case ChannelTypeSymbol channel:
+                    return new ChannelTypeSymbol(SubstituteTypeParameters(channel.ElementType, bindings));
+                case MapTypeSymbol map:
+                    return new MapTypeSymbol(
+                        SubstituteTypeParameters(map.KeyType, bindings),
+                        SubstituteTypeParameters(map.ValueType, bindings));
+                case FunctionTypeSymbol function:
+                    var substitutedParams = new List<TypeSymbol>(function.ParameterTypes.Count);
+                    foreach (var parameterType in function.ParameterTypes)
+                    {
+                        substitutedParams.Add(SubstituteTypeParameters(parameterType, bindings));
+                    }
+                    var substitutedReturns = new List<TypeSymbol>(function.ReturnTypes.Count);
+                    foreach (var returnType in function.ReturnTypes)
+                    {
+                        substitutedReturns.Add(SubstituteTypeParameters(returnType, bindings));
+                    }
+                    return new FunctionTypeSymbol(substitutedParams, substitutedReturns, function.IsVariadic);
+                case InstantiatedTypeSymbol instantiated:
+                    var substitutedArgs = new List<TypeSymbol>(instantiated.TypeArguments.Count);
+                    foreach (var argument in instantiated.TypeArguments)
+                    {
+                        substitutedArgs.Add(SubstituteTypeParameters(argument, bindings));
+                    }
+                    return new InstantiatedTypeSymbol(instantiated.GenericType, substitutedArgs);
+                default:
+                    return type;
+            }
         }
 
         private Type MapFunctionType(FunctionTypeSymbol funcType)
@@ -767,6 +856,12 @@ namespace Ngo.Compiler.Emit
                 | System.Reflection.TypeAttributes.SequentialLayout
                 | System.Reflection.TypeAttributes.Sealed,
                 typeof(System.ValueType));
+
+            // Track it on the owned module registry so the finalization assert sees it (spec/A4 §A4.1).
+            if (_emitContext?.Module is Builder.LiveModuleBuilder liveModuleForInlineArray)
+            {
+                liveModuleForInlineArray.RegisterDefinedType(typeBuilder);
+            }
 
             var attrCtor = typeof(System.Runtime.CompilerServices.InlineArrayAttribute)
                 .GetConstructor(new[] { typeof(int) })!;

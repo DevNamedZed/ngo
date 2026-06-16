@@ -90,7 +90,8 @@ namespace Ngo.Compiler.Emit.Builder
                     {
                         genericNames[i] = method.GenericParamNames[i];
                     }
-                    methodEntries.Add(new NgoMethodEntry(method.Name, method.Attributes, method.ReturnTypeName, paramNames, bodyIndex, genericNames));
+                    methodEntries.Add(new NgoMethodEntry(method.Name, method.Attributes, method.ReturnTypeName, paramNames, bodyIndex, genericNames,
+                        method.ReturnTypeToken, method.ParamTypeTokens));
                 }
 
                 if (type.Constructor?.Writer != null)
@@ -106,7 +107,8 @@ namespace Ngo.Compiler.Emit.Builder
                         ctorParams[p] = type.Constructor.ParamTypeNames[p];
                     }
                     methodEntries.Add(new NgoMethodEntry(ctorName, ctorAttrs,
-                        "System.Void", ctorParams, bodyIndex, Array.Empty<string>()));
+                        "System.Void", ctorParams, bodyIndex, Array.Empty<string>(),
+                        TypeToken.CreatePrimitive(PrimitiveTypeKind.Void), type.Constructor.ParamTypeTokens));
                 }
 
                 typeMethodBodies[type] = methodEntries;
@@ -119,12 +121,20 @@ namespace Ngo.Compiler.Emit.Builder
                 writer.Write(type.FullName ?? "");
                 writer.Write((int)type.TypeAttrs);
                 writer.Write(type.BaseTypeName);
+                if (!string.IsNullOrEmpty(type.BaseTypeName))
+                {
+                    type.BaseTypeToken!.Write(writer);
+                }
 
-                // Interfaces
+                // Interfaces — names (for keys/diagnostics) then structured tokens (resolution).
                 writer.Write(type.InterfaceNames.Count);
                 foreach (var ifaceName in type.InterfaceNames)
                 {
                     writer.Write(ifaceName);
+                }
+                foreach (var interfaceToken in type.InterfaceTokens)
+                {
+                    interfaceToken.Write(writer);
                 }
 
                 // Generic type parameters
@@ -143,6 +153,11 @@ namespace Ngo.Compiler.Emit.Builder
                     writer.Write(NgoWriter.GetTypeNameStatic(field.FieldType));
                     writer.Write(field.GoArrayLength);
                     writer.Write(field.GoArrayElementTypeName ?? "");
+                    field.FieldTypeToken.Write(writer);
+                    if (field.GoArrayLength > 0)
+                    {
+                        field.GoArrayElementTypeToken!.Write(writer);
+                    }
                 }
 
                 // Methods
@@ -162,6 +177,16 @@ namespace Ngo.Compiler.Emit.Builder
                     foreach (var pt in m.ParamTypes)
                     {
                         writer.Write(pt);
+                    }
+
+                    // Structured signature tokens (index-based generic params) — the source of
+                    // truth for resolving the signature at link time. The bare-name strings above
+                    // are retained only for the method key and diagnostics. One return token plus
+                    // one token per parameter (parameter count already written above).
+                    m.ReturnTypeToken.Write(writer);
+                    foreach (var paramTypeToken in m.ParamTypeTokens)
+                    {
+                        paramTypeToken.Write(writer);
                     }
                     writer.Write(m.BodyIndex);
                 }
@@ -199,6 +224,7 @@ namespace Ngo.Compiler.Emit.Builder
         private static List<Archive.InterfaceMethodMapping> BuildInterfaceMethodMappings(NgoTypeBuilder type)
         {
             var mappingsByInterface = new Dictionary<string, List<Archive.MethodMapping>>();
+            var interfaceTypesByName = new Dictionary<string, Type>();
 
             foreach (var ov in type.Overrides)
             {
@@ -206,14 +232,17 @@ namespace Ngo.Compiler.Emit.Builder
                 {
                     methodList = new List<Archive.MethodMapping>();
                     mappingsByInterface[ov.DeclarationTypeName] = methodList;
+                    interfaceTypesByName[ov.DeclarationTypeName] = ov.DeclarationType;
                 }
                 methodList.Add(new Archive.MethodMapping(ov.DeclarationMethodName, ov.BodyMethodName));
             }
 
+            var signatureWriter = new NgoWriter(new Archive.SerializationContext(Type.EmptyTypes, type.GenericParamTypes));
             var result = new List<Archive.InterfaceMethodMapping>();
             foreach (var (interfaceName, methods) in mappingsByInterface)
             {
-                result.Add(new Archive.InterfaceMethodMapping(interfaceName, methods.ToArray()));
+                var interfaceToken = signatureWriter.BuildTypeToken(interfaceTypesByName[interfaceName]);
+                result.Add(new Archive.InterfaceMethodMapping(interfaceName, interfaceToken, methods.ToArray()));
             }
             return result;
         }

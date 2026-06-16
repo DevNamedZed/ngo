@@ -336,21 +336,81 @@ namespace Ngo.Compiler.Emit
 
         public static bool ContainsDefer(BlockStatement block)
         {
-            foreach (var stmt in block.Statements)
+            return ContainsDeferInStatements(block.Statements);
+        }
+
+        private static bool ContainsDeferInStatements(IReadOnlyList<AstNode> statements)
+        {
+            foreach (var stmt in statements)
             {
                 if (stmt.NodeType == NodeType.DeferStatement)
+                {
                     return true;
+                }
                 if (stmt is BlockStatement inner && ContainsDefer(inner))
+                {
                     return true;
+                }
                 if (stmt is IfStatement ifStmt)
                 {
                     if (ContainsDefer(ifStmt.Body))
+                    {
                         return true;
+                    }
                     if (ifStmt.ElseBody is BlockStatement elseBlock && ContainsDefer(elseBlock))
+                    {
                         return true;
+                    }
                 }
                 if (stmt is ForStatement forStmt && ContainsDefer(forStmt.Body))
+                {
                     return true;
+                }
+                if (stmt is ForRangeStatement forRange && ContainsDefer(forRange.Body))
+                {
+                    return true;
+                }
+                if (stmt is SwitchStatement switchStmt)
+                {
+                    foreach (var switchCase in switchStmt.Cases)
+                    {
+                        if (ContainsDeferInStatements(switchCase.Body))
+                        {
+                            return true;
+                        }
+                    }
+                }
+                if (stmt is TypeSwitchStatement typeSwitchStmt)
+                {
+                    foreach (var typeSwitchCase in typeSwitchStmt.Cases)
+                    {
+                        if (ContainsDeferInStatements(typeSwitchCase.Body))
+                        {
+                            return true;
+                        }
+                    }
+                }
+                if (stmt is SelectStatement selectStmt)
+                {
+                    foreach (var selectCase in selectStmt.Cases)
+                    {
+                        if (ContainsDeferInStatements(selectCase.Body))
+                        {
+                            return true;
+                        }
+                    }
+                }
+                if (stmt is LabeledStatement labeled && labeled.InnerStatement != null)
+                {
+                    if (labeled.InnerStatement.NodeType == NodeType.DeferStatement)
+                    {
+                        return true;
+                    }
+                    if (labeled.InnerStatement is BlockStatement labeledBlock && ContainsDefer(labeledBlock))
+                    {
+                        return true;
+                    }
+                }
             }
             return false;
         }
@@ -981,6 +1041,20 @@ namespace Ngo.Compiler.Emit
                 if (paramTypes[0].IsValueType)
                     il.Emit(OpCodes.Box, paramTypes[0]);
                 il.Emit(OpCodes.Call, typeof(BuiltIn).GetMethod("Panic")!);
+                return;
+            }
+
+            // delete(m, k): the deferred args arrive as lambda parameters (map = arg0, key = arg1),
+            // same shape as the non-lambda EmitBuiltinDelete (Map<K,V>.Delete(key)).
+            if (name == "delete" && paramTypes.Length == 2)
+            {
+                il.Emit(OpCodes.Ldarg_0);
+                il.Emit(OpCodes.Ldarg_1);
+                var deleteMethod = _ctx.Definitions.GetMethod(paramTypes[0], "Delete");
+                if (deleteMethod != null)
+                {
+                    il.Emit(OpCodes.Call, deleteMethod);
+                }
                 return;
             }
 

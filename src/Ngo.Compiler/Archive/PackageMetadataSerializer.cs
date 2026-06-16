@@ -142,9 +142,16 @@ namespace Ngo.Compiler.Archive
             // Structural type checks BEFORE cross-package/unqualified lookups
             // to avoid "func() hash.Hash" matching local "Hash" via the dot-based heuristic.
 
-            // Type parameter (~T)
+            // Type parameter (~T): resolved to the declaring type's parameter via the scoped type
+            // map (seeded with "~Name" entries by the readers, checked above). Reaching here means a
+            // type-parameter reference appeared with no declaring scope — a serialization bug, not a
+            // case to paper over with a fabricated ordinal-0 parameter.
             if (typeStr.StartsWith("~"))
-                return new TypeParameterSymbol(typeStr.Substring(1), 0, ConstraintInfo.Any);
+            {
+                throw new System.InvalidOperationException(
+                    $"PackageMetadataSerializer: type parameter reference '{typeStr}' has no declaring " +
+                    "type parameter in scope. The owning type/function failed to seed its parameters.");
+            }
 
             // Slice ([]T)
             if (typeStr.StartsWith("[]"))

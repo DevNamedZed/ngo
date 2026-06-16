@@ -37,12 +37,6 @@ namespace Ngo.Compiler.Archive
     {
         private static readonly Dictionary<short, OpCode> OpCodeMap = BuildOpCodeMap();
 
-        private static readonly Assembly[] ReferencedAssemblies = new[]
-        {
-            typeof(Ngo.Runtime.Slice<>).Assembly,
-            typeof(System.Numerics.Complex).Assembly,
-        };
-
         /// <summary>
         /// Emits a package into a .ngo archive using NgoModuleBuilder (zero DynamicAssembly).
         /// NgoMethodBuilder.GetILWriter() returns NgoWriter, so IL is captured automatically
@@ -54,8 +48,7 @@ namespace Ngo.Compiler.Archive
             var ngoModule = new NgoModuleBuilder();
             var mapper = new TypeMapper(compilationContext);
             var ctx = new EmitContext(ngoModule, mapper, null, compilationContext.Log);
-            ctx.IsDependencyEmit = true;
-            ctx.CurrentPackagePath = importPath;
+            ctx.CurrentPackage = new PackageEmitContext(importPath, isDependency: true);
             mapper.SetEmitContext(ctx);
             EmitPackageForSerialization(result.Root, ctx);
 
@@ -84,161 +77,6 @@ namespace Ngo.Compiler.Archive
 
             new ILLinker(pkg, ctx).Link(ilMetaBytes, ilCodeBytes);
             return true;
-        }
-
-        // =====================================================================
-        // Type resolution
-        // =====================================================================
-
-        internal static Type ResolveType(string typeName, Dictionary<string, TypeBuilder>? typeBuilders = null,
-            Dictionary<string, Type>? genericParams = null)
-        {
-            if (typeName == "$$null" || typeName == "$$error" || typeName == "?")
-            {
-                throw new InvalidOperationException(
-                    $"ILSerializer.ResolveType: invalid sentinel type name '{typeName}' leaked into archive. " +
-                    "This indicates a bug in the semantic analyzer or emitter — the type was never resolved.");
-            }
-
-            if (genericParams != null && genericParams.TryGetValue(typeName, out var gp))
-            {
-                return gp;
-            }
-
-            if (typeBuilders != null && typeBuilders.TryGetValue(typeName, out var tb))
-            {
-                return tb;
-            }
-
-            if (typeName.EndsWith("[]"))
-            {
-                var elemType = ResolveType(typeName.Substring(0, typeName.Length - 2), typeBuilders, genericParams);
-                return elemType.MakeArrayType();
-            }
-
-            if (typeName.EndsWith("&"))
-            {
-                var elemType = ResolveType(typeName.Substring(0, typeName.Length - 1), typeBuilders, genericParams);
-                return elemType.MakeByRefType();
-            }
-
-            if (typeName.EndsWith("*"))
-            {
-                var elemType = ResolveType(typeName.Substring(0, typeName.Length - 1), typeBuilders, genericParams);
-                return elemType.MakePointerType();
-            }
-
-            int bracketIndex = typeName.IndexOf('[');
-            if (bracketIndex > 0 && typeName.EndsWith("]") && !typeName.EndsWith("[]"))
-            {
-                var genericDefName = typeName.Substring(0, bracketIndex);
-                var argsStr = typeName.Substring(bracketIndex + 1, typeName.Length - bracketIndex - 2);
-
-                Type genericDef;
-                if (typeBuilders != null && typeBuilders.TryGetValue(genericDefName, out var genTb))
-                {
-                    genericDef = genTb;
-                }
-                else
-                {
-                    genericDef = ResolveType(genericDefName, typeBuilders, genericParams);
-                }
-
-                var argNames = SplitGenericArgs(argsStr);
-
-                var typeArgs = new Type[argNames.Length];
-                for (int i = 0; i < argNames.Length; i++)
-                {
-                    typeArgs[i] = ResolveType(argNames[i].Trim(), typeBuilders, genericParams);
-                }
-
-                return genericDef.MakeGenericType(typeArgs);
-            }
-
-            var type = Type.GetType(typeName);
-            if (type != null)
-            {
-                return type;
-            }
-
-            type = typeName switch
-            {
-                "System.Void" => typeof(void),
-                "System.Boolean" => typeof(bool),
-                "System.Byte" => typeof(byte),
-                "System.SByte" => typeof(sbyte),
-                "System.Int16" => typeof(short),
-                "System.UInt16" => typeof(ushort),
-                "System.Int32" => typeof(int),
-                "System.UInt32" => typeof(uint),
-                "System.Int64" => typeof(long),
-                "System.UInt64" => typeof(ulong),
-                "System.Single" => typeof(float),
-                "System.Double" => typeof(double),
-                "System.String" => typeof(GoString),
-                "Ngo.Runtime.GoString" => typeof(GoString),
-                "System.Object" => typeof(object),
-                "System.IntPtr" => typeof(IntPtr),
-                "System.UIntPtr" => typeof(UIntPtr),
-                "System.ValueType" => typeof(ValueType),
-                _ => null
-            };
-            if (type != null)
-            {
-                return type;
-            }
-
-            // Search assemblies referenced by the compiler for types it emits
-            // (Ngo.Runtime, System.Numerics, etc.)
-            foreach (var referencedAssembly in ReferencedAssemblies)
-            {
-                type = referencedAssembly.GetType(typeName);
-                if (type != null)
-                {
-                    return type;
-                }
-            }
-
-            throw new InvalidOperationException($"LinkIL: failed to resolve type '{typeName}'");
-        }
-
-        internal static Type ResolveTypeWithGenericParams(string typeName,
-            Dictionary<string, TypeBuilder> typeBuilders,
-            Dictionary<string, Type> genericParamMap)
-        {
-            if (genericParamMap.TryGetValue(typeName, out var genericParam))
-            {
-                return genericParam;
-            }
-            return ResolveType(typeName, typeBuilders, genericParamMap);
-        }
-
-        /// <summary>
-        /// Splits a comma-separated generic argument string while respecting nested brackets.
-        /// </summary>
-        private static string[] SplitGenericArgs(string argsStr)
-        {
-            var result = new List<string>();
-            int depth = 0;
-            int start = 0;
-            for (int i = 0; i < argsStr.Length; i++)
-            {
-                if (argsStr[i] == '[')
-                {
-                    depth++;
-                }
-                else if (argsStr[i] == ']')
-                {
-                    depth--;
-                }
-                else if (argsStr[i] == ',' && depth == 0)
-                {
-                    result.Add(argsStr.Substring(start, i - start));
-                    start = i + 1;
-                }
-            }
-            result.Add(argsStr.Substring(start));
-            return result.ToArray();
         }
 
         // =====================================================================

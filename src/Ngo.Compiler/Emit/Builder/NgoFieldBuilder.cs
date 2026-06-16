@@ -19,6 +19,7 @@
 using System;
 using System.Reflection;
 using System.Reflection.Emit;
+using Ngo.Compiler.Archive;
 using Ngo.Compiler.Emit.Refs;
 
 namespace Ngo.Compiler.Emit.Builder
@@ -48,6 +49,23 @@ namespace Ngo.Compiler.Emit.Builder
         public Type? DeclaringType => _declaringType;
         public int GoArrayLength { get; set; }
         public string? GoArrayElementTypeName { get; set; }
+        public Type? GoArrayElementType { get; set; }
+
+        // Structured, index-based field type token (the .NET VAR encoding) built from the declaring
+        // type's generic context. A field has no method-level generic parameters.
+        public TypeToken FieldTypeToken => BuildSignatureWriter().BuildTypeToken(_fieldType);
+
+        // For a Go inline-array field ([N]T) the element type T is serialized as a token so the
+        // array is re-synthesized at link time without parsing a bare type name (which loses a
+        // generic parameter like 'K'). Null for non-array fields.
+        public TypeToken? GoArrayElementTypeToken =>
+            GoArrayElementType != null ? BuildSignatureWriter().BuildTypeToken(GoArrayElementType) : null;
+
+        private NgoWriter BuildSignatureWriter()
+        {
+            var typeGenericParams = _declaringTypeBuilder?.GenericParamTypes ?? Type.EmptyTypes;
+            return new NgoWriter(new SerializationContext(Type.EmptyTypes, typeGenericParams));
+        }
 
         public void SetCustomAttribute(CustomAttributeBuilder attr) { }
 

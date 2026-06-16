@@ -29,6 +29,7 @@ namespace Ngo.Compiler.Emit.Builder
         private readonly string _fullName;
         private readonly TypeAttributes _attrs;
         private readonly string _baseTypeName;
+        private readonly Type? _baseType;
         private readonly NgoBuilderType _builderType;
         private readonly List<NgoFieldBuilder> _fields = new();
         private readonly List<NgoMethodBuilder> _methods = new();
@@ -37,6 +38,7 @@ namespace Ngo.Compiler.Emit.Builder
         private string[] _genericParamNames = Array.Empty<string>();
         private Type[] _genericParamTypes = Type.EmptyTypes;
         private readonly string[] _interfaceNames;
+        private readonly Type[] _interfaceTypes;
 
         public NgoTypeBuilder(string fullName, TypeAttributes attrs, Type? baseType, Type[]? interfaces = null)
         {
@@ -49,19 +51,23 @@ namespace Ngo.Compiler.Emit.Builder
             if (baseType != null)
             {
                 _baseTypeName = NgoWriter.GetTypeNameStatic(baseType);
+                _baseType = baseType;
             }
             else if (isStatic || isInterface)
             {
                 _baseTypeName = "";
+                _baseType = null;
             }
             else
             {
                 _baseTypeName = "System.Object";
+                _baseType = typeof(object);
             }
 
             if (interfaces != null && interfaces.Length > 0)
             {
-                var validInterfaces = new List<string>();
+                var validInterfaceNames = new List<string>();
+                var validInterfaceTypes = new List<Type>();
                 for (int i = 0; i < interfaces.Length; i++)
                 {
                     // Skip non-interface types like typeof(object) which is used
@@ -70,13 +76,16 @@ namespace Ngo.Compiler.Emit.Builder
                     {
                         continue;
                     }
-                    validInterfaces.Add(NgoWriter.GetTypeNameStatic(interfaces[i]));
+                    validInterfaceNames.Add(NgoWriter.GetTypeNameStatic(interfaces[i]));
+                    validInterfaceTypes.Add(interfaces[i]);
                 }
-                _interfaceNames = validInterfaces.ToArray();
+                _interfaceNames = validInterfaceNames.ToArray();
+                _interfaceTypes = validInterfaceTypes.ToArray();
             }
             else
             {
                 _interfaceNames = Array.Empty<string>();
+                _interfaceTypes = Type.EmptyTypes;
             }
 
             bool isValueType = !isStatic && !isInterface && baseType == typeof(ValueType);
@@ -87,6 +96,30 @@ namespace Ngo.Compiler.Emit.Builder
         public TypeAttributes TypeAttrs => _attrs;
         public string BaseTypeName => _baseTypeName;
         public IReadOnlyList<string> InterfaceNames => _interfaceNames;
+
+        // Structured base/interface type tokens, built from the type's generic context (available by
+        // archive-write time, after DefineGenericParameters). Base/interface types are concrete, so
+        // these resolve without needing the generic context at link time. Base token is null when the
+        // type has no base (interfaces and package static classes).
+        public Archive.TypeToken? BaseTypeToken =>
+            _baseType != null ? BuildSignatureWriter().BuildTypeToken(_baseType) : null;
+
+        public Archive.TypeToken[] InterfaceTokens
+        {
+            get
+            {
+                var writer = BuildSignatureWriter();
+                var tokens = new Archive.TypeToken[_interfaceTypes.Length];
+                for (int i = 0; i < _interfaceTypes.Length; i++)
+                {
+                    tokens[i] = writer.BuildTypeToken(_interfaceTypes[i]);
+                }
+                return tokens;
+            }
+        }
+
+        private NgoWriter BuildSignatureWriter() =>
+            new NgoWriter(new Archive.SerializationContext(Type.EmptyTypes, _genericParamTypes));
         public IReadOnlyList<NgoFieldBuilder> Fields => _fields;
         public IReadOnlyList<NgoMethodBuilder> Methods => _methods;
         public IReadOnlyList<NgoMethodOverride> Overrides => _overrides;
@@ -150,9 +183,10 @@ namespace Ngo.Compiler.Emit.Builder
         public void DefineMethodOverride(IMethodBuilder body, MethodInfo declaration)
         {
             var bodyName = ((NgoMethodBuilder)body).Name;
-            var declType = NgoWriter.GetTypeNameStatic(declaration.DeclaringType!);
+            var declaringType = declaration.DeclaringType!;
+            var declType = NgoWriter.GetTypeNameStatic(declaringType);
             var declName = declaration.Name;
-            _overrides.Add(new NgoMethodOverride(bodyName, declType, declName));
+            _overrides.Add(new NgoMethodOverride(bodyName, declType, declName, declaringType));
         }
 
         public MethodInfo DefinePInvokeMethod(string name, string dllName, string entryPoint,

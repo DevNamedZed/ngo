@@ -23,14 +23,14 @@ namespace Ngo.Compiler.Symbols
 {
     public sealed class StructTypeSymbol : TypeSymbol
     {
-        public StructTypeSymbol(string name, IReadOnlyList<FieldSymbol> fields)
-            : base(name, TypeKind.Struct, null)
+        public StructTypeSymbol(string name, IReadOnlyList<FieldSymbol> fields, string? packagePath = null)
+            : base(name, TypeKind.Struct, null, packagePath)
         {
             Fields = fields;
         }
 
-        public StructTypeSymbol(string name, IReadOnlyList<FieldSymbol> fields, StructTypeSymbol underlying)
-            : base(name, TypeKind.Struct, underlying)
+        public StructTypeSymbol(string name, IReadOnlyList<FieldSymbol> fields, StructTypeSymbol underlying, string? packagePath = null)
+            : base(name, TypeKind.Struct, underlying, packagePath)
         {
             Fields = fields;
         }
