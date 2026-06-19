@@ -595,6 +595,7 @@ namespace Ngo.Compiler.Archive
         {
             w.Write(method.Name);
             w.Write(method.IsVariadic);
+            w.Write(method.IsPointerReceiver);
             w.Write(method.Parameters.Count);
             foreach (var p in method.Parameters) { w.Write(p.Name); w.Write(TypeToString(p.Type, pkgPath)); }
             w.Write(method.ReturnTypes.Count);
@@ -715,6 +716,7 @@ namespace Ngo.Compiler.Archive
         {
             var name = r.ReadString();
             var isVariadic = r.ReadBoolean();
+            var isPointerReceiver = r.ReadBoolean();
             int paramCount = r.ReadInt32();
             var parameters = new List<ParameterSymbol>(paramCount);
             for (int i = 0; i < paramCount; i++)
@@ -730,7 +732,7 @@ namespace Ngo.Compiler.Archive
                 returnTypes.Add(StringToType(r.ReadString(), typeMap, crossPkgResolver));
             }
 
-            return new MethodSymbol(name, receiver, false,
+            return new MethodSymbol(name, receiver, isPointerReceiver,
                 Array.Empty<TypeParameterSymbol>(), parameters, returnTypes, isVariadic);
         }
 

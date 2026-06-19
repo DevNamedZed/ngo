@@ -47,6 +47,18 @@ namespace Ngo.Compiler.Archive
         private readonly Dictionary<string, int> _methodILIndices;
         private readonly Dictionary<string, Dictionary<string, Type>> _methodGenericParams;
         private readonly Dictionary<string, ConstructorBuilder> _constructorBuilders;
+
+        // Structural-identity-keyed registries (A4.2): the correct keys that registration and reference
+        // compute identically, replacing the divergent name-string keys above. Populated alongside the
+        // string dicts during the migration; the string dicts are deleted once these are proven to
+        // cover every lookup. See spec/A4.2-STRUCTURAL-KEYS-STATUS.md.
+        private readonly Identity.IdentityBuilder _identity;
+        private readonly Dictionary<Identity.TypeIdentity, TypeBuilder> _typeBuildersByIdentity;
+        private readonly Dictionary<Identity.FieldIdentity, FieldBuilder> _fieldBuildersByIdentity;
+        private readonly Dictionary<Identity.MethodIdentity, MethodBuilder> _methodBuildersByIdentity;
+        private readonly Dictionary<Identity.MethodIdentity, int> _methodILIndicesByIdentity;
+        private readonly Dictionary<Identity.MethodIdentity, Dictionary<string, Type>> _methodGenericParamsByIdentity;
+
         private readonly List<DeserializedTypeInfo> _typeInfos;
         private readonly HashSet<string> _currentArchiveTypes;
         private readonly List<string> _deferredClassTypes;
@@ -73,6 +85,12 @@ namespace Ngo.Compiler.Archive
             _methodILIndices = new Dictionary<string, int>();
             _methodGenericParams = new Dictionary<string, Dictionary<string, Type>>();
             _constructorBuilders = new Dictionary<string, ConstructorBuilder>();
+            _identity = new Identity.IdentityBuilder(emitContext.Mapper);
+            _typeBuildersByIdentity = new Dictionary<Identity.TypeIdentity, TypeBuilder>(emitContext.LinkedTypesByIdentity);
+            _fieldBuildersByIdentity = new Dictionary<Identity.FieldIdentity, FieldBuilder>(emitContext.LinkedFieldsByIdentity);
+            _methodBuildersByIdentity = new Dictionary<Identity.MethodIdentity, MethodBuilder>(emitContext.LinkedMethodsByIdentity);
+            _methodILIndicesByIdentity = new Dictionary<Identity.MethodIdentity, int>();
+            _methodGenericParamsByIdentity = new Dictionary<Identity.MethodIdentity, Dictionary<string, Type>>();
             _typeInfos = new List<DeserializedTypeInfo>();
             _currentArchiveTypes = new HashSet<string>();
             _deferredClassTypes = new List<string>();
@@ -555,6 +573,16 @@ namespace Ngo.Compiler.Archive
             if (methodInfo.BodyIndex >= 0)
             {
                 _methodILIndices[fullMethodKey] = methodInfo.BodyIndex;
+            }
+
+            // A4.2: register under the structural identity in parallel (additive).
+            var declaringIdentity = _identity.NamedFromRegisteredType(declaringTypeName, _package.ImportPath);
+            var methodIdentity = _identity.FromSerialized(declaringIdentity, methodInfo, _package.ImportPath);
+            _methodBuildersByIdentity[methodIdentity] = methodBuilder;
+            _emitContext.LinkedMethodsByIdentity[methodIdentity] = methodBuilder;
+            if (methodInfo.BodyIndex >= 0)
+            {
+                _methodILIndicesByIdentity[methodIdentity] = methodInfo.BodyIndex;
             }
         }
 
@@ -1924,8 +1952,38 @@ namespace Ngo.Compiler.Archive
             return resolvedType.FullName ?? resolvedType.Name;
         }
 
+        // A4.2: resolve a method reference by its structural identity (computed from the token the same
+        // way registration computed it). Returns null on a miss (caller falls back during migration).
+        private MethodBuilder? LookupLinkedMethodByIdentity(MethodToken token)
+        {
+            Identity.MethodIdentity identity;
+            try
+            {
+                identity = _identity.FromMethodToken(token, _package.ImportPath);
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+            if (_methodBuildersByIdentity.TryGetValue(identity, out var builder))
+            {
+                return builder;
+            }
+            return _emitContext.LinkedMethodsByIdentity.TryGetValue(identity, out var linked) ? linked : null;
+        }
+
         private MethodBase? ResolveMethodDef(string declaringTypeName, MethodToken token)
         {
+            // A4.2 / BUG-3 Part 1: structural-identity lookup FIRST, before resolving parameter types.
+            // The identity is built purely by canonicalizing the token (a GenericMethodParam(k) is never
+            // resolved to a concrete Type here), so an out-of-context generic-param index cannot throw.
+            // Only on an identity miss do we resolve param types for the name-suffix scan fallback.
+            var byIdentity = LookupLinkedMethodByIdentity(token);
+            if (byIdentity != null)
+            {
+                return byIdentity;
+            }
+
             var resolvedParamTypes = ResolveMethodTokenParameterTypes(token);
 
             var signatureMatch = FindMethodBuilderBySignature(declaringTypeName, token.MethodName, resolvedParamTypes);
@@ -2044,6 +2102,19 @@ namespace Ngo.Compiler.Archive
 
         private MethodBase? ResolveMemberRefMethod(MethodToken token)
         {
+            // BUG-3 Part 1: identity-first, before resolving the declaring type or parameter types.
+            // Canonicalization-only (no GenericMethodParam(k) is resolved to a Type), so it cannot throw
+            // on an out-of-context generic-param index. Constructors live in _constructorBuilders, not the
+            // method-identity registry, so skip the lookup for them and fall through to the .ctor handling.
+            if (token.MethodName != ".ctor" && token.MethodName != ".cctor")
+            {
+                var byIdentity = LookupLinkedMethodByIdentity(token);
+                if (byIdentity != null)
+                {
+                    return byIdentity;
+                }
+            }
+
             var declaringType = ResolveTypeToken(token.DeclaringType!);
 
             if (token.MethodName == ".ctor")

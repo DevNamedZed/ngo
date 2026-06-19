@@ -91,6 +91,13 @@ namespace Ngo.Compiler.Emit
                 typeVisibility | TypeAttributes.SequentialLayout | TypeAttributes.Sealed,
                 typeof(System.ValueType));
 
+            // A4.3: stamp the defining package so the serialized token is a canonical PackageTypeRef.
+            var structDefiningPackage = structType.PackagePath ?? _ctx.CurrentPackagePath;
+            if (structDefiningPackage != null)
+            {
+                typeBuilder.StampPackagePath(structDefiningPackage);
+            }
+
             // Define generic type parameters if this is a generic struct
             if (structType.IsGeneric)
             {
@@ -285,6 +292,13 @@ namespace Ngo.Compiler.Emit
                 qualifiedIfaceName,
                 typeVisibility | TypeAttributes.Interface | TypeAttributes.Abstract,
                 null!, System.Type.EmptyTypes);
+
+            // A4.3: stamp the defining package so the serialized token is a canonical PackageTypeRef.
+            var ifaceDefiningPackage = interfaceType.PackagePath ?? _ctx.CurrentPackagePath;
+            if (ifaceDefiningPackage != null)
+            {
+                typeBuilder.StampPackagePath(ifaceDefiningPackage);
+            }
 
             _ctx.Definitions.RegisterType(qualifiedIfaceName, typeBuilder);
 

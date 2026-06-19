@@ -3065,10 +3065,18 @@ namespace Ngo.Compiler.Emit
                     }
                     else
                     {
-                        clrParamTypes = new Type[call.Arguments.Count];
+                        // Build the MemberRef parameter types from the callee's DECLARED parameters,
+                        // not the call-site argument types. The defining package registers the function
+                        // under its declared signature (e.g. bits.Mul64(uint64, uint64)); deriving the
+                        // token from arguments instead lets an untyped constant argument render as Int64,
+                        // diverging from the registered UInt64 and defeating identity-based resolution.
+                        // The token governs identity/link resolution only — the resolved MethodBuilder's
+                        // signature governs the actual call — so using declared params is safe and is the
+                        // same shape as the generic branch above (substituted declared params).
+                        clrParamTypes = new Type[crossFunc.Parameters.Count];
                         for (int i = 0; i < clrParamTypes.Length; i++)
                         {
-                            clrParamTypes[i] = _ctx.Mapper.Map(call.Arguments[i].Type);
+                            clrParamTypes[i] = _ctx.Mapper.Map(crossFunc.Parameters[i].Type);
                         }
                         clrReturnType = _ctx.Mapper.MapReturnType(crossFunc.ReturnTypes);
                     }

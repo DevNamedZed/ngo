@@ -34,6 +34,9 @@ namespace Ngo.Compiler.Emit.Builder
 
         public TypeBuilder Inner => _tb;
 
+        // A4.3: real-module emit doesn't serialize .ngo PackageTypeRef tokens through this path.
+        public void StampPackagePath(string importPath) { }
+
         public IFieldBuilder DefineField(string name, Type type, FieldAttributes attrs)
             => new LiveFieldBuilder(_tb.DefineField(name, type, attrs));
 

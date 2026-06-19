@@ -74,6 +74,14 @@ namespace Ngo.Compiler.Archive
 
         private readonly SerializationContext _serializationContext;
 
+        // When true, a generic parameter outside the current serialization context's scope serializes as
+        // its own structural token rather than degrading to Object. Set ONLY while building the parameter
+        // tokens of a method REFERENCE (BuildMethodTokenFromRef's Defined case) — matching the structural
+        // form BuildTypeTokenFromRef already emits for MemberRef params — so registration and reference
+        // compute the same MethodIdentity. Identity-first resolution then never feeds these to the read
+        // side. Definition/field/local/return positions are unaffected (they still degrade).
+        private bool _emitStructuralGenericParams;
+
         public NgoWriter(SerializationContext? serializationContext = null)
         {
             _serializationContext = serializationContext ?? SerializationContext.Empty;
@@ -585,6 +593,36 @@ namespace Ngo.Compiler.Archive
             return BuildTypeToken(type, new HashSet<Type>(ReferenceEqualityComparer.Instance));
         }
 
+        /// <summary>
+        /// Builds a token for a method-REFERENCE parameter position. An out-of-context generic parameter
+        /// serializes as its own structural token (the same form <see cref="BuildTypeTokenFromRef"/>
+        /// already uses for MemberRef params) so the reference and its registration compute the same
+        /// <see cref="Identity.MethodIdentity"/>, instead of degrading to Object.
+        /// </summary>
+        private TypeToken BuildReferenceParameterTypeToken(Type type)
+        {
+            var previousStructural = _emitStructuralGenericParams;
+            _emitStructuralGenericParams = true;
+            try
+            {
+                return BuildTypeToken(type);
+            }
+            finally
+            {
+                _emitStructuralGenericParams = previousStructural;
+            }
+        }
+
+        /// <summary>
+        /// Builds a <see cref="TypeToken"/> for a fully-resolved (concrete) CLR type with no
+        /// generic-parameter context — for computing a type identity at lookup time, where the type
+        /// has its type arguments substituted. Open generic parameters are not expected here.
+        /// </summary>
+        internal static TypeToken BuildConcreteTypeToken(Type type)
+        {
+            return new NgoWriter().BuildTypeToken(type);
+        }
+
         private TypeToken BuildTypeToken(Type type, HashSet<Type> inProgress)
         {
             if (!inProgress.Add(type))
@@ -634,6 +672,15 @@ namespace Ngo.Compiler.Archive
                 $"NgoWriter: generic parameter '{type.Name}' was not found in the current serialization context");
         }
 
+        // A4.3: removes the exact `importPath.Replace('/','.') + "."` prefix the CLR builder name carries,
+        // yielding the short type name. Deterministic inverse of the qualification — ResolvePackageTypeRef
+        // and IdentityBuilder.StripQualifier reconstruct/canonicalize the same way.
+        private static string StripPackageQualifier(string fullName, string packagePath)
+        {
+            var prefix = packagePath.Replace('/', '.') + ".";
+            return fullName.StartsWith(prefix, StringComparison.Ordinal) ? fullName.Substring(prefix.Length) : fullName;
+        }
+
         private TypeToken BuildTypeTokenCore(Type type, HashSet<Type> inProgress)
         {
             if (TryBuildScopedGenericParameterToken(type, out var scopedGenericToken))
@@ -649,16 +696,20 @@ namespace Ngo.Compiler.Archive
                     {
                         return TypeToken.CreateGenericMethodParam(ngoGenericParam.Index);
                     }
-                    return TypeToken.CreatePrimitive(PrimitiveTypeKind.Object);
+                    return _emitStructuralGenericParams
+                        ? TypeToken.CreateGenericMethodParam(ngoGenericParam.Index)
+                        : TypeToken.CreatePrimitive(PrimitiveTypeKind.Object);
                 }
                 if (ngoGenericParam.Index < _serializationContext.TypeGenericParams.Length)
                 {
                     return TypeToken.CreateGenericTypeParam(ngoGenericParam.Index);
                 }
-                return TypeToken.CreatePrimitive(PrimitiveTypeKind.Object);
+                return _emitStructuralGenericParams
+                    ? TypeToken.CreateGenericTypeParam(ngoGenericParam.Index)
+                    : TypeToken.CreatePrimitive(PrimitiveTypeKind.Object);
             }
 
-            if (type is NgoBuilderType)
+            if (type is NgoBuilderType ngoBuilder)
             {
                 if (type.IsArray)
                 {
@@ -681,6 +732,17 @@ namespace Ngo.Compiler.Archive
                     var genericArguments = type.GetGenericArguments();
                     var argumentTokens = genericArguments.Select(arg => BuildTypeToken(arg, inProgress)).ToArray();
                     return TypeToken.CreateGenericInst(BuildTypeToken(genericDefinition, inProgress), argumentTokens);
+                }
+
+                // A4.3: a source type stamped with its defining package serializes as a canonical
+                // PackageTypeRef(definingPkg, shortName), so its identity is invariant across archives —
+                // a consumer referencing it no longer re-qualifies it to its own package. The CLR builder
+                // name stays qualified for uniqueness; ResolvePackageTypeRef reconstructs it on read.
+                if (ngoBuilder.PackagePath != null)
+                {
+                    var fullName = type.FullName ?? type.Name;
+                    return TypeToken.CreatePackageTypeRef(
+                        ngoBuilder.PackagePath, StripPackageQualifier(fullName, ngoBuilder.PackagePath));
                 }
 
                 return TypeToken.CreateTypeDef(type.FullName ?? type.Name);
@@ -904,7 +966,7 @@ namespace Ngo.Compiler.Archive
                     var parameterTokens = new TypeToken[parameterTypes.Length];
                     for (int index = 0; index < parameterTypes.Length; index++)
                     {
-                        parameterTokens[index] = BuildTypeToken(parameterTypes[index]);
+                        parameterTokens[index] = BuildReferenceParameterTypeToken(parameterTypes[index]);
                     }
                     var returnTypeToken = BuildTypeToken(builder.ReturnType);
                     // A Defined MethodRef always points at a method declared in this archive,

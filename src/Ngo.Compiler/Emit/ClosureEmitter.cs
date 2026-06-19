@@ -188,9 +188,23 @@ namespace Ngo.Compiler.Emit
             // Without this, parameter types like Func<E, bool> serialize as references to 'E'
             // which can't be resolved at link time since the closure type isn't generic.
             Type[]? closureGenericParams = null;
+            Type[]? savedEnclosingParamMappings = null;
             if (_ctx.EnclosingGenericParamNames.Length > 0)
             {
                 closureGenericParams = closureBuilder.DefineGenericParameters(_ctx.EnclosingGenericParamNames);
+
+                // BUG-3 Shape B: rebind the enclosing generic-param symbols to the closure type's OWN
+                // generic params, so the closure's signature and body map E to the closure type's `!k`
+                // (resolvable on the generic closure type) instead of the enclosing method's `!!k` (which
+                // the closure type can't resolve — the cause of the old degrade-to-Object). The original
+                // mappings are saved and restored once the closure body is fully emitted below.
+                var enclosingSymbols = _ctx.EnclosingGenericParamSymbols;
+                savedEnclosingParamMappings = new Type[closureGenericParams.Length];
+                for (int k = 0; k < closureGenericParams.Length && k < enclosingSymbols.Length; k++)
+                {
+                    savedEnclosingParamMappings[k] = _ctx.Mapper.Map(enclosingSymbols[k]);
+                    _ctx.Mapper.Register(enclosingSymbols[k], closureGenericParams[k]);
+                }
             }
 
             // Fields for captured variables — use Box<T> for shared mutation
@@ -328,6 +342,17 @@ namespace Ngo.Compiler.Emit
             }
             _body.CurrentReturnTypes = savedReturnTypes;
             _body.NamedReturns = savedNamedReturns;
+
+            // BUG-3 Shape B: restore the enclosing method's `E -> !!k` mapping now that the closure body
+            // (which mapped `E` to the closure type's `!k`) is fully emitted.
+            if (savedEnclosingParamMappings != null)
+            {
+                var enclosingSymbols = _ctx.EnclosingGenericParamSymbols;
+                for (int k = 0; k < savedEnclosingParamMappings.Length && k < enclosingSymbols.Length; k++)
+                {
+                    _ctx.Mapper.Register(enclosingSymbols[k], savedEnclosingParamMappings[k]);
+                }
+            }
 
             // Finalize closure type
             closureBuilder.CreateType();

@@ -123,6 +123,14 @@ namespace Ngo.Compiler.Emit
         // All linked field builders across all archives (for cross-package variable access)
         public Dictionary<string, FieldBuilder> LinkedFields { get; } = new();
 
+        // Structural-identity-keyed siblings of LinkedMethods/LinkedTypes/LinkedFields (A4.2): the
+        // correct keys that registration and reference compute identically. Populated alongside the
+        // string dicts during the migration; the string dicts are deleted once these are proven to
+        // cover every lookup. See spec/A4.2-STRUCTURAL-KEYS-STATUS.md.
+        public Dictionary<Archive.Identity.MethodIdentity, MethodBuilder> LinkedMethodsByIdentity { get; } = new();
+        public Dictionary<Archive.Identity.TypeIdentity, TypeBuilder> LinkedTypesByIdentity { get; } = new();
+        public Dictionary<Archive.Identity.FieldIdentity, FieldBuilder> LinkedFieldsByIdentity { get; } = new();
+
         private readonly Dictionary<string, Refs.MethodRef> _crossPkgMethodCache = new();
 
         public Refs.MethodRef GetCrossPackageMethod(Symbols.FunctionSymbol func, TypeMapper mapper)

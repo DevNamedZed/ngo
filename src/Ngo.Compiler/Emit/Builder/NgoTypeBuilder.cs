@@ -128,6 +128,8 @@ namespace Ngo.Compiler.Emit.Builder
 
         public Type AsType() => _builderType;
 
+        public void StampPackagePath(string importPath) => _builderType.StampPackagePath(importPath);
+
         public bool IsCreated => true;
         public Type CreateType() => _builderType;
 

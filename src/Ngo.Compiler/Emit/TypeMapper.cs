@@ -373,9 +373,11 @@ namespace Ngo.Compiler.Emit
                         // Encode it to a legal identifier segment before it becomes a CLR type name,
                         // deterministically so the definition and every reference resolve to the same name.
                         string qualifiedName;
+                        string? namedStructPackage = null;
                         if (!string.IsNullOrEmpty(anonStruct.Name) && anonStruct.Name != "struct{}")
                         {
                             var pkgPath = anonStruct.PackagePath ?? _emitContext.CurrentPackagePath;
+                            namedStructPackage = pkgPath;  // A4.3: this is a NAMED struct → stamp its defining package
                             qualifiedName = _emitContext.QualifyCrossPackageType(pkgPath, ClrTypeName.Escape(anonStruct.Name));
                         }
                         else
@@ -431,6 +433,13 @@ namespace Ngo.Compiler.Emit
                         {
                             throw new InvalidOperationException(
                                 $"TypeMapper: struct type name collision for '{qualifiedName}'", ex);
+                        }
+
+                        // A4.3: a NAMED struct carries its defining package so its token serializes as a
+                        // canonical PackageTypeRef (anon structs — namedStructPackage null — keep TypeDef).
+                        if (namedStructPackage != null)
+                        {
+                            structBuilder.StampPackagePath(namedStructPackage);
                         }
 
                         if (anonStruct.TypeParameters.Count > 0)

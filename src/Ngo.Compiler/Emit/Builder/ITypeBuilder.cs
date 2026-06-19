@@ -52,5 +52,13 @@ namespace Ngo.Compiler.Emit.Builder
         Type AsType();
 
         string? FullName { get; }
+
+        /// <summary>
+        /// A4.3: stamp this type's defining Go import path (write-once) so its serialized token can be a
+        /// canonical PackageTypeRef(importPath, name) rather than a consumer-qualified TypeDef, giving the
+        /// type an identity invariant across archives. Ngo-mode stamps the NgoBuilderType; Live-mode is a
+        /// no-op (real-module emit does not serialize .ngo type tokens through this path).
+        /// </summary>
+        void StampPackagePath(string importPath);
     }
 }

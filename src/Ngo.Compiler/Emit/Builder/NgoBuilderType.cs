@@ -68,6 +68,16 @@ namespace Ngo.Compiler.Emit.Builder
         }
 
         public override string FullName => _fullName;
+
+        // A4.3: the defining Go import path of this source-compiled type (write-once). Lets NgoWriter emit a
+        // canonical PackageTypeRef(PackagePath, name) instead of a consumer-qualified TypeDef, so the type
+        // identity is invariant across archives. Null for composites / types whose package is unknown.
+        public string? PackagePath { get; private set; }
+
+        public void StampPackagePath(string importPath)
+        {
+            PackagePath ??= importPath;
+        }
         public override string Name => _name;
         public override string Namespace =>
             _fullName.Contains('.') ? _fullName.Substring(0, _fullName.LastIndexOf('.')) : "";
