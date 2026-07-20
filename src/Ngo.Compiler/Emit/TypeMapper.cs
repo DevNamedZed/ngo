@@ -360,13 +360,45 @@ namespace Ngo.Compiler.Emit
                         }
                     }
 
+                    // A named struct already declared in this emit resolves to its builder in the
+                    // DefinitionTable (registered by DeclarationEmitter.DefineStructType under the same
+                    // qualified name). This covers two cases the lookups above miss: an empty struct
+                    // (e.g. encoding/binary's `bigEndian struct{}`, which the build path below skips
+                    // because it has no fields), and a re-materialized symbol instance that misses the
+                    // reference-keyed cache. Exact qualified lookup only — no bare-name fallback — so it
+                    // cannot match a same-named type from the wrong package.
+                    if (_emitContext != null && symbol is StructTypeSymbol namedStructInEmit
+                        && !string.IsNullOrEmpty(namedStructInEmit.Name)
+                        && namedStructInEmit.Name != "struct{}")
+                    {
+                        var declaringPackage = namedStructInEmit.PackagePath ?? _emitContext.CurrentPackagePath;
+                        if (declaringPackage != null)
+                        {
+                            var qualifiedName = _emitContext.QualifyCrossPackageType(
+                                declaringPackage, namedStructInEmit.Name);
+                            var existing = _emitContext.Definitions.FindType(qualifiedName);
+                            if (existing != null)
+                            {
+                                return existing;
+                            }
+                        }
+                    }
+
                     // Cross-boundary struct resolution is handled by the value-keyed
                     // _finalizedTypeIndex (consulted in Map before MapCore); the old
                     // name-only scan that could match a same-named type from the wrong
                     // package has been removed.
 
-                    // Generate a CLR value type for anonymous/unresolved structs
-                    if (symbol is StructTypeSymbol anonStruct && anonStruct.Fields.Count > 0 && _emitContext != null)
+                    // Generate a CLR value type for anonymous/unresolved structs. A NAMED struct is built
+                    // even with zero fields (e.g. a cross-package `type bigEndian struct{}`): it must be a
+                    // real value type so its identity survives, not degrade to `object`. The anonymous empty
+                    // struct `struct{}` is already handled above (→ ValueTuple); the dedup lookup added before
+                    // this block returns the existing builder on a re-entry, so we never DefineType twice.
+                    bool isNamedStruct = symbol is StructTypeSymbol namedCheck
+                        && !string.IsNullOrEmpty(namedCheck.Name)
+                        && namedCheck.Name != "struct{}" && namedCheck.Name != "struct";
+                    if (symbol is StructTypeSymbol anonStruct && _emitContext != null
+                        && (anonStruct.Fields.Count > 0 || isNamedStruct))
                     {
                         // The struct fingerprint is a Go type name (e.g. "struct{table [32]T;...}")
                         // whose '[', ']', '{', ';' etc. are reserved in the .NET type-name grammar.
@@ -524,8 +556,38 @@ namespace Ngo.Compiler.Emit
                     // generate a .NET interface type so wrapper types can implement it.
                     if (ifaceType.Methods.Count > 0 && _emitContext != null)
                     {
-                        var ifaceName = BuildAnonymousInterfaceName(ifaceType);
-                        var qualifiedIfaceName = _emitContext.QualifyName(ifaceName);
+                        // A NAMED interface uses the SAME qualified Go name its declaration registers under
+                        // (DeclarationEmitter.EmitInterfaceType → QualifyName(Name)); a cross-package reference
+                        // qualifies by the defining package so it lands on that same identity instead of a
+                        // divergent synthetic name — mirrors the named-struct path above and the #14 fix.
+                        // Only a genuinely ANONYMOUS interface (no Go name) uses the structural I__anon name.
+                        bool isNamedInterface = !string.IsNullOrEmpty(ifaceType.Name)
+                            && ifaceType.Name != "interface";
+                        var ifaceDefiningPackage = ifaceType.PackagePath;
+                        string qualifiedIfaceName;
+                        if (isNamedInterface && !string.IsNullOrEmpty(ifaceDefiningPackage))
+                        {
+                            qualifiedIfaceName = _emitContext.QualifyCrossPackageType(
+                                ifaceDefiningPackage, ifaceType.Name);
+                        }
+                        else if (isNamedInterface)
+                        {
+                            qualifiedIfaceName = _emitContext.QualifyName(ifaceType.Name);
+                        }
+                        else
+                        {
+                            qualifiedIfaceName = _emitContext.QualifyName(BuildAnonymousInterfaceName(ifaceType));
+                        }
+
+                        // Reuse an existing builder registered under this name (the declaration, or a prior
+                        // reference in this context) instead of defining it twice — exact qualified lookup,
+                        // no bare-name fallback, so it can't bind a same-named type from the wrong package.
+                        var existingInterface = _emitContext.Definitions.FindType(qualifiedIfaceName);
+                        if (existingInterface != null)
+                        {
+                            return existingInterface;
+                        }
+
                         var ifaceBuilder = _emitContext.Module.DefineType(
                             qualifiedIfaceName,
                             System.Reflection.TypeAttributes.Public
@@ -533,6 +595,10 @@ namespace Ngo.Compiler.Emit
                             | System.Reflection.TypeAttributes.Abstract,
                             null!, // interfaces have no base type
                             System.Type.EmptyTypes);
+                        if (!string.IsNullOrEmpty(ifaceDefiningPackage))
+                        {
+                            ifaceBuilder.StampPackagePath(ifaceDefiningPackage);
+                        }
                         _emitContext.Definitions.RegisterType(qualifiedIfaceName, ifaceBuilder);
 
                         foreach (var method in ifaceType.Methods)
@@ -613,29 +679,19 @@ namespace Ngo.Compiler.Emit
             return true;
         }
 
+        // Builds the synthetic CLR name for an ANONYMOUS interface (no Go name), derived from its method
+        // set so the same shape maps to the same type across packages. Named interfaces are not routed
+        // here — they use their declaration's qualified Go name so cross-package references share one
+        // identity (see the interface case in MapCore).
         private static string BuildAnonymousInterfaceName(InterfaceTypeSymbol ifaceType)
         {
-            if (string.IsNullOrEmpty(ifaceType.Name) || ifaceType.Name == "interface")
+            var sortedMethodNames = new List<string>(ifaceType.Methods.Count);
+            foreach (var method in ifaceType.Methods)
             {
-                var sortedMethodNames = new List<string>(ifaceType.Methods.Count);
-                foreach (var method in ifaceType.Methods)
-                {
-                    sortedMethodNames.Add(method.Name);
-                }
-                sortedMethodNames.Sort(StringComparer.Ordinal);
-                return $"I__anon_{string.Join("_", sortedMethodNames)}";
+                sortedMethodNames.Add(method.Name);
             }
-
-            // Encode the wrapped interface's declaring package so that two distinct named interfaces
-            // sharing a short name (e.g. go/ast's Expr vs go/build/constraint's Expr) get distinct
-            // wrapper types — otherwise both become "I__Expr" and a method token resolves to whichever
-            // was registered, losing identity. Explicit identity from the symbol, not a name guess.
-            if (!string.IsNullOrEmpty(ifaceType.PackagePath))
-            {
-                var sanitizedPackage = ifaceType.PackagePath!.Replace('/', '_').Replace('.', '_');
-                return $"I__{sanitizedPackage}_{ifaceType.Name}";
-            }
-            return $"I__{ifaceType.Name}";
+            sortedMethodNames.Sort(StringComparer.Ordinal);
+            return $"I__anon_{string.Join("_", sortedMethodNames)}";
         }
 
         public Type MapReturnType(IReadOnlyList<TypeSymbol> returnTypes)

@@ -2309,11 +2309,20 @@ namespace Ngo.Compiler.Archive
         private MethodBase? ResolveMethodOnTypeBuilderByName(TypeBuilder typeBuilder, MethodToken token)
         {
             var declaringTypeName = typeBuilder.FullName ?? GetTypeNameFromToken(token.DeclaringType!);
-            var resolvedParamTypes = ResolveMethodTokenParameterTypes(token);
-            var methodBuilder = FindMethodBuilderBySignature(declaringTypeName, token.MethodName, resolvedParamTypes);
-            if (methodBuilder != null)
+
+            // A reference to a generic method carries its parameters as GenericMethodParam(!!k) bound to the
+            // CALLEE's generic context. Those indices cannot be resolved against the current (caller) method
+            // here, so signature matching is impossible — but name + parameter count is unambiguous for Go
+            // (one method per name per type), which is the correct binding (Part 3: resolve by name+arity).
+            MethodBuilder? methodBuilder;
+            if (!TokenParametersReferenceCalleeGenericContext(token))
             {
-                return methodBuilder;
+                var resolvedParamTypes = ResolveMethodTokenParameterTypes(token);
+                methodBuilder = FindMethodBuilderBySignature(declaringTypeName, token.MethodName, resolvedParamTypes);
+                if (methodBuilder != null)
+                {
+                    return methodBuilder;
+                }
             }
 
             methodBuilder = FindMethodBuilderByNameAndParamCount(declaringTypeName, token.MethodName, token.ParameterTypes.Length);
@@ -2607,6 +2616,14 @@ namespace Ngo.Compiler.Archive
 
         private MethodBase? FindMethodOnRuntimeType(Type declaringType, MethodToken token)
         {
+            // Parameters bound to the callee's generic context can't be resolved here, and this path
+            // matches only non-generic-definition methods anyway (it skips generic defs below), so a
+            // generic-method reference never resolves here — return null rather than fail on the !!k param.
+            if (TokenParametersReferenceCalleeGenericContext(token))
+            {
+                return null;
+            }
+
             var resolvedParamTypes = ResolveMethodTokenParameterTypes(token);
 
             foreach (var method in declaringType.GetMethods(
@@ -2690,6 +2707,59 @@ namespace Ngo.Compiler.Archive
                 resolvedTypes[index] = ResolveTypeToken(token.ParameterTypes[index]);
             }
             return resolvedTypes;
+        }
+
+        // True if any parameter token references a generic-parameter index that belongs to the CALLEE's
+        // generic context (out of range of both the current method's and current type's generic parameters),
+        // so it cannot be resolved here. Such a reference must be bound by name + arity, not by signature.
+        private bool TokenParametersReferenceCalleeGenericContext(MethodToken token)
+        {
+            foreach (var parameterToken in token.ParameterTypes)
+            {
+                if (ReferencesCalleeGenericContext(parameterToken))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private bool ReferencesCalleeGenericContext(TypeToken token)
+        {
+            switch (token.Kind)
+            {
+                case TypeTokenKind.GenericMethodParam:
+                case TypeTokenKind.GenericTypeParam:
+                {
+                    return token.GenericParamIndex >= _currentMethodGenericParameters.Length
+                        && token.GenericParamIndex >= _currentTypeGenericParameters.Length;
+                }
+                case TypeTokenKind.Array:
+                case TypeTokenKind.Pointer:
+                case TypeTokenKind.ByRef:
+                {
+                    return token.ElementType != null && ReferencesCalleeGenericContext(token.ElementType);
+                }
+                case TypeTokenKind.GenericInst:
+                {
+                    if (token.GenericDefinition != null && ReferencesCalleeGenericContext(token.GenericDefinition))
+                    {
+                        return true;
+                    }
+                    foreach (var argument in token.GenericArguments)
+                    {
+                        if (ReferencesCalleeGenericContext(argument))
+                        {
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+                default:
+                {
+                    return false;
+                }
+            }
         }
 
         private static bool MatchesParameterTypes(MethodBase method, Type[] resolvedParamTypes)

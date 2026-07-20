@@ -3047,6 +3047,7 @@ namespace Ngo.Compiler.Emit
 
                     Type[] clrParamTypes;
                     Type clrReturnType;
+                    IReadOnlyList<Symbols.ParameterSymbol>? substitutedParameters = null;
 
                     if (call.TypeArguments != null && call.TypeArguments.Count > 0
                         && crossFunc.TypeParameters.Count > 0)
@@ -3055,6 +3056,7 @@ namespace Ngo.Compiler.Emit
                             crossFunc.Parameters, crossFunc.TypeParameters, call.TypeArguments);
                         var substReturns = TypeSubstituter.SubstituteTypes(
                             crossFunc.ReturnTypes, crossFunc.TypeParameters, call.TypeArguments);
+                        substitutedParameters = substParams;
 
                         clrParamTypes = new Type[substParams.Count];
                         for (int i = 0; i < clrParamTypes.Length; i++)
@@ -3086,6 +3088,20 @@ namespace Ngo.Compiler.Emit
                     {
                         parameterTypeRefs[i] = Refs.TypeRef.FromRuntime(clrParamTypes[i]);
                     }
+
+                    // Re-emit each parameter in generic-DEFINITION form so the base MemberRef matches the
+                    // registered generic definition rather than the instantiation MakeGenericMethod adds
+                    // below. BuildGenericDefinitionParameterRef documents the callee-ordinal mapping.
+                    if (substitutedParameters != null)
+                    {
+                        for (int i = 0; i < crossFunc.Parameters.Count
+                            && i < parameterTypeRefs.Length && i < substitutedParameters.Count; i++)
+                        {
+                            parameterTypeRefs[i] = BuildGenericDefinitionParameterRef(
+                                crossFunc.Parameters[i].Type, substitutedParameters[i].Type, crossFunc.TypeParameters);
+                        }
+                    }
+
                     var returnTypeRef = Refs.TypeRef.FromRuntime(clrReturnType);
 
                     var crossPkgMethodRef = Refs.MethodRef.MemberRef(
@@ -3124,6 +3140,179 @@ namespace Ngo.Compiler.Emit
             }
 
             throw new NotSupportedException($"Cannot resolve function: {call.Function.Name} (pkg={call.Function.PackageName}, kind={call.Function.Kind})");
+        }
+
+        /// <summary>
+        /// If <paramref name="paramType"/> is one of <paramref name="methodTypeParameters"/>, returns its
+        /// ordinal (the callee's generic method-parameter index); otherwise -1. Matched by ordinal+name so
+        /// it holds across symbol instances (e.g. a deserialized callee symbol).
+        /// </summary>
+        private static int MethodTypeParameterOrdinal(
+            IReadOnlyList<Symbols.TypeParameterSymbol> methodTypeParameters, TypeSymbol paramType)
+        {
+            if (paramType is not Symbols.TypeParameterSymbol typeParameter)
+            {
+                return -1;
+            }
+            foreach (var candidate in methodTypeParameters)
+            {
+                if (candidate.Ordinal == typeParameter.Ordinal
+                    && string.Equals(candidate.Name, typeParameter.Name, StringComparison.Ordinal))
+                {
+                    return candidate.Ordinal;
+                }
+            }
+            return -1;
+        }
+
+        /// <summary>
+        /// Builds the generic-DEFINITION reference for a cross-package generic function parameter: a
+        /// callee type-parameter leaf becomes its ordinal's GenericMethodParam (!!k), a composite that
+        /// contains one is rebuilt over the same CLR generic shape with each component recursively
+        /// converted, and a fully concrete parameter maps through the substituted type as before. This
+        /// makes the reference match the registered generic definition (e.g. Func&lt;!!1,!!1,Int64&gt;),
+        /// while the surrounding MethodSpec/MakeGenericMethod still carries the instantiation.
+        /// </summary>
+        private Refs.TypeRef BuildGenericDefinitionParameterRef(
+            TypeSymbol declaredType, TypeSymbol substitutedType,
+            IReadOnlyList<Symbols.TypeParameterSymbol> methodTypeParameters)
+        {
+            var ordinal = MethodTypeParameterOrdinal(methodTypeParameters, declaredType);
+            if (ordinal >= 0)
+            {
+                return Refs.TypeRef.GenericMethodParameter(ordinal);
+            }
+
+            if (!DeclaredTypeContainsMethodTypeParameter(declaredType, methodTypeParameters))
+            {
+                return Refs.TypeRef.FromRuntime(_ctx.Mapper.Map(substitutedType));
+            }
+
+            var declaredComponents = OrderedComponentTypes(declaredType);
+            var substitutedComponents = OrderedComponentTypes(substitutedType);
+            if (declaredComponents != null && substitutedComponents != null
+                && declaredComponents.Count == substitutedComponents.Count)
+            {
+                var substitutedClrType = _ctx.Mapper.Map(substitutedType);
+                if (substitutedClrType.IsGenericType)
+                {
+                    var genericDefinition = substitutedClrType.GetGenericTypeDefinition();
+                    if (genericDefinition.GetGenericArguments().Length == declaredComponents.Count)
+                    {
+                        var argumentRefs = new Refs.TypeRef[declaredComponents.Count];
+                        for (int i = 0; i < argumentRefs.Length; i++)
+                        {
+                            argumentRefs[i] = BuildGenericDefinitionParameterRef(
+                                declaredComponents[i], substitutedComponents[i], methodTypeParameters);
+                        }
+                        return Refs.TypeRef.GenericInstantiation(
+                            Refs.TypeRef.FromRuntime(genericDefinition), argumentRefs);
+                    }
+                }
+            }
+
+            // Shape not decomposable here (e.g. multi-return func over a ValueTuple): fall back to the
+            // substituted concrete type. The read side still binds it by name + arity, just not by identity.
+            return Refs.TypeRef.FromRuntime(_ctx.Mapper.Map(substitutedType));
+        }
+
+        private bool DeclaredTypeContainsMethodTypeParameter(
+            TypeSymbol type, IReadOnlyList<Symbols.TypeParameterSymbol> methodTypeParameters)
+        {
+            if (MethodTypeParameterOrdinal(methodTypeParameters, type) >= 0)
+            {
+                return true;
+            }
+            switch (type)
+            {
+                case Symbols.SliceTypeSymbol slice:
+                {
+                    return DeclaredTypeContainsMethodTypeParameter(slice.ElementType, methodTypeParameters);
+                }
+                case Symbols.PointerTypeSymbol pointer:
+                {
+                    return DeclaredTypeContainsMethodTypeParameter(pointer.ElementType, methodTypeParameters);
+                }
+                case Symbols.MapTypeSymbol map:
+                {
+                    return DeclaredTypeContainsMethodTypeParameter(map.KeyType, methodTypeParameters)
+                        || DeclaredTypeContainsMethodTypeParameter(map.ValueType, methodTypeParameters);
+                }
+                case Symbols.FunctionTypeSymbol function:
+                {
+                    foreach (var parameterType in function.ParameterTypes)
+                    {
+                        if (DeclaredTypeContainsMethodTypeParameter(parameterType, methodTypeParameters))
+                        {
+                            return true;
+                        }
+                    }
+                    foreach (var returnType in function.ReturnTypes)
+                    {
+                        if (DeclaredTypeContainsMethodTypeParameter(returnType, methodTypeParameters))
+                        {
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+                case Symbols.InstantiatedTypeSymbol instantiated:
+                {
+                    foreach (var argument in instantiated.TypeArguments)
+                    {
+                        if (DeclaredTypeContainsMethodTypeParameter(argument, methodTypeParameters))
+                        {
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+                default:
+                {
+                    return false;
+                }
+            }
+        }
+
+        /// <summary>
+        /// The child types of a composite, in the same order as the CLR generic type's arguments
+        /// (slice element; map key,value; function params then single return; named-generic type args).
+        /// Returns null for shapes that don't map to a single CLR generic instantiation here.
+        /// </summary>
+        private static IReadOnlyList<TypeSymbol>? OrderedComponentTypes(TypeSymbol type)
+        {
+            switch (type)
+            {
+                case Symbols.SliceTypeSymbol slice:
+                {
+                    return new[] { slice.ElementType };
+                }
+                case Symbols.MapTypeSymbol map:
+                {
+                    return new[] { map.KeyType, map.ValueType };
+                }
+                case Symbols.InstantiatedTypeSymbol instantiated:
+                {
+                    return instantiated.TypeArguments;
+                }
+                case Symbols.FunctionTypeSymbol function:
+                {
+                    if (function.ReturnTypes.Count == 0)
+                    {
+                        return function.ParameterTypes;
+                    }
+                    if (function.ReturnTypes.Count == 1)
+                    {
+                        var components = new List<TypeSymbol>(function.ParameterTypes) { function.ReturnTypes[0] };
+                        return components;
+                    }
+                    return null;
+                }
+                default:
+                {
+                    return null;
+                }
+            }
         }
 
         /// <summary>
@@ -4105,8 +4294,16 @@ namespace Ngo.Compiler.Emit
                     }
                     else
                     {
+                        // The receiver parameter must be the method's DECLARED receiver type (the same type
+                        // the static name encodes and the defining package registers), not the call-site
+                        // receiver expression type — the latter can be a constraint type parameter that
+                        // degrades to Object, diverging from the registered receiver and defeating identity
+                        // resolution. IsPointerReceiver is tracked separately, so re-add the pointer here.
+                        var declaredReceiverType = call.Method.IsPointerReceiver
+                            ? (TypeSymbol)new Symbols.PointerTypeSymbol(crossReceiverType)
+                            : crossReceiverType;
                         var allParams = new Symbols.ParameterSymbol[1 + call.Method.Parameters.Count];
-                        allParams[0] = new Symbols.ParameterSymbol("recv", call.Receiver.Type, 0);
+                        allParams[0] = new Symbols.ParameterSymbol("recv", declaredReceiverType, 0);
                         for (int i = 0; i < call.Method.Parameters.Count; i++)
                         {
                             allParams[i + 1] = call.Method.Parameters[i];
